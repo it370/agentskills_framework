@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from engine import AgentState, app, _deep_merge_dict
 import log_stream
 from log_stream import publish_log, emit_log
+from .mock_api import router as mock_router
 
 api = FastAPI(title="Agentic SOP Orchestrator")
 api.add_middleware(
@@ -17,6 +18,9 @@ api.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mock endpoints for hardcoded data (sandbox/testing)
+api.include_router(mock_router)
 
 
 broadcast_task = None
