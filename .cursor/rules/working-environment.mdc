@@ -1,0 +1,4 @@
+---
+alwaysApply: true
+---
+Strictly ensure that all package installation for python are done within conda environment named "clearstar".
