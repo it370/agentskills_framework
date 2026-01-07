@@ -35,19 +35,26 @@
             <div class="space-y-6">
                 <section class="bg-gray-800 p-6 rounded-lg border border-gray-700 space-y-3">
                     <h2 class="text-xl font-semibold">Start New Process</h2>
-                    <input id="threadId" type="text" placeholder="Thread ID (e.g. cand_001)" class="w-full bg-gray-700 p-2 rounded border border-gray-600">
+                    <!-- Check education and if qualified check criminal records. -->
+                    <!-- Retrieve order details and show the result. -->
                     <textarea id="sopInput" placeholder="Layman SOP Logic..." class="w-full bg-gray-700 p-2 rounded h-20 border border-gray-600">
-Check education and if qualified check criminal records.
+Retrieve order details of given order, if a valid company is obtained run through logbook to find the company's contact details.
+
                     </textarea>
                     <div>
                         <div class="flex items-center justify-between mb-1">
                             <label class="text-sm text-gray-300">Initial Data (JSON)</label>
                             <span class="text-xs text-gray-500">Edit to change inputs</span>
                         </div>
-                        <textarea id="initialDataInput" class="w-full bg-gray-900 text-green-200 font-mono p-3 rounded border border-gray-700 h-40" spellcheck="false">{
-  "cv_text": "Masters in CS, 2020. Name: Alice Smith. DOB: 1992-05-12",
-  "full_name": "Alice Smith"
-}</textarea>
+                        <!-- {
+                          "cv_text": "Masters in CS, 2020. Name: Alice Smith. DOB: 1992-05-12",
+                          "full_name": "Alice Smith"
+                        } -->
+                        <textarea id="initialDataInput" class="w-full bg-gray-900 text-green-200 font-mono p-3 rounded border border-gray-700 h-40" spellcheck="false">
+{
+    "order_number": "00000003"
+}
+</textarea>
 <!-- ,  "dob": "1992-05-12" -->
                     </div>
                     <button onclick="startProcess()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 rounded transition">Start Agent</button>
@@ -107,12 +114,15 @@ Check education and if qualified check criminal records.
         let lastResumeTarget = "planner";
         let statusFetchInFlight = false;
 
-        async function startProcess() {
-            currentThread = document.getElementById('threadId').value;
-            if (!currentThread) {
-                currentThread = `thread_${Date.now()}`;
-                document.getElementById('threadId').value = currentThread;
+        function generateThreadId() {
+            if (crypto && crypto.randomUUID) {
+                return `thread_${crypto.randomUUID()}`;
             }
+            return `thread_${Date.now()}`;
+        }
+
+        async function startProcess() {
+            currentThread = generateThreadId();
             const sop = document.getElementById('sopInput').value;
             let initialData;
             try {

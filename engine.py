@@ -8,7 +8,8 @@ import httpx
 
 import yaml
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage, ToolMessage
+from langchain_core.tools import tool
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -19,6 +20,30 @@ class RestConfig(BaseModel):
     method: str = "POST"
     headers: Dict[str, str] = Field(default_factory=dict)
     timeout: float = 15.0
+
+
+class RestToolInput(BaseModel):
+    """
+    Input schema for the standard agent-level REST tool (not the skill-to-skill REST executor).
+    """
+
+    url: str = Field(description="Absolute URL to call")
+    method: str = Field(
+        default="GET", description="HTTP method such as GET, POST, PUT, PATCH, DELETE"
+    )
+    params: Dict[str, Any] = Field(default_factory=dict, description="Query params")
+    headers: Dict[str, str] = Field(default_factory=dict)
+    json_body: Optional[Dict[str, Any]] = Field(
+        default=None, alias="json", description="JSON body to send when applicable"
+    )
+    data: Optional[Any] = Field(
+        default=None, description="Raw body when JSON is not suitable (e.g., form-encoded)"
+    )
+    timeout: float = Field(
+        default=10.0, ge=0.5, le=60.0, description="Per-request timeout in seconds"
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 # --- 1. MODELS & REGISTRY ---
@@ -220,6 +245,15 @@ def _last_executed(history: List[str]) -> Optional[str]:
     return None
 
 
+def _completed_skills(history: List[str]) -> Set[str]:
+    """Collect skill names that have been executed (including REST callbacks)."""
+    completed: Set[str] = set()
+    for entry in history:
+        if entry.startswith("Executed "):
+            completed.add(entry.replace("Executed ", "", 1).replace(" (REST callback)", ""))
+    return completed
+
+
 def _get_path_value(data: Dict[str, Any], path: str) -> Any:
     """Return value at dot-notation path; supports numeric list indices."""
     parts = path.split(".")
@@ -300,6 +334,136 @@ def _callback_url() -> str:
     return base.rstrip("/") + "/callback"
 
 
+def _progress_summary(state: AgentState) -> List[str]:
+    """Generate a short summary for planner context."""
+    summary: List[str] = []
+    order_no = _get_path_value(state.get("data_store", {}), "order_number")
+    if order_no:
+        summary.append(f"Order number: {order_no}")
+    completed = _completed_skills(state.get("history", []))
+    for name in sorted(completed):
+        summary.append(f"{name}: completed")
+    return summary
+
+
+def _format_with_ctx(template: str, ctx: Dict[str, Any]) -> str:
+    """
+    Render a string template using values from ctx.
+    Raises a clear error if placeholders are missing.
+    """
+    try:
+        return template.format(**ctx)
+    except KeyError as exc:
+        raise RuntimeError(f"Missing placeholder value for {exc} in template: {template}") from exc
+
+
+def _safe_serialize(obj: Any, limit: int = 3000) -> str:
+    """Best-effort JSON serialization with truncation to keep tokens bounded."""
+    try:
+        rendered = json.dumps(obj, default=str)
+    except Exception:
+        rendered = str(obj)
+    if len(rendered) > limit:
+        return rendered[:limit] + "...(truncated)"
+    return rendered
+
+
+@tool("http_request", args_schema=RestToolInput)
+async def _http_request_tool(
+    url: str,
+    method: str = "GET",
+    params: Optional[Dict[str, Any]] = None,
+    headers: Optional[Dict[str, str]] = None,
+    json_body: Optional[Dict[str, Any]] = None,
+    data: Optional[Any] = None,
+    timeout: float = 10.0,
+):
+    """
+    Standard REST call tool for the LLM (agent-level). Use this for ad-hoc API
+    calls inside a skill. This is distinct from the skill-level REST executor
+    that dispatches to other agents via callbacks.
+    """
+    method = (method or "GET").upper()
+    params = params or None
+    headers = headers or None
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            response = await client.request(
+                method,
+                url,
+                params=params,
+                headers=headers,
+                json=json_body,
+                data=data,
+            )
+        content_type = response.headers.get("content-type", "")
+        if "application/json" in content_type.lower():
+            body: Any = response.json()
+        else:
+            text = response.text or ""
+            body = text if len(text) <= 2000 else text[:2000] + "...(truncated)"
+        return {
+            "status": response.status_code,
+            "headers": {
+                k: v
+                for k, v in response.headers.items()
+                if k.lower() in {"content-type", "location"}
+            },
+            "body": body,
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def _agent_tools() -> List[Any]:
+    """Tools available to the LLM inside a skill execution."""
+    return [_http_request_tool]
+
+
+async def _run_agent_tools(
+    messages: List[BaseMessage], *, max_rounds: int = 2
+) -> tuple[List[Dict[str, Any]], List[BaseMessage]]:
+    """
+    Allow the LLM to invoke agent-level tools (e.g., REST calls) before
+    producing the structured skill output. Returns tool run info and the
+    expanded message history including tool results.
+    """
+    tools = _agent_tools()
+    if not tools:
+        return [], messages
+
+    api_key = _require_openai_api_key()
+    tool_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, api_key=api_key).bind_tools(tools)
+    history: List[BaseMessage] = list(messages)
+    tool_runs: List[Dict[str, Any]] = []
+
+    for round_idx in range(max_rounds):
+        ai_msg: AIMessage = await tool_llm.ainvoke(history)
+        history.append(ai_msg)
+        tool_calls = getattr(ai_msg, "tool_calls", None) or []
+        if not tool_calls:
+            return tool_runs, history
+
+        for call in tool_calls:
+            name = getattr(call, "name", None) or (call.get("name") if isinstance(call, dict) else None)
+            args = getattr(call, "args", None) or (call.get("args") if isinstance(call, dict) else {}) or {}
+            call_id = getattr(call, "id", None) or (call.get("id") if isinstance(call, dict) else "tool_call")
+
+            selected_tool = next((t for t in tools if t.name == name), None)
+            if not selected_tool:
+                result: Dict[str, Any] = {"error": f"Unknown tool '{name}'"}
+            else:
+                result = await selected_tool.ainvoke(args)
+            tool_runs.append({"tool": name, "args": args, "result": result})
+            history.append(ToolMessage(content=_safe_serialize(result), tool_call_id=call_id))
+
+        await publish_log(f"[EXECUTOR] Tool round {round_idx + 1} completed with tools {[r['tool'] for r in tool_runs]}")
+
+    await publish_log(f"[EXECUTOR] Reached max tool rounds ({max_rounds}); proceeding with available context.")
+    return tool_runs, history
+
+
 async def _execute_rest_skill(skill_meta: Skill, state: AgentState, input_ctx: Dict[str, Any]):
     if not skill_meta.rest:
         raise RuntimeError(f"{skill_meta.name} is missing REST configuration.")
@@ -313,16 +477,18 @@ async def _execute_rest_skill(skill_meta: Skill, state: AgentState, input_ctx: D
         "sop": state["layman_sop"],
     }
 
+    rest_url = _format_with_ctx(skill_meta.rest.url, input_ctx)
+
     async with httpx.AsyncClient(timeout=skill_meta.rest.timeout) as client:
         response = await client.request(
             skill_meta.rest.method,
-            skill_meta.rest.url,
+            rest_url,
             json=payload,
             headers=skill_meta.rest.headers,
         )
         response.raise_for_status()
 
-    await publish_log(f"[EXECUTOR] {skill_meta.name} dispatched to REST endpoint {skill_meta.rest.url}")
+    await publish_log(f"[EXECUTOR] {skill_meta.name} dispatched to REST endpoint {rest_url}")
     updated_store = _mark_rest_pending(state["data_store"], skill_meta.name)
     return {
         "history": [f"Requested {skill_meta.name} via REST API"],
@@ -348,11 +514,15 @@ async def autonomous_planner(state: AgentState):
         # Signal the graph to stop here; callback will resume and re-enter planner.
         return {"active_skill": "END", "history": [f"Waiting for REST callback: {sorted(pending_rest)}"]}
 
+    completed = _completed_skills(state.get("history", []))
     runnable = [s for s in SKILL_REGISTRY if s.requires.issubset(current_keys)]
     runnable = [s for s in runnable if s.name not in pending_rest]
     
-    # Check for already completed skills to avoid loops
-    runnable = [s for s in runnable if not s.produces.issubset(current_keys)]
+    # Allow reruns when outputs are missing; skip only if already completed AND outputs are present
+    runnable = [
+        s for s in runnable
+        if not (s.name in completed and s.produces.issubset(current_keys))
+    ]
     
     # Map missing requirements to runnable skills that can provide them.
     missing_requirements: Dict[str, Set[str]] = {}
@@ -371,10 +541,12 @@ async def autonomous_planner(state: AgentState):
         return f"- {s.name}: Provides {s.produces}.{opt} (Needs {s.requires})"
     capabilities = "\n".join([_caps(s) for s in SKILL_REGISTRY])
     unblockers = sorted({name for providers in missing_requirements.values() for name in providers})
+    summary_lines = _progress_summary(state)
     
     prompt = f"""
     GOAL: {state['layman_sop']}
     DATA_STORE: {json.dumps(state['data_store'])}
+    PROGRESS: {summary_lines}
     
     CAPABILITIES:
     {capabilities}
@@ -445,20 +617,46 @@ async def skilled_executor(state: AgentState):
     # Simulate processing (Add a tiny delay for realism)
     await asyncio.sleep(1)
     
-    # We pass the relevant data and the SOP context
     prompt_text = skill_meta.prompt or f"Process this input to produce: {', '.join(sorted(skill_meta.produces))}."
     system_prompt = skill_meta.system_prompt
+    tool_hint = (
+        "You may call the `http_request` tool for standard REST API calls during this skill. "
+        "This tool is for agent-level lookups and must not be confused with the skill-level REST executor used for agent-to-agent callbacks."
+    )
 
-    messages: List[BaseMessage] = []
+    base_messages: List[BaseMessage] = [
+        SystemMessage(
+            content=(
+                "Application rule: Do NOT invoke any tools (including http_request REST calls) "
+                "unless the user or system explicitly instructs or approves it. If not explicitly told, "
+                "solve without tools."
+            )
+        )
+    ]
     if system_prompt:
-        messages.append(SystemMessage(content=system_prompt))
-    messages.append(
+        base_messages.append(SystemMessage(content=system_prompt))
+    base_messages.append(
         HumanMessage(
-            content=f"{prompt_text}\nContext: {state['layman_sop']}\nInput: {input_ctx}"
+            content=(
+                f"{prompt_text}\nContext: {state['layman_sop']}\nInput: {input_ctx}\n\n"
+                f"{tool_hint}"
+            )
         )
     )
 
-    result = await llm.ainvoke(messages)
+    tool_runs, tool_history = await _run_agent_tools(base_messages)
+
+    extraction_prompt = (
+        f"Use the available inputs and any tool results to populate the structured outputs "
+        f"{sorted(skill_meta.produces | skill_meta.optional_produces)}. "
+        "Return only the structured fields defined by the schema."
+    )
+    if tool_runs:
+        extraction_prompt += f"\nTool runs (standard REST agent tools): {_safe_serialize(tool_runs, limit=2000)}"
+
+    final_messages = tool_history + [HumanMessage(content=extraction_prompt)]
+
+    result = await llm.ainvoke(final_messages)
     
     output_data = result.model_dump(by_alias=True, exclude_none=True)
     updated_store = state["data_store"]
@@ -467,6 +665,9 @@ async def skilled_executor(state: AgentState):
 
     await publish_log(f"[EXECUTOR] {skill_name} finished. Results: {output_data}")
     history_entry = [f"Executed {skill_name}"]
+    if tool_runs:
+        used = ", ".join(sorted({run.get("tool") or "unknown_tool" for run in tool_runs}))
+        history_entry.append(f"Agent tools used: {used}")
     if skill_meta.hitl_enabled:
         history_entry.append(f"Awaiting human review for {skill_name}")
     return {

@@ -50,6 +50,18 @@ async def start_process(req: StartRequest):
         "history": ["Process Started"],
         "thread_id": req.thread_id,
     }
+    # # Ensure a clean slate for this thread_id on every start.
+    # try:
+    #     if hasattr(app, "adelete_state"):
+    #         await app.adelete_state(config)  # type: ignore[attr-defined]
+    #         await publish_log(f"[API] Previous state deleted for thread={req.thread_id}")
+    #     else:
+    #         existing_state = await app.aget_state(config)
+    #         if existing_state:
+    #             await app.aupdate_state(config, initial_state)
+    #             await publish_log(f"[API] Existing state overwritten for thread={req.thread_id}")
+    # except Exception as exc:  # pragma: no cover - defensive
+    #     await publish_log(f"[API] Warning: failed to clear prior state for thread={req.thread_id}: {exc}")
     await publish_log(f"[API] Start requested for thread={req.thread_id}")
     # Run until it hits an END or an INTERRUPT
     result = await app.ainvoke(initial_state, config)
