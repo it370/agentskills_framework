@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agentic Orchestrator Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen p-8">
+    <div class="max-w-6xl mx-auto">
+        <header class="flex justify-between items-center mb-8 border-b border-gray-700 pb-4">
+            <h1 class="text-3xl font-bold text-blue-400">Agentic SOP Monitor</h1>
+            <div id="connectionStatus" class="px-3 py-1 rounded-full text-xs bg-green-900 text-green-300">API Online</div>
+        </header>
+
+        <!-- Live Logs take prominence -->
+        <section class="bg-gray-800 p-6 rounded-lg border border-gray-700 mb-8">
+            <div class="flex items-center justify-between mb-3">
+                <h2 class="text-2xl font-semibold text-green-400">Live Logs</h2>
+                <span class="text-xs text-gray-400">Streaming from server</span>
+            </div>
+            <div id="logStream" class="space-y-2 text-xs text-gray-300 h-80 overflow-y-auto bg-gray-900 p-3 rounded border border-gray-700"></div>
+        </section>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <div class="space-y-6">
+                <section class="bg-gray-800 p-6 rounded-lg border border-gray-700 space-y-3">
+                    <h2 class="text-xl font-semibold">Start New Process</h2>
+                    <input id="threadId" type="text" placeholder="Thread ID (e.g. cand_001)" class="w-full bg-gray-700 p-2 rounded border border-gray-600">
+                    <textarea id="sopInput" placeholder="Layman SOP Logic..." class="w-full bg-gray-700 p-2 rounded h-20 border border-gray-600">Check education and if qualified check criminal records.</textarea>
+                    <div>
+                        <div class="flex items-center justify-between mb-1">
+                            <label class="text-sm text-gray-300">Initial Data (JSON)</label>
+                            <span class="text-xs text-gray-500">Edit to change inputs</span>
+                        </div>
+                        <textarea id="initialDataInput" class="w-full bg-gray-900 text-green-200 font-mono p-3 rounded border border-gray-700 h-40" spellcheck="false">{
+  "cv_text": "Masters in CS, 2020. Name: Alice Smith. DOB: 1992-05-12",
+  "full_name": "Alice Smith"
+}</textarea>
+<!-- ,  "dob": "1992-05-12" -->
+                    </div>
+                    <button onclick="startProcess()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 rounded transition">Start Agent</button>
+                </section>
+
+                <section class="bg-gray-800 p-6 rounded-lg border border-gray-700">
+                    <h2 class="text-xl font-semibold mb-4">Execution History</h2>
+                    <div id="historyList" class="space-y-2 text-sm text-gray-400 h-64 overflow-y-auto"></div>
+                </section>
+
+            </div>
+
+            <div class="lg:col-span-2 space-y-6">
+                <section class="bg-gray-800 p-6 rounded-lg border border-gray-700 min-h-[400px]">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-xl font-semibold text-yellow-500">Current Blackboard (Data Store)</h2>
+                        <div class="flex items-center gap-2">
+                            <span id="hitlBadge" class="hidden bg-red-600 text-white text-xs px-2 py-1 rounded pulse animate-pulse">AWAITING APPROVAL</span>
+                            <button id="hitlOpenBtn" onclick="openHitlModal()" class="hidden text-xs bg-red-700 hover:bg-red-600 text-white px-2 py-1 rounded">Open HITL</button>
+                        </div>
+                    </div>
+                    <textarea id="dataEditor" class="w-full h-96 bg-black text-green-400 font-mono p-4 rounded border border-gray-700 focus:border-blue-500 outline-none" spellcheck="false"></textarea>
+                </section>
+            </div>
+        </div>
+    </div>
+
+    <!-- HITL Modal -->
+    <div id="hitlModal" class="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 hidden">
+        <div class="bg-gray-900 border border-gray-700 rounded-lg shadow-xl max-w-3xl w-full mx-4">
+            <div class="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+                <h3 class="text-lg font-semibold text-red-400">Human-in-the-Loop Required</h3>
+                <button onclick="closeHitlModal()" class="text-gray-400 hover:text-gray-200 text-xl leading-none">&times;</button>
+            </div>
+            <div class="p-6 space-y-4">
+                <div class="flex flex-col gap-1 text-sm text-gray-300">
+                    <div id="hitlAgentLabel" class="font-semibold text-white"></div>
+                    <div id="hitlResumeLabel" class="text-gray-400 text-xs"></div>
+                </div>
+                <p class="text-sm text-gray-300">Review and optionally edit the blackboard, then approve to continue.</p>
+                <textarea id="hitlEditor" class="w-full h-64 bg-black text-green-400 font-mono p-4 rounded border border-gray-700 focus:border-blue-500 outline-none" spellcheck="false"></textarea>
+            </div>
+            <div class="px-6 py-4 border-t border-gray-800 flex gap-4">
+                <button onclick="approveStep(true)" class="flex-1 bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded">Approve & Continue</button>
+                <button onclick="approveStep(false)" class="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded">Approve with Changes</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = "http://localhost:8000";
+        const WS_BASE = "ws://localhost:8000";
+        let currentThread = "";
+        let logSocket = null;
+        let lastStore = {};
+        let lastActiveSkill = "";
+        let lastResumeTarget = "planner";
+
+        async function startProcess() {
+            currentThread = document.getElementById('threadId').value;
+            if (!currentThread) {
+                currentThread = `thread_${Date.now()}`;
+                document.getElementById('threadId').value = currentThread;
+            }
+            const sop = document.getElementById('sopInput').value;
+            let initialData;
+            try {
+                initialData = JSON.parse(document.getElementById('initialDataInput').value || "{}");
+            } catch (e) {
+                alert("Initial Data must be valid JSON");
+                return;
+            }
+            console.log("[UI] Starting process", { currentThread, sop, initialData });
+            const response = await fetch(`${API_BASE}/start`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    thread_id: currentThread,
+                    sop: sop,
+                    initial_data: initialData
+                })
+            });
+            console.log("[UI] Start response status", response.status);
+            pollStatus();
+            ensureLogSocket();
+        }
+
+        async function pollStatus() {
+            if (!currentThread) return;
+            let data;
+            try {
+                const res = await fetch(`${API_BASE}/status/${currentThread}`);
+                if (!res.ok) throw new Error(`Status fetch failed: ${res.status}`);
+                data = await res.json();
+            } catch (e) {
+                console.error(e);
+                document.getElementById('dataEditor').value = "{}";
+                return;
+            }
+            console.log("[UI] Status payload", data);
+
+            // Update Data Editor
+            const store = data.data ?? {};
+            console.log("[UI] Rendering data store", store);
+            lastStore = store;
+            document.getElementById('dataEditor').value = JSON.stringify(store, null, 2);
+            
+            // Update History
+            const historyDiv = document.getElementById('historyList');
+            historyDiv.innerHTML = data.history.map(h => `<div class="border-l-2 border-blue-500 pl-2 py-1 bg-gray-700/30">${h}</div>`).reverse().join('');
+
+            // Show HITL modal if paused or at human_review
+            const badge = document.getElementById('hitlBadge');
+            const modal = document.getElementById('hitlModal');
+            const hitlEditor = document.getElementById('hitlEditor');
+            const hitlAgentLabel = document.getElementById('hitlAgentLabel');
+            const hitlResumeLabel = document.getElementById('hitlResumeLabel');
+            const awaitingHuman = data.is_human_review || (data.next_node || []).includes("human_review");
+            const paused = data.is_paused || awaitingHuman;
+            const inferredSkill = data.active_skill || inferHitlSkillFromHistory(data.history);
+            lastActiveSkill = inferredSkill || "";
+            lastResumeTarget = (data.next_node && data.next_node.includes("human_review")) ? "planner" : ((data.next_node || [])[0] || "planner");
+            if (paused) {
+                badge.classList.remove('hidden');
+                document.getElementById('hitlOpenBtn').classList.remove('hidden');
+                hitlEditor.value = JSON.stringify(store, null, 2);
+                hitlAgentLabel.textContent = inferredSkill ? `Triggered by: ${inferredSkill}` : "Triggered by: Unknown skill";
+                hitlResumeLabel.textContent = `On approval: resumes at ${lastResumeTarget}`;
+                modal.classList.remove('hidden');
+            } else {
+                badge.classList.add('hidden');
+                document.getElementById('hitlOpenBtn').classList.add('hidden');
+                modal.classList.add('hidden');
+                // Keep polling if not finished
+                if ((data.next_node && data.next_node.length > 0) || (data.history && data.history[data.history.length-1] && data.history[data.history.length-1].includes("Started"))) {
+                    setTimeout(pollStatus, 2000);
+                }
+            }
+        }
+
+        async function approveStep(simple) {
+            let body = null;
+            if (!simple) {
+                try {
+                    body = JSON.parse(document.getElementById('hitlEditor').value || document.getElementById('dataEditor').value);
+                } catch (e) {
+                    alert("Invalid JSON in editor!");
+                    return;
+                }
+            }
+
+            // Close immediately without waiting for server
+            document.getElementById('hitlModal').classList.add('hidden');
+            document.getElementById('hitlBadge').classList.add('hidden');
+            document.getElementById('hitlOpenBtn').classList.add('hidden');
+
+            await fetch(`${API_BASE}/approve/${currentThread}`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: body ? JSON.stringify(body) : null
+            });
+            
+            setTimeout(pollStatus, 1000);
+        }
+
+        function closeHitlModal() {
+            document.getElementById('hitlModal').classList.add('hidden');
+        }
+
+        // --- Live log stream over WebSocket ---
+        function ensureLogSocket() {
+            if (logSocket && logSocket.readyState === WebSocket.OPEN) return;
+            try {
+                logSocket = new WebSocket(`${WS_BASE}/ws/logs`);
+                logSocket.onmessage = (event) => {
+                    const logDiv = document.getElementById('logStream');
+                    const entry = document.createElement('div');
+                    entry.className = "text-xs text-gray-300 bg-gray-800 border border-gray-700 rounded px-2 py-1";
+                    entry.textContent = event.data;
+                    if (event.data.toLowerCase().includes("hitl")) {
+                        entry.classList.add("cursor-pointer", "border-red-500", "shadow");
+                        entry.onclick = () => openHitlModal();
+                    }
+                    logDiv.appendChild(entry);
+                    // Keep to ~200 entries to avoid DOM bloat
+                    while (logDiv.children.length > 200) {
+                        logDiv.removeChild(logDiv.firstChild);
+                    }
+                    // Auto-scroll to bottom like a chat window
+                    logDiv.scrollTop = logDiv.scrollHeight;
+                };
+                logSocket.onerror = (e) => console.error("Log socket error", e);
+                logSocket.onclose = () => {
+                    setTimeout(ensureLogSocket, 2000);
+                };
+            } catch (e) {
+                console.error("WebSocket init failed", e);
+            }
+        }
+
+        // Initialize log socket on load
+        ensureLogSocket();
+
+        function openHitlModal() {
+            const modal = document.getElementById('hitlModal');
+            const badge = document.getElementById('hitlBadge');
+            const hitlEditor = document.getElementById('hitlEditor');
+            const hitlAgentLabel = document.getElementById('hitlAgentLabel');
+            const hitlResumeLabel = document.getElementById('hitlResumeLabel');
+            badge.classList.remove('hidden');
+            hitlEditor.value = JSON.stringify(lastStore ?? {}, null, 2);
+            hitlAgentLabel.textContent = lastActiveSkill ? `Triggered by: ${lastActiveSkill}` : "Triggered by: Unknown skill";
+            hitlResumeLabel.textContent = `On approval: resumes at ${lastResumeTarget}`;
+            modal.classList.remove('hidden');
+        }
+
+        function inferHitlSkillFromHistory(history = []) {
+            if (!history || !history.length) return "";
+            for (let i = history.length - 1; i >= 0; i--) {
+                const h = history[i];
+                const m = h.match(/Awaiting human review for (.+)/i);
+                if (m) return m[1];
+                const e = h.match(/Executed (\w+)/i);
+                if (e) return e[1];
+            }
+            return "";
+        }
+    </script>
+</body>
+</html>
