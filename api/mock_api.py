@@ -104,7 +104,7 @@ async def get_wnfe_list(limit: int = 9):
     return json_response(result)
 
 
-@router.get("/order/{order_number}")
+@router.get("/orders/{order_number}")
 def get_order_details(order_number: str):
 
     # Accept any given 8 digit number for mock; lightly validate format.

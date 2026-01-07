@@ -41,8 +41,8 @@ def _load_env_once() -> None:
     mongo_db = os.getenv("MONGODB_DB", "").strip()
     print(
         "[mongo.py] env loaded: "
-        f"{', '.join(str(p) for p in loaded) if loaded else 'none found'}; "
-        f"MONGODB_URI={'(empty)' if not mongo_uri else mongo_uri}; "
+        # f"{', '.join(str(p) for p in loaded) if loaded else 'none found'}; "
+        # f"MONGODB_URI={'(empty)' if not mongo_uri else mongo_uri}; "
         f"MONGODB_DB={'(empty)' if not mongo_db else mongo_db}"
     )
     _ENV_LOADED = True
