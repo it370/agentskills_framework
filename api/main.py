@@ -119,22 +119,22 @@ async def start_process(req: StartRequest):
         "history": ["Process Started"],
         "thread_id": req.thread_id,
     }
-    # # Ensure a clean slate for this thread_id on every start.
-    # try:
-    #     if hasattr(app, "adelete_state"):
-    #         await app.adelete_state(config)  # type: ignore[attr-defined]
-    #         await publish_log(f"[API] Previous state deleted for thread={req.thread_id}")
-    #     else:
-    #         existing_state = await app.aget_state(config)
-    #         if existing_state:
-    #             await app.aupdate_state(config, initial_state)
-    #             await publish_log(f"[API] Existing state overwritten for thread={req.thread_id}")
-    # except Exception as exc:  # pragma: no cover - defensive
-    #     await publish_log(f"[API] Warning: failed to clear prior state for thread={req.thread_id}: {exc}")
     await publish_log(f"[API] Start requested for thread={req.thread_id}")
-    # Run until it hits an END or an INTERRUPT
-    result = await app.ainvoke(initial_state, config)
-    return {"status": "running_or_paused", "state": result}
+    
+    # Run the workflow in the background to avoid blocking the response
+    asyncio.create_task(_run_workflow(initial_state, config))
+    
+    return {"status": "started", "thread_id": req.thread_id}
+
+
+async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any]):
+    """Run workflow in background without blocking the start endpoint."""
+    thread_id = config.get("configurable", {}).get("thread_id", "unknown")
+    try:
+        await app.ainvoke(initial_state, config)
+        await publish_log(f"[API] Workflow completed for thread={thread_id}")
+    except Exception as exc:
+        await publish_log(f"[API] Workflow error for thread={thread_id}: {exc}")
 
 @api.get("/status/{thread_id}")
 async def get_status(thread_id: str):
