@@ -6,4 +6,5 @@ pydantic
 python-dotenv
 pyyaml
 httpx
+pymongo
 
