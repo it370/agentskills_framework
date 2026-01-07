@@ -16,8 +16,11 @@ produces:
   - is_qualified
 hitl_enabled: false
 prompt: Optional override instructions (or supply via prompt.md)
+system_prompt: Optional business SOPs / policies (defaults to body content)
 ---
 ```
+
+Body content: Anything after the frontmatter in `skill.md` is used as the skill’s system prompt (SOPs, policies, directives). If `system_prompt` is set in frontmatter, it wins; otherwise the body is used. Keep `prompt.md` focused on task-level instructions.
 
 Nested data: `requires` and `produces` can use dot-notation paths to read/write inside JSON blobs, e.g. `previousAgentOutput.recession_data.amount`. Paths are resolved when planning, passing inputs to skills, and storing outputs.
 

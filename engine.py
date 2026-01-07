@@ -8,7 +8,7 @@ import httpx
 
 import yaml
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -29,7 +29,8 @@ class Skill(BaseModel):
     produces: Set[str]
     optional_produces: Set[str] = set()
     hitl_enabled: bool = False
-    prompt: Optional[str] = None
+    prompt: Optional[str] = None          # task/user intent prompt
+    system_prompt: Optional[str] = None   # business SOPs / policies
     executor: str = "llm"  # "llm" (default) or "rest"
     rest: Optional[RestConfig] = None
 
@@ -38,16 +39,23 @@ class PlannerDecision(BaseModel):
     reasoning: str = Field(description="Reasoning for the decision")
 
 # --- Skill Loader (Markdown-based, Anthropic-style registry) ---
-def _extract_frontmatter(md_text: str) -> Dict[str, Any]:
+def _parse_skill_md(md_text: str) -> tuple[Dict[str, Any], str]:
     lines = md_text.splitlines()
     if not lines or lines[0].strip() != "---":
         raise ValueError("Skill file must start with frontmatter delimited by '---'.")
 
+    end_idx = None
     for idx in range(1, len(lines)):
         if lines[idx].strip() == "---":
-            frontmatter = "\n".join(lines[1:idx])
-            return yaml.safe_load(frontmatter) or {}
-    raise ValueError("Skill file frontmatter must be closed with '---'.")
+            end_idx = idx
+            break
+    if end_idx is None:
+        raise ValueError("Skill file frontmatter must be closed with '---'.")
+
+    frontmatter = "\n".join(lines[1:end_idx])
+    meta = yaml.safe_load(frontmatter) or {}
+    body = "\n".join(lines[end_idx + 1:]).strip()
+    return meta, body
 
 
 def _coerce_set(value: Any, field_name: str) -> Set[str]:
@@ -68,7 +76,7 @@ def load_skill_registry(skills_dir: Optional[Path] = None) -> List[Skill]:
 
     def register_skill(md_file: Path):
         raw = md_file.read_text(encoding="utf-8")
-        meta = _extract_frontmatter(raw)
+        meta, body_text = _parse_skill_md(raw)
 
         prompt_text = meta.get("prompt")
         prompt_file = md_file.parent / "prompt.md"
@@ -76,6 +84,11 @@ def load_skill_registry(skills_dir: Optional[Path] = None) -> List[Skill]:
             prompt_candidate = prompt_file.read_text(encoding="utf-8").strip()
             if prompt_candidate:
                 prompt_text = prompt_candidate
+
+        system_prompt = (meta.get("system_prompt") or "").strip()
+        if not system_prompt and body_text:
+            # Use the body of skill.md as the default system prompt/SOPs.
+            system_prompt = body_text
 
         try:
             name = meta["name"]
@@ -108,6 +121,7 @@ def load_skill_registry(skills_dir: Optional[Path] = None) -> List[Skill]:
                 optional_produces=optional_produces,
                 hitl_enabled=hitl_enabled,
                 prompt=prompt_text,
+                system_prompt=system_prompt or None,
                 executor=executor,
                 rest=rest_cfg,
             )
@@ -433,7 +447,18 @@ async def skilled_executor(state: AgentState):
     
     # We pass the relevant data and the SOP context
     prompt_text = skill_meta.prompt or f"Process this input to produce: {', '.join(sorted(skill_meta.produces))}."
-    result = await llm.ainvoke(f"{prompt_text}\nContext: {state['layman_sop']}\nInput: {input_ctx}")
+    system_prompt = skill_meta.system_prompt
+
+    messages: List[BaseMessage] = []
+    if system_prompt:
+        messages.append(SystemMessage(content=system_prompt))
+    messages.append(
+        HumanMessage(
+            content=f"{prompt_text}\nContext: {state['layman_sop']}\nInput: {input_ctx}"
+        )
+    )
+
+    result = await llm.ainvoke(messages)
     
     output_data = result.model_dump(by_alias=True, exclude_none=True)
     updated_store = state["data_store"]
