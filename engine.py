@@ -761,9 +761,10 @@ class _AsyncPostgresSaver(PostgresSaver):
         return result
 
     async def alist(self, config, *, filter=None, before=None, limit=None):
-        items = await asyncio.to_thread(
-            lambda: list(super().list(config, filter=filter, before=before, limit=limit))
-        )
+        def _list_sync():
+            return list(PostgresSaver.list(self, config, filter=filter, before=before, limit=limit))
+        
+        items = await asyncio.to_thread(_list_sync)
         for item in items:
             yield item
 

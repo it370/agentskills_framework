@@ -20,18 +20,28 @@ from env_loader import load_env_once
 from admin_events import broadcast_run_event, register_admin, unregister_admin
 
 ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
-origin_regex = ".*" if "*" in ALLOWED_ORIGINS else None
 
 api = FastAPI(title="Agentic SOP Orchestrator")
-api.add_middleware(
-    CORSMiddleware,
-    allow_origins=[] if origin_regex else ALLOWED_ORIGINS,
-    allow_origin_regex=origin_regex,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    allow_credentials=True,
-    expose_headers=["*"],
-)
+
+# CORS: allow all for dev, or specific origins from env
+if "*" in ALLOWED_ORIGINS:
+    api.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+        allow_credentials=False,  # Cannot be True with allow_origins=["*"]
+        expose_headers=["*"],
+    )
+else:
+    api.add_middleware(
+        CORSMiddleware,
+        allow_origins=ALLOWED_ORIGINS,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        allow_credentials=True,
+        expose_headers=["*"],
+    )
 
 # Mock endpoints for hardcoded data (sandbox/testing)
 api.include_router(mock_router)
