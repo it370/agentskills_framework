@@ -7,6 +7,7 @@ requires:
 produces:
   - criminal_status
   - risk_score
+  - scoresheet.risk.final_score
 hitl_enabled: true
 ---
 

@@ -3,7 +3,7 @@ import json
 import asyncio
 from pathlib import Path
 from typing import Annotated, TypedDict, Union, List, Dict, Any, Set, Optional, Type
-from pydantic import BaseModel, Field, ValidationError, create_model
+from pydantic import BaseModel, Field, ValidationError, create_model, ConfigDict
 import httpx
 
 import yaml
@@ -158,19 +158,44 @@ def _structured_llm(schema: Type[BaseModel], *, temperature: float = 0):
     )
 
 
+def _iter_available_paths(obj: Any, prefix: str = "") -> Set[str]:
+    """
+    Recursively collect dot-notation paths for all present (non-empty) values.
+    Skips internal keys starting with underscore.
+    """
+    paths: Set[str] = set()
+
+    def _is_present(val: Any) -> bool:
+        if val is None:
+            return False
+        if isinstance(val, str) and not val.strip():
+            return False
+        return True
+
+    if isinstance(obj, dict):
+        for key, val in obj.items():
+            if str(key).startswith("_"):
+                continue
+            new_prefix = key if not prefix else f"{prefix}.{key}"
+            if _is_present(val):
+                paths.add(new_prefix)
+            paths.update(_iter_available_paths(val, new_prefix))
+    elif isinstance(obj, list):
+        for idx, val in enumerate(obj):
+            new_prefix = f"{prefix}.{idx}" if prefix else str(idx)
+            if _is_present(val):
+                paths.add(new_prefix)
+            paths.update(_iter_available_paths(val, new_prefix))
+    return paths
+
+
 def _available_keys(store: Dict[str, Any]) -> Set[str]:
     """
     Treat missing/empty values as unavailable. Booleans and zeros are valid.
     Strings that are None or empty/whitespace are treated as missing.
+    Returns dot-notation paths for nested objects so planners can gate on them.
     """
-    present: Set[str] = set()
-    for k, v in store.items():
-        if v is None:
-            continue
-        if isinstance(v, str) and not v.strip():
-            continue
-        present.add(k)
-    return present
+    return _iter_available_paths(store)
 
 
 def _last_executed(history: List[str]) -> Optional[str]:
@@ -179,6 +204,56 @@ def _last_executed(history: List[str]) -> Optional[str]:
         if entry.startswith("Executed "):
             return entry.replace("Executed ", "", 1)
     return None
+
+
+def _get_path_value(data: Dict[str, Any], path: str) -> Any:
+    """Return value at dot-notation path; supports numeric list indices."""
+    parts = path.split(".")
+    cur: Any = data
+    for part in parts:
+        if isinstance(cur, dict):
+            cur = cur.get(part)
+        elif isinstance(cur, list) and part.isdigit():
+            idx = int(part)
+            if idx >= len(cur):
+                return None
+            cur = cur[idx]
+        else:
+            return None
+    return cur
+
+
+def _set_path_value(data: Dict[str, Any], path: str, value: Any) -> Dict[str, Any]:
+    """
+    Return a new dict with the value set at the given dot-notation path.
+    Creates intermediate dicts as needed; overwrites non-dict intermediates.
+    """
+    parts = path.split(".")
+
+    def _set(obj: Any, idx: int) -> Any:
+        if idx == len(parts):
+            return value
+        key = parts[idx]
+        base = dict(obj) if isinstance(obj, dict) else {}
+        next_obj = base.get(key, {})
+        base[key] = _set(next_obj if isinstance(next_obj, dict) else {}, idx + 1)
+        return base
+
+    return _set(data if isinstance(data, dict) else {}, 0)
+
+
+def _deep_merge_dict(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Recursively merge incoming into base without mutating inputs.
+    Dicts merge deeply; other types (including lists) overwrite.
+    """
+    result = dict(base) if isinstance(base, dict) else {}
+    for key, val in incoming.items():
+        if key in result and isinstance(result[key], dict) and isinstance(val, dict):
+            result[key] = _deep_merge_dict(result[key], val)
+        else:
+            result[key] = val
+    return result
 
 
 def _rest_pending(store: Dict[str, Any]) -> Set[str]:
@@ -325,12 +400,12 @@ async def skilled_executor(state: AgentState):
     await publish_log(f"[EXECUTOR] Running {skill_name}...")
     
     present_keys = _available_keys(state["data_store"])
-    missing_inputs = skill_meta.requires - present_keys
+    missing_inputs = {req for req in skill_meta.requires if req not in present_keys}
     if missing_inputs:
         missing_list = ", ".join(sorted(missing_inputs))
         raise RuntimeError(f"{skill_name} cannot run. Missing required inputs: {missing_list}")
     
-    input_ctx = {k: state["data_store"].get(k) for k in skill_meta.requires}
+    input_ctx = {k: _get_path_value(state["data_store"], k) for k in skill_meta.requires}
 
     # REST executor path: fire-and-pause until callback arrives.
     if skill_meta.executor == "rest":
@@ -338,10 +413,18 @@ async def skilled_executor(state: AgentState):
 
     # Dynamic Schema: In reality, read ## OUTPUT SCHEMA from an MD file
     # Here we simulate the fields based on skill_meta.produces
-    fields = {k: (Any, ...) for k in skill_meta.produces}
+    def _field_name(path: str) -> str:
+        return path.replace(".", "__")
+
+    fields = { _field_name(k): (Any, Field(..., alias=k)) for k in skill_meta.produces }
     for opt in skill_meta.optional_produces:
-        fields[opt] = (Optional[Any], None)
-    DynamicModel = create_model("Output", **fields)
+        fields[_field_name(opt)] = (Optional[Any], Field(default=None, alias=opt))
+
+    DynamicModel = create_model(
+        "Output",
+        __config__=ConfigDict(populate_by_name=True),
+        **fields,
+    )
     
     llm = _structured_llm(DynamicModel)
     
@@ -352,12 +435,17 @@ async def skilled_executor(state: AgentState):
     prompt_text = skill_meta.prompt or f"Process this input to produce: {', '.join(sorted(skill_meta.produces))}."
     result = await llm.ainvoke(f"{prompt_text}\nContext: {state['layman_sop']}\nInput: {input_ctx}")
     
-    await publish_log(f"[EXECUTOR] {skill_name} finished. Results: {result.dict()}")
+    output_data = result.model_dump(by_alias=True, exclude_none=True)
+    updated_store = state["data_store"]
+    for path, val in output_data.items():
+        updated_store = _set_path_value(updated_store, path, val)
+
+    await publish_log(f"[EXECUTOR] {skill_name} finished. Results: {output_data}")
     history_entry = [f"Executed {skill_name}"]
     if skill_meta.hitl_enabled:
         history_entry.append(f"Awaiting human review for {skill_name}")
     return {
-        "data_store": {**state["data_store"], **result.dict()},
+        "data_store": updated_store,
         "history": history_entry
     }
 

@@ -6,7 +6,7 @@ from fastapi import Body, FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.websockets import WebSocketDisconnect
 from pydantic import BaseModel
-from engine import AgentState, app
+from engine import AgentState, app, _deep_merge_dict
 import log_stream
 from log_stream import publish_log, emit_log
 
@@ -103,7 +103,7 @@ async def rest_callback(req: CallbackPayload):
 
     await publish_log(f"[CALLBACK] Received results for thread={req.thread_id}, skill={req.skill}")
 
-    merged = {**data_store, **req.data}
+    merged = _deep_merge_dict(data_store, req.data)
     # Clear pending REST marker if present
     if "_rest_pending" in merged:
         pending = set(merged.get("_rest_pending") or [])

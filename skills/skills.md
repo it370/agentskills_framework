@@ -19,6 +19,8 @@ prompt: Optional override instructions (or supply via prompt.md)
 ---
 ```
 
+Nested data: `requires` and `produces` can use dot-notation paths to read/write inside JSON blobs, e.g. `previousAgentOutput.recession_data.amount`. Paths are resolved when planning, passing inputs to skills, and storing outputs.
+
 Optional: `prompt.md` in the same folder to provide custom executor prompt.
 
 Everything after the closing `---` in `skill.md` is free-form documentation for humans and
