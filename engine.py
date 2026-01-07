@@ -736,8 +736,29 @@ class _AsyncPostgresSaver(PostgresSaver):
     Uses a thread to avoid blocking the event loop while keeping DB persistence.
     """
 
+    def _notify(self, payload: Dict[str, Any]):
+        """Send a NOTIFY to Postgres; best-effort (errors are logged, not raised)."""
+        try:
+            with self.conn.connection() as conn:  # type: ignore[attr-defined]
+                with conn.cursor() as cur:
+                    cur.execute("SELECT pg_notify('run_events', %s)", (json.dumps(payload),))
+        except Exception as exc:  # pragma: no cover - defensive
+            emit_log(f"[CHECKPOINTER] Failed to emit run_events notify: {exc}")
+
     async def aget_tuple(self, config):
         return await asyncio.to_thread(super().get_tuple, config)
+
+    def put(self, config, checkpoint, metadata, new_versions):
+        result = super().put(config, checkpoint, metadata, new_versions)
+        thread_id = config.get("configurable", {}).get("thread_id")
+        payload = {
+            "thread_id": thread_id,
+            "checkpoint_id": checkpoint.get("id"),
+            "checkpoint_ns": config.get("configurable", {}).get("checkpoint_ns", ""),
+            "metadata": metadata,
+        }
+        self._notify(payload)
+        return result
 
     async def alist(self, config, *, filter=None, before=None, limit=None):
         items = await asyncio.to_thread(
@@ -747,9 +768,18 @@ class _AsyncPostgresSaver(PostgresSaver):
             yield item
 
     async def aput(self, config, checkpoint, metadata, new_versions):
-        return await asyncio.to_thread(
+        result = await asyncio.to_thread(
             super().put, config, checkpoint, metadata, new_versions
         )
+        thread_id = config.get("configurable", {}).get("thread_id")
+        payload = {
+            "thread_id": thread_id,
+            "checkpoint_id": checkpoint.get("id"),
+            "checkpoint_ns": config.get("configurable", {}).get("checkpoint_ns", ""),
+            "metadata": metadata,
+        }
+        await asyncio.to_thread(self._notify, payload)
+        return result
 
     async def aput_writes(self, config, writes, task_id, task_path=""):
         return await asyncio.to_thread(

@@ -6,10 +6,16 @@ from fastapi import Body, FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.websockets import WebSocketDisconnect
 from pydantic import BaseModel
-from engine import AgentState, app, _deep_merge_dict
+from engine import AgentState, app, _deep_merge_dict, checkpointer, _safe_serialize, _get_env_value
 import log_stream
 from log_stream import publish_log, emit_log
 from .mock_api import router as mock_router
+import psycopg
+import json
+import asyncio
+from pathlib import Path
+from env_loader import load_env_once
+from admin_events import broadcast_run_event, register_admin, unregister_admin
 
 api = FastAPI(title="Agentic SOP Orchestrator")
 api.add_middleware(
@@ -24,17 +30,55 @@ api.include_router(mock_router)
 
 
 broadcast_task = None
+run_event_listener_task = None
+async def _run_event_listener(db_uri: str):
+    try:
+        async with await psycopg.AsyncConnection.connect(db_uri, autocommit=True) as conn:
+            await conn.execute("LISTEN run_events")
+            emit_log("[ADMIN] Listening for Postgres run_events notifications.")
+            async for notify in conn.notifies():
+                try:
+                    payload = json.loads(notify.payload)
+                except Exception:
+                    payload = {"raw": notify.payload}
+                await broadcast_run_event(payload)
+    except asyncio.CancelledError:  # graceful shutdown
+        emit_log("[ADMIN] Run event listener cancelled.")
+    except Exception as exc:  # pragma: no cover - defensive
+        emit_log(f"[ADMIN] Run event listener stopped due to error: {exc}")
+
+
+async def _maybe_start_run_event_listener():
+    global run_event_listener_task
+    if run_event_listener_task and not run_event_listener_task.done():
+        return
+    load_env_once(Path(__file__).resolve().parents[1])
+    db_uri = _get_env_value("DATABASE_URL", "")
+    if not db_uri:
+        emit_log("[ADMIN] DATABASE_URL not set; run event listener disabled.")
+        return
+    run_event_listener_task = asyncio.create_task(_run_event_listener(db_uri))
+
+
+async def _stop_run_event_listener():
+    global run_event_listener_task
+    if run_event_listener_task and not run_event_listener_task.done():
+        run_event_listener_task.cancel()
+        try:
+            await run_event_listener_task
+        except asyncio.CancelledError:
+            pass
 
 
 @api.on_event("startup")
 async def _start_broadcast():
     # No background loop needed; publish is immediate. Placeholder for future.
-    pass
+    await _maybe_start_run_event_listener()
 
 
 @api.on_event("shutdown")
 async def _stop_broadcast():
-    pass
+    await _stop_run_event_listener()
 
 class StartRequest(BaseModel):
     thread_id: str
@@ -105,6 +149,50 @@ class CallbackPayload(BaseModel):
     skill: str
     data: Dict[str, Any]
     error: Optional[str] = None
+
+
+def _serialize_checkpoint_tuple(cp_tuple):
+    """Convert a CheckpointTuple into a JSON-serializable dict."""
+    return {
+        "config": cp_tuple.config,
+        "checkpoint": cp_tuple.checkpoint,
+        "metadata": cp_tuple.metadata,
+        "parent_config": cp_tuple.parent_config,
+        "pending_writes": cp_tuple.pending_writes,
+    }
+
+
+@api.get("/admin/runs")
+async def list_runs(limit: int = 50):
+    cp = checkpointer
+    runs = []
+    try:
+        if hasattr(cp, "alist"):
+            async for tup in cp.alist(None, limit=limit):
+                runs.append(_serialize_checkpoint_tuple(tup))
+        else:
+            for tup in cp.list(None, limit=limit):  # type: ignore[attr-defined]
+                runs.append(_serialize_checkpoint_tuple(tup))
+    except NotImplementedError:
+        pass
+    return {"runs": runs}
+
+
+@api.get("/admin/runs/{thread_id}")
+async def run_detail(thread_id: str):
+    cp = checkpointer
+    config = {"configurable": {"thread_id": thread_id}}
+    cp_tuple = None
+    try:
+        if hasattr(cp, "aget_tuple"):
+            cp_tuple = await cp.aget_tuple(config)  # type: ignore[attr-defined]
+    except NotImplementedError:
+        cp_tuple = None
+    if cp_tuple is None and hasattr(cp, "get_tuple"):
+        cp_tuple = cp.get_tuple(config)  # type: ignore[attr-defined]
+    if cp_tuple is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return _serialize_checkpoint_tuple(cp_tuple)
 
 @api.post("/callback")
 async def rest_callback(req: CallbackPayload):
@@ -194,6 +282,18 @@ async def websocket_logs(websocket: WebSocket):
             await websocket.receive_text()
     except WebSocketDisconnect:
         await log_stream.unregister(websocket)
+
+
+@api.websocket("/ws/admin")
+async def websocket_admin(websocket: WebSocket):
+    await websocket.accept()
+    await register_admin(websocket)
+    try:
+        while True:
+            # Keep the connection open; clients need not send data.
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        await unregister_admin(websocket)
 
 if __name__ == "__main__":
     import uvicorn
