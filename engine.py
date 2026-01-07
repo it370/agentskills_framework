@@ -12,6 +12,9 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AI
 from langchain_core.tools import tool
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.postgres import PostgresSaver
+from psycopg_pool import ConnectionPool
+from env_loader import load_env_once
 
 from log_stream import publish_log, emit_log
 
@@ -188,6 +191,15 @@ def _require_openai_api_key() -> str:
             "Missing OPENAI_API_KEY. Set it in your environment or .env before running."
         )
     return key
+
+
+def _get_env_value(key: str, default: str = "") -> str:
+    """Fetch an env var and fall back when unset or blank."""
+    value = os.getenv(key)
+    if value is None:
+        return default
+    value = value.strip()
+    return value if value else default
 
 
 def _structured_llm(schema: Type[BaseModel], *, temperature: float = 0):
@@ -718,5 +730,72 @@ workflow.add_conditional_edges("executor", route_post_exec, {
 workflow.add_edge("human_review", "planner")
 workflow.add_edge("await_callback", "planner")
 
-memory = MemorySaver()
-app = workflow.compile(checkpointer=memory, interrupt_before=["human_review", "await_callback"])
+class _AsyncPostgresSaver(PostgresSaver):
+    """
+    Thin async wrapper around the sync PostgresSaver.
+    Uses a thread to avoid blocking the event loop while keeping DB persistence.
+    """
+
+    async def aget_tuple(self, config):
+        return await asyncio.to_thread(super().get_tuple, config)
+
+    async def alist(self, config, *, filter=None, before=None, limit=None):
+        items = await asyncio.to_thread(
+            lambda: list(super().list(config, filter=filter, before=before, limit=limit))
+        )
+        for item in items:
+            yield item
+
+    async def aput(self, config, checkpoint, metadata, new_versions):
+        return await asyncio.to_thread(
+            super().put, config, checkpoint, metadata, new_versions
+        )
+
+    async def aput_writes(self, config, writes, task_id, task_path=""):
+        return await asyncio.to_thread(
+            super().put_writes, config, writes, task_id, task_path
+        )
+
+    async def adelete_thread(self, thread_id):
+        await asyncio.to_thread(super().delete_thread, thread_id)
+
+
+def _use_postgres_checkpointer() -> bool:
+    flag = os.getenv("USE_POSTGRES_CHECKPOINTS", "true").lower()
+    return flag in {"1", "true", "yes", "on"}
+
+
+def _build_checkpointer():
+    """
+    Create the checkpointer with a safe fallback to in-memory storage.
+    Postgres Saver is sync-only; we adapt it for async usage to avoid event loop blocking.
+    """
+    if not _use_postgres_checkpointer():
+        emit_log("[CHECKPOINTER] Using in-memory checkpoints (Postgres disabled).")
+        return MemorySaver()
+
+    # Ensure env files are loaded before reading DATABASE_URL
+    load_env_once(Path(__file__).resolve().parent)
+    DB_URI = _get_env_value("DATABASE_URL", "")
+    if not DB_URI:
+        raise ValueError("DB_URI is not set")
+    connection_kwargs = {
+        "autocommit": True,
+        "prepare_threshold": 0,
+    }
+
+
+    try:
+        pool = ConnectionPool(conninfo=DB_URI, max_size=20, kwargs=connection_kwargs)
+        checkpointer = _AsyncPostgresSaver(pool)
+        checkpointer.setup()
+        emit_log("[CHECKPOINTER] Postgres checkpointer initialized.")
+        return checkpointer
+    except Exception as exc:
+        emit_log(f"[CHECKPOINTER] Postgres checkpointer unavailable; falling back to memory. Reason: {exc}")
+        return MemorySaver()
+
+
+# Compile graph with async-friendly checkpointer (Postgres if available, else Memory)
+checkpointer = _build_checkpointer()
+app = workflow.compile(checkpointer=checkpointer, interrupt_before=["human_review", "await_callback"])
