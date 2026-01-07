@@ -1,73 +1,88 @@
+import os
 import asyncio
+import threading
+import json
 from typing import Any, Dict, Optional
+from pathlib import Path
 
 import httpx
 from fastapi import Body, FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.websockets import WebSocketDisconnect
 from pydantic import BaseModel
+from psycopg import Connection as SyncConnection
+
 from engine import AgentState, app, _deep_merge_dict, checkpointer, _safe_serialize, _get_env_value
 import log_stream
 from log_stream import publish_log, emit_log
 from .mock_api import router as mock_router
-import psycopg
-import json
-import asyncio
-from pathlib import Path
 from env_loader import load_env_once
 from admin_events import broadcast_run_event, register_admin, unregister_admin
+
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
+origin_regex = ".*" if "*" in ALLOWED_ORIGINS else None
 
 api = FastAPI(title="Agentic SOP Orchestrator")
 api.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[] if origin_regex else ALLOWED_ORIGINS,
+    allow_origin_regex=origin_regex,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=True,
+    expose_headers=["*"],
 )
 
 # Mock endpoints for hardcoded data (sandbox/testing)
 api.include_router(mock_router)
 
-
 broadcast_task = None
-run_event_listener_task = None
-async def _run_event_listener(db_uri: str):
+run_event_listener_thread = None
+_listener_stop_flag = threading.Event()
+
+def _sync_run_event_listener(db_uri: str):
+    """Synchronous LISTEN in a thread (Windows-compatible)."""
     try:
-        async with await psycopg.AsyncConnection.connect(db_uri, autocommit=True) as conn:
-            await conn.execute("LISTEN run_events")
-            emit_log("[ADMIN] Listening for Postgres run_events notifications.")
-            async for notify in conn.notifies():
+        conn = SyncConnection.connect(db_uri, autocommit=True)
+        conn.execute("LISTEN run_events")
+        emit_log("[ADMIN] Listening for Postgres run_events notifications (sync mode).")
+        
+        while not _listener_stop_flag.is_set():
+            conn.execute("SELECT 1")  # keep-alive
+            for notify in conn.notifies():
                 try:
                     payload = json.loads(notify.payload)
                 except Exception:
                     payload = {"raw": notify.payload}
-                await broadcast_run_event(payload)
-    except asyncio.CancelledError:  # graceful shutdown
-        emit_log("[ADMIN] Run event listener cancelled.")
-    except Exception as exc:  # pragma: no cover - defensive
-        emit_log(f"[ADMIN] Run event listener stopped due to error: {exc}")
+                # Forward to async broadcast from thread
+                asyncio.run_coroutine_threadsafe(broadcast_run_event(payload), asyncio.get_event_loop())
+        
+        conn.close()
+        emit_log("[ADMIN] Run event listener stopped.")
+    except Exception as exc:
+        emit_log(f"[ADMIN] Run event listener error: {exc}")
 
 
 async def _maybe_start_run_event_listener():
-    global run_event_listener_task
-    if run_event_listener_task and not run_event_listener_task.done():
+    global run_event_listener_thread
+    if run_event_listener_thread and run_event_listener_thread.is_alive():
         return
     load_env_once(Path(__file__).resolve().parents[1])
     db_uri = _get_env_value("DATABASE_URL", "")
     if not db_uri:
         emit_log("[ADMIN] DATABASE_URL not set; run event listener disabled.")
         return
-    run_event_listener_task = asyncio.create_task(_run_event_listener(db_uri))
+    
+    _listener_stop_flag.clear()
+    run_event_listener_thread = threading.Thread(target=_sync_run_event_listener, args=(db_uri,), daemon=True)
+    run_event_listener_thread.start()
 
 
 async def _stop_run_event_listener():
-    global run_event_listener_task
-    if run_event_listener_task and not run_event_listener_task.done():
-        run_event_listener_task.cancel()
-        try:
-            await run_event_listener_task
-        except asyncio.CancelledError:
-            pass
+    global run_event_listener_thread
+    if run_event_listener_thread and run_event_listener_thread.is_alive():
+        _listener_stop_flag.set()
+        run_event_listener_thread.join(timeout=2)
 
 
 @api.on_event("startup")
