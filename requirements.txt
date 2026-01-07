@@ -5,4 +5,5 @@ langgraph
 pydantic
 python-dotenv
 pyyaml
+httpx
 

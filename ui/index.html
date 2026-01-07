@@ -17,7 +17,16 @@
         <section class="bg-gray-800 p-6 rounded-lg border border-gray-700 mb-8">
             <div class="flex items-center justify-between mb-3">
                 <h2 class="text-2xl font-semibold text-green-400">Live Logs</h2>
-                <span class="text-xs text-gray-400">Streaming from server</span>
+                <div class="flex items-center gap-3">
+                    <div id="restPending" class="hidden items-center gap-2 text-amber-300 text-xs">
+                        <svg class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle class="opacity-25" cx="12" cy="12" r="10"></circle>
+                            <path class="opacity-75" d="M4 12a8 8 0 018-8"></path>
+                        </svg>
+                        <span id="restPendingLabel">Awaiting REST callback...</span>
+                    </div>
+                    <span class="text-xs text-gray-400">Streaming from server</span>
+                </div>
             </div>
             <div id="logStream" class="space-y-2 text-xs text-gray-300 h-80 overflow-y-auto bg-gray-900 p-3 rounded border border-gray-700"></div>
         </section>
@@ -94,6 +103,7 @@
         let lastStore = {};
         let lastActiveSkill = "";
         let lastResumeTarget = "planner";
+        let statusFetchInFlight = false;
 
         async function startProcess() {
             currentThread = document.getElementById('threadId').value;
@@ -125,7 +135,8 @@
         }
 
         async function pollStatus() {
-            if (!currentThread) return;
+            if (!currentThread || statusFetchInFlight) return;
+            statusFetchInFlight = true;
             let data;
             try {
                 const res = await fetch(`${API_BASE}/status/${currentThread}`);
@@ -134,6 +145,7 @@
             } catch (e) {
                 console.error(e);
                 document.getElementById('dataEditor').value = "{}";
+                statusFetchInFlight = false;
                 return;
             }
             console.log("[UI] Status payload", data);
@@ -143,6 +155,23 @@
             console.log("[UI] Rendering data store", store);
             lastStore = store;
             document.getElementById('dataEditor').value = JSON.stringify(store, null, 2);
+
+            // REST pending indicator — only show when actually awaiting callback
+            const pendingSkills = Array.isArray(store._rest_pending)
+                ? store._rest_pending
+                : store._rest_pending ? [store._rest_pending] : [];
+            const restPendingEl = document.getElementById('restPending');
+            const restPendingLabel = document.getElementById('restPendingLabel');
+            const awaitingRest = data.is_waiting_callback || ((pendingSkills.length > 0) && ((data.next_node || []).includes("await_callback")));
+            if (awaitingRest) {
+                console.log("[UI] Awaiting REST callback", pendingSkills);
+                restPendingEl.classList.remove('hidden');
+                restPendingLabel.textContent = pendingSkills.length
+                    ? `Awaiting REST callback for ${pendingSkills.join(", ")}`
+                    : "Awaiting REST callback...";
+            } else {
+                restPendingEl.classList.add('hidden');
+            }
             
             // Update History
             const historyDiv = document.getElementById('historyList');
@@ -154,12 +183,12 @@
             const hitlEditor = document.getElementById('hitlEditor');
             const hitlAgentLabel = document.getElementById('hitlAgentLabel');
             const hitlResumeLabel = document.getElementById('hitlResumeLabel');
-            const awaitingHuman = data.is_human_review || (data.next_node || []).includes("human_review");
-            const paused = data.is_paused || awaitingHuman;
+            const awaitingHuman = data.is_human_review;
+            const paused = data.is_paused || awaitingHuman || data.is_waiting_callback;
             const inferredSkill = data.active_skill || inferHitlSkillFromHistory(data.history);
             lastActiveSkill = inferredSkill || "";
             lastResumeTarget = (data.next_node && data.next_node.includes("human_review")) ? "planner" : ((data.next_node || [])[0] || "planner");
-            if (paused) {
+            if (paused && awaitingHuman) {
                 badge.classList.remove('hidden');
                 document.getElementById('hitlOpenBtn').classList.remove('hidden');
                 hitlEditor.value = JSON.stringify(store, null, 2);
@@ -170,11 +199,8 @@
                 badge.classList.add('hidden');
                 document.getElementById('hitlOpenBtn').classList.add('hidden');
                 modal.classList.add('hidden');
-                // Keep polling if not finished
-                if ((data.next_node && data.next_node.length > 0) || (data.history && data.history[data.history.length-1] && data.history[data.history.length-1].includes("Started"))) {
-                    setTimeout(pollStatus, 2000);
-                }
             }
+            statusFetchInFlight = false;
         }
 
         async function approveStep(simple) {
@@ -199,7 +225,7 @@
                 body: body ? JSON.stringify(body) : null
             });
             
-            setTimeout(pollStatus, 1000);
+            setTimeout(() => pollStatus(), 500);
         }
 
         function closeHitlModal() {
@@ -227,6 +253,21 @@
                     }
                     // Auto-scroll to bottom like a chat window
                     logDiv.scrollTop = logDiv.scrollHeight;
+
+                    // Hide REST pending spinner when callback/result messages arrive
+                    if (event.data.includes("CALLBACK") || event.data.includes("Reached END")) {
+                        const restPendingEl = document.getElementById('restPending');
+                        restPendingEl?.classList.add('hidden');
+                    }
+
+                    // Refresh status on key events (callback, end, hitl)
+                    if (
+                        event.data.includes("CALLBACK") ||
+                        event.data.includes("Reached END") ||
+                        event.data.toLowerCase().includes("hitl")
+                    ) {
+                        pollStatus();
+                    }
                 };
                 logSocket.onerror = (e) => console.error("Log socket error", e);
                 logSocket.onclose = () => {

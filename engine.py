@@ -3,7 +3,8 @@ import json
 import asyncio
 from pathlib import Path
 from typing import Annotated, TypedDict, Union, List, Dict, Any, Set, Optional, Type
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, Field, ValidationError, create_model
+import httpx
 
 import yaml
 from langchain_openai import ChatOpenAI
@@ -12,6 +13,13 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
 from log_stream import publish_log, emit_log
+
+class RestConfig(BaseModel):
+    url: str
+    method: str = "POST"
+    headers: Dict[str, str] = Field(default_factory=dict)
+    timeout: float = 15.0
+
 
 # --- 1. MODELS & REGISTRY ---
 class Skill(BaseModel):
@@ -22,6 +30,8 @@ class Skill(BaseModel):
     optional_produces: Set[str] = set()
     hitl_enabled: bool = False
     prompt: Optional[str] = None
+    executor: str = "llm"  # "llm" (default) or "rest"
+    rest: Optional[RestConfig] = None
 
 class PlannerDecision(BaseModel):
     next_agent: str = Field(description="Name of agent or 'END'")
@@ -74,6 +84,15 @@ def load_skill_registry(skills_dir: Optional[Path] = None) -> List[Skill]:
             produces = _coerce_set(meta.get("produces"), "produces")
             optional_produces = _coerce_set(meta.get("optional_produces"), "optional_produces")
             hitl_enabled = bool(meta.get("hitl_enabled", False))
+            executor = str(meta.get("executor", "llm")).lower()
+
+            rest_cfg = None
+            if executor == "rest":
+                rest_meta = meta.get("rest") or {}
+                try:
+                    rest_cfg = RestConfig(**rest_meta)
+                except ValidationError as exc:
+                    raise RuntimeError(f"Invalid REST config for skill '{name}' in {md_file}: {exc}") from exc
         except KeyError as exc:
             raise RuntimeError(f"Missing required field {exc} in {md_file}") from exc
 
@@ -89,6 +108,8 @@ def load_skill_registry(skills_dir: Optional[Path] = None) -> List[Skill]:
                 optional_produces=optional_produces,
                 hitl_enabled=hitl_enabled,
                 prompt=prompt_text,
+                executor=executor,
+                rest=rest_cfg,
             )
         )
         seen_names.add(name)
@@ -117,6 +138,7 @@ class AgentState(TypedDict):
     data_store: Dict[str, Any]
     active_skill: Optional[str]
     history: Annotated[List[str], lambda x, y: x + y]
+    thread_id: str
 
 
 # --- Utilities ---
@@ -159,6 +181,67 @@ def _last_executed(history: List[str]) -> Optional[str]:
     return None
 
 
+def _rest_pending(store: Dict[str, Any]) -> Set[str]:
+    pending = store.get("_rest_pending", set())
+    if isinstance(pending, list):
+        return set(pending)
+    if isinstance(pending, set):
+        return pending
+    return set()
+
+
+def _mark_rest_pending(store: Dict[str, Any], skill_name: str) -> Dict[str, Any]:
+    pending = _rest_pending(store)
+    pending.add(skill_name)
+    return {**store, "_rest_pending": list(pending)}
+
+
+def _clear_rest_pending(store: Dict[str, Any], skill_name: str) -> Dict[str, Any]:
+    pending = _rest_pending(store)
+    pending.discard(skill_name)
+    if not pending:
+        new_store = dict(store)
+        new_store.pop("_rest_pending", None)
+        return new_store
+    return {**store, "_rest_pending": list(pending)}
+
+
+def _callback_url() -> str:
+    base = os.getenv("CALLBACK_BASE_URL", "http://localhost:8000")
+    return base.rstrip("/") + "/callback"
+
+
+async def _execute_rest_skill(skill_meta: Skill, state: AgentState, input_ctx: Dict[str, Any]):
+    if not skill_meta.rest:
+        raise RuntimeError(f"{skill_meta.name} is missing REST configuration.")
+
+    payload = {
+        "skill": skill_meta.name,
+        "thread_id": state["thread_id"],
+        "callback_url": _callback_url(),
+        "inputs": input_ctx,
+        "expected_outputs": sorted(skill_meta.produces | skill_meta.optional_produces),
+        "sop": state["layman_sop"],
+    }
+
+    async with httpx.AsyncClient(timeout=skill_meta.rest.timeout) as client:
+        response = await client.request(
+            skill_meta.rest.method,
+            skill_meta.rest.url,
+            json=payload,
+            headers=skill_meta.rest.headers,
+        )
+        response.raise_for_status()
+
+    await publish_log(f"[EXECUTOR] {skill_meta.name} dispatched to REST endpoint {skill_meta.rest.url}")
+    updated_store = _mark_rest_pending(state["data_store"], skill_meta.name)
+    return {
+        "history": [f"Requested {skill_meta.name} via REST API"],
+        "active_skill": skill_meta.name,
+        "data_store": updated_store,
+    }
+
+
 # Load registry from markdown at import time
 SKILL_REGISTRY = load_skill_registry()
 
@@ -168,7 +251,16 @@ async def autonomous_planner(state: AgentState):
     await publish_log(f"\n[PLANNER] Assessing state. Current data: {list(state['data_store'].keys())}")
     
     current_keys = _available_keys(state["data_store"])
+    pending_rest = _rest_pending(state["data_store"])
+
+    # Guardrail: if any REST skill is pending, do not plan new work. Wait for callback.
+    if pending_rest:
+        await publish_log(f"[PLANNER] REST work in flight {pending_rest}. Pausing planning until callback.")
+        # Signal the graph to stop here; callback will resume and re-enter planner.
+        return {"active_skill": "END", "history": [f"Waiting for REST callback: {sorted(pending_rest)}"]}
+
     runnable = [s for s in SKILL_REGISTRY if s.requires.issubset(current_keys)]
+    runnable = [s for s in runnable if s.name not in pending_rest]
     
     # Check for already completed skills to avoid loops
     runnable = [s for s in runnable if not s.produces.issubset(current_keys)]
@@ -238,6 +330,12 @@ async def skilled_executor(state: AgentState):
         missing_list = ", ".join(sorted(missing_inputs))
         raise RuntimeError(f"{skill_name} cannot run. Missing required inputs: {missing_list}")
     
+    input_ctx = {k: state["data_store"].get(k) for k in skill_meta.requires}
+
+    # REST executor path: fire-and-pause until callback arrives.
+    if skill_meta.executor == "rest":
+        return await _execute_rest_skill(skill_meta, state, input_ctx)
+
     # Dynamic Schema: In reality, read ## OUTPUT SCHEMA from an MD file
     # Here we simulate the fields based on skill_meta.produces
     fields = {k: (Any, ...) for k in skill_meta.produces}
@@ -251,7 +349,6 @@ async def skilled_executor(state: AgentState):
     await asyncio.sleep(1)
     
     # We pass the relevant data and the SOP context
-    input_ctx = {k: state["data_store"].get(k) for k in skill_meta.requires}
     prompt_text = skill_meta.prompt or f"Process this input to produce: {', '.join(sorted(skill_meta.produces))}."
     result = await llm.ainvoke(f"{prompt_text}\nContext: {state['layman_sop']}\nInput: {input_ctx}")
     
@@ -268,6 +365,10 @@ def route_post_exec(state: AgentState):
     skill_name = state["active_skill"]
     skill_meta = next(s for s in SKILL_REGISTRY if s.name == skill_name)
     
+    if skill_meta.executor == "rest":
+        emit_log(f"[ROUTER] REST executor for {skill_name}. Waiting for callback.")
+        return "await_callback"
+    
     if skill_meta.hitl_enabled:
         emit_log(f"[ROUTER] HITL enabled for {skill_name}. Redirecting to HUMAN_REVIEW.")
         return "human_review"
@@ -278,11 +379,14 @@ workflow = StateGraph(AgentState)
 workflow.add_node("planner", autonomous_planner)
 workflow.add_node("executor", skilled_executor)
 workflow.add_node("human_review", lambda x: x) # Passive node for interruption
+workflow.add_node("await_callback", lambda x: x) # Passive node for REST callbacks
 
 workflow.set_entry_point("planner")
 
 def planner_route(state):
-    if state["active_skill"] == "END" or not state["active_skill"]: return END
+    if state["active_skill"] == "END" or not state["active_skill"]:
+        emit_log("[PLANNER] Reached END. Execution completed.")
+        return END
     
     last_skill = _last_executed(state.get("history", []))
     if last_skill and state["active_skill"] == last_skill:
@@ -294,9 +398,11 @@ def planner_route(state):
 workflow.add_conditional_edges("planner", planner_route)
 workflow.add_conditional_edges("executor", route_post_exec, {
     "human_review": "human_review",
+    "await_callback": "await_callback",
     "planner": "planner"
 })
 workflow.add_edge("human_review", "planner")
+workflow.add_edge("await_callback", "planner")
 
 memory = MemorySaver()
-app = workflow.compile(checkpointer=memory, interrupt_before=["human_review"])
+app = workflow.compile(checkpointer=memory, interrupt_before=["human_review", "await_callback"])
