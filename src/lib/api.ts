@@ -28,6 +28,20 @@ export async function fetchRunDetail(
   return (await res.json()) as CheckpointTuple;
 }
 
+export async function fetchThreadLogs(
+  threadId: string,
+  limit = 1000
+): Promise<Array<{ id: number; thread_id: string; message: string; created_at: string; level: string }>> {
+  const res = await fetch(`${API_BASE}/admin/runs/${threadId}/logs?limit=${limit}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch logs for thread: ${threadId}`);
+  }
+  const data = await res.json();
+  return data.logs || [];
+}
+
 export function connectAdminEvents(onEvent: (event: RunEvent) => void) {
   const ws = new WebSocket(`${WS_BASE}/ws/admin`);
 
@@ -45,7 +59,7 @@ export function connectAdminEvents(onEvent: (event: RunEvent) => void) {
   return ws;
 }
 
-export function connectLogs(onLog: (line: string) => void) {
+export function connectLogs(onLog: (line: string, threadId?: string) => void) {
   const ws = new WebSocket(`${WS_BASE}/ws/logs`);
   
   ws.onopen = () => {
@@ -54,6 +68,17 @@ export function connectLogs(onLog: (line: string) => void) {
   
   ws.onmessage = (evt) => {
     console.log("[API] Log received:", evt.data);
+    try {
+      // Try to parse as JSON first (new structured format)
+      const parsed = JSON.parse(evt.data);
+      if (parsed.text !== undefined) {
+        onLog(parsed.text, parsed.thread_id);
+        return;
+      }
+    } catch {
+      // Fall back to plain text for backward compatibility
+    }
+    // Plain text format
     onLog(evt.data as string);
   };
   

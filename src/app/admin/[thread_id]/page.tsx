@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState, useRef, useMemo } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { connectAdminEvents, connectLogs, fetchRunDetail } from "../../../lib/api";
+import { connectAdminEvents, connectLogs, fetchRunDetail, fetchThreadLogs } from "../../../lib/api";
 import { CheckpointTuple, RunEvent } from "../../../lib/types";
 import DashboardLayout from "../../../components/DashboardLayout";
 
@@ -16,7 +16,8 @@ export default function RunDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<string>(searchParams.get("tab") || "config");
-  const [logs, setLogs] = useState<Array<{id: number, text: string}>>([]);
+  const [logs, setLogs] = useState<Array<{id: number, text: string, timestamp: Date, threadId?: string}>>([]);
+  const [historicalLogsLoaded, setHistoricalLogsLoaded] = useState(false);
   const logIdCounter = useRef(0);
   const logContainerRef = useRef<HTMLDivElement>(null);
 
@@ -62,14 +63,44 @@ export default function RunDetailPage() {
     return () => ws.close();
   }, [threadId]);
 
-  // Live logs
+  // Load historical logs from database on mount
   useEffect(() => {
-    console.log("[RunDetail] Setting up logs connection");
-    const ws = connectLogs((line) => {
-      console.log("[RunDetail] Log line received:", line);
+    if (!threadId || historicalLogsLoaded) return;
+    
+    console.log("[RunDetail] Loading historical logs for thread:", threadId);
+    fetchThreadLogs(threadId)
+      .then((historicalLogs) => {
+        console.log("[RunDetail] Loaded", historicalLogs.length, "historical logs");
+        // Convert historical logs to the same format as live logs
+        const convertedLogs = historicalLogs.map((log) => ({
+          id: logIdCounter.current++,
+          text: log.message,
+          timestamp: new Date(log.created_at),
+          threadId: log.thread_id
+        }));
+        setLogs(convertedLogs);
+        setHistoricalLogsLoaded(true);
+      })
+      .catch((err) => {
+        console.error("[RunDetail] Failed to load historical logs:", err);
+        setHistoricalLogsLoaded(true); // Mark as loaded even on error to avoid retries
+      });
+  }, [threadId, historicalLogsLoaded]);
+
+  // Live logs WebSocket connection
+  useEffect(() => {
+    console.log("[RunDetail] Setting up logs connection for thread:", threadId);
+    const ws = connectLogs((line, logThreadId) => {
+      console.log("[RunDetail] Log line received:", line, "thread_id:", logThreadId);
       setLogs((prev) => {
-        const newLog = { id: logIdCounter.current++, text: line };
-        return [...prev.slice(-1000), newLog];
+        const newLog = { 
+          id: logIdCounter.current++, 
+          text: line, 
+          timestamp: new Date(),
+          threadId: logThreadId
+        };
+        // Keep last 1000 logs
+        return [...prev.slice(-999), newLog];
       });
     });
     return () => {
@@ -98,6 +129,41 @@ export default function RunDetailPage() {
   const initialData = initialConfig?.data || 
                      (initialDataFromUrl ? (() => { try { return JSON.parse(initialDataFromUrl); } catch { return {}; } })() : {});
 
+  // Filter logs for this specific thread
+  const threadLogs = logs.filter((logEntry) => {
+    // First, check if we have explicit thread_id metadata from the backend
+    if (logEntry.threadId) {
+      return logEntry.threadId === threadId;
+    }
+    
+    // Fallback: check if thread_id appears in the log text (for backward compatibility)
+    const logText = logEntry.text;
+    const lowerLog = logText.toLowerCase();
+    const lowerThreadId = threadId.toLowerCase();
+    
+    // Extract UUID part if thread_id has "thread_" prefix
+    const uuidPart = threadId.startsWith("thread_") 
+      ? threadId.substring(7).toLowerCase() 
+      : null;
+    
+    // Match various formats:
+    // 1. Direct inclusion anywhere in the log
+    if (lowerLog.includes(lowerThreadId)) return true;
+    
+    // 2. UUID part match (if applicable)
+    if (uuidPart && lowerLog.includes(uuidPart)) return true;
+    
+    return false;
+  });
+
+  // Debug: log filtering results
+  useEffect(() => {
+    console.log(`[RunDetail] Thread: ${threadId}, Total logs: ${logs.length}, Filtered: ${threadLogs.length}`);
+    if (logs.length > 0 && threadLogs.length === 0) {
+      console.log("[RunDetail] Sample logs (first 3):", logs.slice(0, 3).map(l => ({ text: l.text, threadId: l.threadId })));
+    }
+  }, [logs.length, threadLogs.length, threadId, logs]);
+
   const status = activeSkill === "END" ? "completed" : activeSkill ? "running" : "pending";
 
   const getStatusConfig = () => {
@@ -113,35 +179,12 @@ export default function RunDetailPage() {
 
   const statusConfig = getStatusConfig();
 
-  // Filter logs by thread_id - memoized to prevent recalculation
-  const threadLogs = useMemo(() => {
-    const filtered = logs.filter((logEntry) => {
-      // Match thread_id in various formats: thread=..., thread_id=..., or just the UUID part
-      const lowerLog = logEntry.text.toLowerCase();
-      const lowerThreadId = threadId.toLowerCase();
-      return lowerLog.includes(lowerThreadId) || 
-             lowerLog.includes(`thread=${lowerThreadId}`) ||
-             lowerLog.includes(`thread_id=${lowerThreadId}`) ||
-             // Also match just the UUID part without "thread_" prefix
-             (threadId.startsWith("thread_") && lowerLog.includes(threadId.substring(7).toLowerCase()));
-    });
-    
-    console.log("[RunDetail] Filtered logs for", threadId, "- Total:", logs.length, "Filtered:", filtered.length);
-    return filtered;
-  }, [logs, threadId]);
-
-  // Debug log whenever threadLogs changes
-  useEffect(() => {
-    console.log("[RunDetail] threadLogs updated, count:", threadLogs.length);
-  }, [threadLogs]);
-
-  // Auto-scroll logs when new logs arrive
+  // Auto-scroll logs when new logs arrive for this thread
   useEffect(() => {
     if (activeTab === "logs" && logContainerRef.current && threadLogs.length > 0) {
-      console.log("[RunDetail] Auto-scrolling logs");
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
-  }, [threadLogs, activeTab]);
+  }, [threadLogs.length, activeTab]);
 
   return (
     <DashboardLayout>
@@ -228,7 +271,7 @@ export default function RunDetailPage() {
               { id: "overview", label: "Overview" },
               { id: "history", label: "History", badge: history.length },
               { id: "data", label: "Data Store" },
-              { id: "logs", label: "Run Logs", badge: threadLogs.length },
+              { id: "logs", label: "Live Logs", badge: threadLogs.length },
               { id: "metadata", label: "Metadata" },
             ].map((tab) => (
               <button
@@ -356,10 +399,21 @@ export default function RunDetailPage() {
             {activeTab === "logs" && (
               <div className="bg-white rounded-lg border border-gray-200 p-6">
                 <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-semibold text-gray-900">Run Logs</h3>
+                  <h3 className="text-lg font-semibold text-gray-900">Live Logs</h3>
                   <div className="flex items-center gap-4">
-                    <span className="text-sm text-gray-600">{threadLogs.length} events</span>
-                    <span className="text-xs text-gray-500">Total logs: {logs.length}</span>
+                    <span className="text-sm text-gray-600">
+                      {threadLogs.length} event{threadLogs.length !== 1 ? 's' : ''}
+                    </span>
+                    {!historicalLogsLoaded && (
+                      <span className="text-xs text-blue-600 animate-pulse">
+                        Loading historical logs...
+                      </span>
+                    )}
+                    {logs.length > threadLogs.length && (
+                      <span className="text-xs text-gray-500">
+                        ({logs.length} total across all threads)
+                      </span>
+                    )}
                   </div>
                 </div>
                 <div
@@ -369,16 +423,22 @@ export default function RunDetailPage() {
                 >
                   {threadLogs.length === 0 ? (
                     <div className="flex flex-col items-center justify-center h-full text-gray-500 gap-2">
-                      <div>No logs for this thread yet...</div>
-                      <div className="text-xs">Total logs received: {logs.length}</div>
-                      <div className="text-xs">Thread ID: {threadId}</div>
+                      <div>
+                        {historicalLogsLoaded ? "No logs for this thread yet..." : "Loading logs..."}
+                      </div>
+                      <div className="text-xs">Waiting for events from: {threadId}</div>
+                      {logs.length > 0 && (
+                        <div className="text-xs mt-2">
+                          ({logs.length} log{logs.length !== 1 ? 's' : ''} received from other threads)
+                        </div>
+                      )}
                     </div>
                   ) : (
-                    <div>
-                      {threadLogs.map((logEntry, idx) => (
+                    <div className="space-y-1">
+                      {threadLogs.map((logEntry) => (
                         <div key={logEntry.id} className="hover:bg-gray-800/50 px-2 -mx-2 rounded">
-                          <span className="text-gray-500 select-none mr-4">
-                            {String(idx + 1).padStart(4, " ")}
+                          <span className="text-gray-600 select-none mr-3 text-xs">
+                            {logEntry.timestamp.toLocaleTimeString()}
                           </span>
                           <span className="whitespace-pre-wrap break-all">{logEntry.text}</span>
                         </div>
