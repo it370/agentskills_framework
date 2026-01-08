@@ -18,6 +18,9 @@ from env_loader import load_env_once
 
 from log_stream import publish_log, emit_log, set_db_pool
 
+# Import pub/sub client
+from services.pubsub import get_default_client as get_pubsub_client
+
 class RestConfig(BaseModel):
     url: str
     method: str = "POST"
@@ -758,13 +761,12 @@ class _AsyncPostgresSaver(PostgresSaver):
     """
 
     def _notify(self, payload: Dict[str, Any]):
-        """Send a NOTIFY to Postgres; best-effort (errors are logged, not raised)."""
+        """Send notification via pub/sub client; best-effort (errors are logged, not raised)."""
         try:
-            with self.conn.connection() as conn:  # type: ignore[attr-defined]
-                with conn.cursor() as cur:
-                    cur.execute("SELECT pg_notify('run_events', %s)", (json.dumps(payload),))
+            pubsub = get_pubsub_client()
+            pubsub.publish('run_events', payload)
         except Exception as exc:  # pragma: no cover - defensive
-            emit_log(f"[CHECKPOINTER] Failed to emit run_events notify: {exc}")
+            emit_log(f"[CHECKPOINTER] Failed to publish run_events: {exc}")
 
     async def aget_tuple(self, config):
         return await asyncio.to_thread(super().get_tuple, config)

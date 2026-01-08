@@ -18,6 +18,7 @@ from log_stream import publish_log, emit_log, set_log_context, get_thread_logs
 from .mock_api import router as mock_router
 from env_loader import load_env_once
 from admin_events import broadcast_run_event, register_admin, unregister_admin
+from services.pubsub import create_pubsub_client
 
 ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 
@@ -49,61 +50,71 @@ api.include_router(mock_router)
 broadcast_task = None
 run_event_listener_thread = None
 _listener_stop_flag = threading.Event()
+_pubsub_client = None
 
-def _sync_run_event_listener(db_uri: str):
-    """Synchronous LISTEN in a thread (Windows-compatible)."""
+def _pubsub_event_listener():
+    """Listen for pub/sub events and forward to WebSocket clients."""
+    global _pubsub_client
+    
     try:
-        conn = SyncConnection.connect(db_uri, autocommit=True)
-        conn.execute("LISTEN run_events")
-        emit_log("[ADMIN] Listening for Postgres run_events notifications (sync mode).")
+        # Create pub/sub client
+        load_env_once(Path(__file__).resolve().parents[1])
+        _pubsub_client = create_pubsub_client()
         
-        while not _listener_stop_flag.is_set():
-            conn.execute("SELECT 1")  # keep-alive
-            for notify in conn.notifies():
-                try:
-                    payload = json.loads(notify.payload)
-                except Exception:
-                    payload = {"raw": notify.payload}
-                # Forward to async broadcast from thread
-                asyncio.run_coroutine_threadsafe(broadcast_run_event(payload), asyncio.get_event_loop())
+        emit_log(f"[ADMIN] Starting pub/sub event listener")
         
-        conn.close()
-        emit_log("[ADMIN] Run event listener stopped.")
+        # Callback for incoming messages
+        def on_message(payload: Dict[str, Any]):
+            # Forward to async broadcast from thread
+            asyncio.run_coroutine_threadsafe(
+                broadcast_run_event(payload), 
+                asyncio.get_event_loop()
+            )
+        
+        # Listen (blocking call)
+        _pubsub_client.listen('run_events', on_message, _listener_stop_flag)
+        
     except Exception as exc:
-        emit_log(f"[ADMIN] Run event listener error: {exc}")
+        emit_log(f"[ADMIN] Pub/sub event listener error: {exc}")
+    finally:
+        if _pubsub_client:
+            _pubsub_client.close()
 
 
-async def _maybe_start_run_event_listener():
+async def _maybe_start_pubsub_listener():
+    """Start the pub/sub event listener thread if not already running."""
     global run_event_listener_thread
     if run_event_listener_thread and run_event_listener_thread.is_alive():
-        return
-    load_env_once(Path(__file__).resolve().parents[1])
-    db_uri = _get_env_value("DATABASE_URL", "")
-    if not db_uri:
-        emit_log("[ADMIN] DATABASE_URL not set; run event listener disabled.")
         return
     
     _listener_stop_flag.clear()
-    run_event_listener_thread = threading.Thread(target=_sync_run_event_listener, args=(db_uri,), daemon=True)
+    run_event_listener_thread = threading.Thread(
+        target=_pubsub_event_listener, 
+        daemon=True
+    )
     run_event_listener_thread.start()
 
 
-async def _stop_run_event_listener():
-    global run_event_listener_thread
+async def _stop_pubsub_listener():
+    """Stop the pub/sub event listener thread."""
+    global run_event_listener_thread, _pubsub_client
     if run_event_listener_thread and run_event_listener_thread.is_alive():
         _listener_stop_flag.set()
         run_event_listener_thread.join(timeout=2)
+    if _pubsub_client:
+        _pubsub_client.close()
 
 
 @api.on_event("startup")
 async def _start_broadcast():
-    # No background loop needed; publish is immediate. Placeholder for future.
-    await _maybe_start_run_event_listener()
+    # Start pub/sub listener for admin events
+    await _maybe_start_pubsub_listener()
 
 
 @api.on_event("shutdown")
 async def _stop_broadcast():
-    await _stop_run_event_listener()
+    # Stop pub/sub listener
+    await _stop_pubsub_listener()
 
 class StartRequest(BaseModel):
     thread_id: str
