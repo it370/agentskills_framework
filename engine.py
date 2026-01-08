@@ -1,9 +1,12 @@
 import os
 import json
 import asyncio
+import importlib
+import subprocess
 from pathlib import Path
-from typing import Annotated, TypedDict, Union, List, Dict, Any, Set, Optional, Type
+from typing import Annotated, TypedDict, Union, List, Dict, Any, Set, Optional, Type, Callable
 from pydantic import BaseModel, Field, ValidationError, create_model, ConfigDict
+from enum import Enum
 import httpx
 
 import yaml
@@ -52,6 +55,63 @@ class RestToolInput(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class ActionType(str, Enum):
+    """Types of action executors available"""
+    PYTHON_FUNCTION = "python_function"
+    DATA_QUERY = "data_query"
+    DATA_PIPELINE = "data_pipeline"
+    SCRIPT = "script"
+    HTTP_CALL = "http_call"
+
+
+class ActionConfig(BaseModel):
+    """
+    Configuration for action-based skill execution.
+    Actions are deterministic operations executed by the framework (not LLM).
+    
+    Skill-local actions:
+    - Omit 'module' to auto-discover action.py in skill folder
+    - Use relative script_path for skill-local scripts
+    - Module starting with '.' is relative to skill folder
+    """
+    type: ActionType
+    
+    # For python_function type
+    function: Optional[str] = Field(default=None, description="Function name to call")
+    module: Optional[str] = Field(
+        default=None, 
+        description="Module path or omit for skill-local action.py auto-discovery"
+    )
+    
+    # For data_query type
+    source: Optional[str] = Field(default=None, description="Data source: postgres, mongodb, redis")
+    query: Optional[str] = Field(default=None, description="Query string or template")
+    collection: Optional[str] = Field(default=None, description="Collection/table name")
+    filter: Optional[Dict[str, Any]] = Field(default=None, description="Query filter for NoSQL")
+    
+    # For data_pipeline type
+    steps: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description="List of pipeline steps with source, query, transform, etc."
+    )
+    
+    # For script type
+    script_path: Optional[str] = Field(
+        default=None, 
+        description="Path to script file (relative paths resolve from skill folder)"
+    )
+    interpreter: Optional[str] = Field(default="python", description="Script interpreter")
+    
+    # For http_call type
+    url: Optional[str] = Field(default=None, description="HTTP endpoint URL")
+    method: Optional[str] = Field(default="GET", description="HTTP method")
+    headers: Optional[Dict[str, str]] = Field(default_factory=dict, description="HTTP headers")
+    
+    # Common settings
+    timeout: float = Field(default=30.0, description="Execution timeout in seconds")
+    retry: int = Field(default=0, ge=0, le=5, description="Number of retries on failure")
+
+
 # --- 1. MODELS & REGISTRY ---
 class Skill(BaseModel):
     name: str
@@ -62,8 +122,9 @@ class Skill(BaseModel):
     hitl_enabled: bool = False
     prompt: Optional[str] = None          # task/user intent prompt
     system_prompt: Optional[str] = None   # business SOPs / policies
-    executor: str = "llm"  # "llm" (default) or "rest"
+    executor: str = "llm"  # "llm" (default), "rest", or "action"
     rest: Optional[RestConfig] = None
+    action: Optional[ActionConfig] = None  # Configuration for action executor
 
 class PlannerDecision(BaseModel):
     next_agent: str = Field(description="Name of agent or 'END'")
@@ -95,6 +156,95 @@ def _coerce_set(value: Any, field_name: str) -> Set[str]:
     if isinstance(value, (list, set, tuple)):
         return set(str(v) for v in value)
     raise ValueError(f"Field '{field_name}' must be a list or set of strings.")
+
+
+def _resolve_skill_local_action(action_cfg: ActionConfig, skill_dir: Path, skill_name: str) -> ActionConfig:
+    """
+    Resolve skill-local action paths and auto-discover local action files.
+    
+    Convention:
+    - If module not specified and action.py exists → use it
+    - If script_path is relative → resolve from skill directory
+    - If function/module starts with '.' → treat as skill-local
+    """
+    
+    # Handle python_function with skill-local module
+    if action_cfg.type == ActionType.PYTHON_FUNCTION:
+        # If no module specified, look for action.py in skill folder
+        if not action_cfg.module:
+            action_file = skill_dir / "action.py"
+            if action_file.exists():
+                # Create dynamic module name based on skill
+                action_cfg.module = f"skills.{skill_name}.action"
+                emit_log(f"[SKILL-LOCAL] Auto-discovered action.py for {skill_name}")
+        
+        # If module starts with '.', it's relative to skill folder
+        elif action_cfg.module.startswith('.'):
+            action_cfg.module = f"skills.{skill_name}{action_cfg.module}"
+    
+    # Handle script with skill-local path
+    elif action_cfg.type == ActionType.SCRIPT:
+        if action_cfg.script_path and not Path(action_cfg.script_path).is_absolute():
+            # Resolve relative to skill directory
+            script_path = skill_dir / action_cfg.script_path
+            if not script_path.exists():
+                # Try common names: script.py, run.py, execute.sh, etc.
+                for candidate in ["script.py", "run.py", "execute.py", "script.sh", "run.sh"]:
+                    candidate_path = skill_dir / candidate
+                    if candidate_path.exists():
+                        script_path = candidate_path
+                        emit_log(f"[SKILL-LOCAL] Auto-discovered {candidate} for {skill_name}")
+                        break
+            
+            action_cfg.script_path = str(script_path.absolute())
+    
+    return action_cfg
+
+
+def _register_skill_local_actions(action_cfg: ActionConfig, skill_dir: Path, skill_name: str):
+    """
+    Register skill-local action functions at skill load time.
+    This allows skills to be self-contained with their own action code.
+    """
+    if action_cfg.type != ActionType.PYTHON_FUNCTION:
+        return
+    
+    if not action_cfg.module or not action_cfg.function:
+        return
+    
+    # Check if this is a skill-local module
+    if f"skills.{skill_name}" not in action_cfg.module:
+        return
+    
+    # Load the skill-local module dynamically
+    action_file = skill_dir / "action.py"
+    if not action_file.exists():
+        return
+    
+    try:
+        # Add skill directory to sys.path temporarily
+        import sys
+        skill_parent = skill_dir.parent.parent  # Go up to project root
+        if str(skill_parent) not in sys.path:
+            sys.path.insert(0, str(skill_parent))
+        
+        # Import the module
+        module = importlib.import_module(action_cfg.module)
+        
+        # Get the function
+        if hasattr(module, action_cfg.function):
+            func = getattr(module, action_cfg.function)
+            func_key = f"{action_cfg.module}.{action_cfg.function}"
+            
+            # Register it
+            if func_key not in _ACTION_FUNCTION_REGISTRY:
+                register_action_function(func_key, func)
+                emit_log(f"[SKILL-LOCAL] Registered {func_key} from {skill_name}")
+        else:
+            emit_log(f"[SKILL-LOCAL] Warning: Function '{action_cfg.function}' not found in {action_cfg.module}")
+            
+    except Exception as e:
+        emit_log(f"[SKILL-LOCAL] Failed to load action for {skill_name}: {e}")
 
 
 def load_skill_registry(skills_dir: Optional[Path] = None) -> List[Skill]:
@@ -137,11 +287,25 @@ def load_skill_registry(skills_dir: Optional[Path] = None) -> List[Skill]:
                     rest_cfg = RestConfig(**rest_meta)
                 except ValidationError as exc:
                     raise RuntimeError(f"Invalid REST config for skill '{name}' in {md_file}: {exc}") from exc
+            
+            action_cfg = None
+            if executor == "action":
+                action_meta = meta.get("action") or {}
+                try:
+                    action_cfg = ActionConfig(**action_meta)
+                    # Auto-discover skill-local actions
+                    action_cfg = _resolve_skill_local_action(action_cfg, md_file.parent, name)
+                except ValidationError as exc:
+                    raise RuntimeError(f"Invalid action config for skill '{name}' in {md_file}: {exc}") from exc
         except KeyError as exc:
             raise RuntimeError(f"Missing required field {exc} in {md_file}") from exc
 
         if name in seen_names:
             raise RuntimeError(f"Duplicate skill name detected: {name}")
+        
+        # Auto-register skill-local action functions at load time
+        if executor == "action" and action_cfg:
+            _register_skill_local_actions(action_cfg, md_file.parent, name)
 
         registry.append(
             Skill(
@@ -155,6 +319,7 @@ def load_skill_registry(skills_dir: Optional[Path] = None) -> List[Skill]:
                 system_prompt=system_prompt or None,
                 executor=executor,
                 rest=rest_cfg,
+                action=action_cfg,
             )
         )
         seen_names.add(name)
@@ -479,6 +644,37 @@ async def _run_agent_tools(
     return tool_runs, history
 
 
+# --- ACTION REGISTRY & DISCOVERY ---
+_ACTION_FUNCTION_REGISTRY: Dict[str, Callable] = {}
+
+
+def register_action_function(name: str, func: Callable):
+    """Register a plain Python function as an action"""
+    _ACTION_FUNCTION_REGISTRY[name] = func
+    emit_log(f"[ACTIONS] Registered function: {name}")
+
+
+def auto_discover_actions(modules: List[str]):
+    """
+    Auto-discover functions decorated with @action from specified modules.
+    Call this at startup to register all available actions.
+    """
+    for module_path in modules:
+        try:
+            module = importlib.import_module(module_path)
+            for attr_name in dir(module):
+                attr = getattr(module, attr_name)
+                if callable(attr) and hasattr(attr, '_is_action'):
+                    func_name = getattr(attr, '_action_name', attr_name)
+                    full_name = f"{module_path}.{func_name}"
+                    register_action_function(full_name, attr)
+                    emit_log(f"[ACTIONS] Auto-discovered: {full_name}")
+        except ImportError as e:
+            emit_log(f"[ACTIONS] Could not import module '{module_path}': {e}")
+        except Exception as e:
+            emit_log(f"[ACTIONS] Error discovering actions in '{module_path}': {e}")
+
+
 async def _execute_rest_skill(skill_meta: Skill, state: AgentState, input_ctx: Dict[str, Any]):
     if not skill_meta.rest:
         raise RuntimeError(f"{skill_meta.name} is missing REST configuration.")
@@ -521,6 +717,392 @@ async def _execute_rest_skill(skill_meta: Skill, state: AgentState, input_ctx: D
         "active_skill": skill_meta.name,
         "data_store": updated_store,
     }
+
+
+# --- ACTION EXECUTORS ---
+
+async def _execute_action_skill(skill_meta: Skill, state: AgentState, input_ctx: Dict[str, Any]):
+    """Execute a skill using the action executor"""
+    if not skill_meta.action:
+        raise RuntimeError(f"{skill_meta.name} is missing action configuration.")
+    
+    action_cfg = skill_meta.action
+    await publish_log(f"[EXECUTOR] Running action {skill_meta.name} (type: {action_cfg.type.value})")
+    
+    try:
+        # Execute based on action type
+        if action_cfg.type == ActionType.PYTHON_FUNCTION:
+            result = await _execute_python_function(action_cfg, input_ctx, state)
+            
+        elif action_cfg.type == ActionType.DATA_QUERY:
+            result = await _execute_data_query(action_cfg, input_ctx)
+            
+        elif action_cfg.type == ActionType.DATA_PIPELINE:
+            result = await _execute_data_pipeline(action_cfg, input_ctx)
+            
+        elif action_cfg.type == ActionType.SCRIPT:
+            result = await _execute_script(action_cfg, input_ctx)
+            
+        elif action_cfg.type == ActionType.HTTP_CALL:
+            result = await _execute_http_call(action_cfg, input_ctx)
+            
+        else:
+            raise ValueError(f"Unknown action type: {action_cfg.type}")
+        
+        # Validate result is a dict
+        if not isinstance(result, dict):
+            raise ValueError(f"Action {skill_meta.name} must return a dict, got {type(result)}")
+        
+        # Merge results into data_store
+        updated_store = state["data_store"]
+        for path, val in result.items():
+            updated_store = _set_path_value(updated_store, path, val)
+        
+        await publish_log(f"[EXECUTOR] Action {skill_meta.name} completed. Results: {list(result.keys())}")
+        
+        return {
+            "data_store": updated_store,
+            "history": [f"Executed {skill_meta.name} (action)"]
+        }
+        
+    except Exception as exc:
+        await publish_log(f"[EXECUTOR] Action {skill_meta.name} failed: {exc}")
+        raise
+
+
+async def _execute_python_function(cfg: ActionConfig, inputs: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
+    """Execute a plain Python function"""
+    if not cfg.function or not cfg.module:
+        raise ValueError("python_function action requires 'function' and 'module' fields")
+    
+    func_key = f"{cfg.module}.{cfg.function}"
+    
+    # Try to get from registry first
+    if func_key in _ACTION_FUNCTION_REGISTRY:
+        func = _ACTION_FUNCTION_REGISTRY[func_key]
+    else:
+        # Dynamic import if not registered
+        try:
+            module = importlib.import_module(cfg.module)
+            func = getattr(module, cfg.function)
+            _ACTION_FUNCTION_REGISTRY[func_key] = func
+            emit_log(f"[ACTIONS] Dynamically loaded: {func_key}")
+        except ImportError as e:
+            raise RuntimeError(f"Cannot import module '{cfg.module}': {e}") from e
+        except AttributeError as e:
+            raise RuntimeError(f"Function '{cfg.function}' not found in module '{cfg.module}': {e}") from e
+    
+    # Execute function (handle both sync and async)
+    try:
+        if asyncio.iscoroutinefunction(func):
+            result = await func(**inputs)
+        else:
+            # Run sync function in thread pool to avoid blocking
+            # Pass inputs as keyword arguments to thread
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, lambda: func(**inputs))
+    except TypeError as e:
+        # Better error message for argument mismatches
+        import inspect
+        sig = inspect.signature(func)
+        expected = set(sig.parameters.keys())
+        provided = set(inputs.keys())
+        
+        if expected != provided:
+            missing = expected - provided
+            extra = provided - expected
+            msg = f"Function '{cfg.function}' signature mismatch."
+            if missing:
+                msg += f" Missing parameters: {missing}."
+            if extra:
+                msg += f" Extra parameters: {extra}."
+            msg += f" Expected: {sorted(expected)}, Provided: {sorted(provided)}"
+            raise RuntimeError(msg) from e
+        else:
+            # Same parameters but still TypeError - re-raise original
+            raise
+    
+    # Ensure result is a dict
+    if not isinstance(result, dict):
+        raise ValueError(f"Function {func_key} must return a dict, got {type(result)}")
+    
+    return result
+
+
+async def _execute_data_query(cfg: ActionConfig, inputs: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute a database query"""
+    if not cfg.source:
+        raise ValueError("data_query action requires 'source' field")
+    
+    source = cfg.source.lower()
+    
+    if source == "postgres":
+        return await _execute_postgres_query(cfg, inputs)
+    elif source == "mongodb":
+        return await _execute_mongodb_query(cfg, inputs)
+    elif source == "redis":
+        return await _execute_redis_query(cfg, inputs)
+    else:
+        raise ValueError(f"Unknown data source: {cfg.source}")
+
+
+async def _execute_postgres_query(cfg: ActionConfig, inputs: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute a PostgreSQL query"""
+    import psycopg
+    
+    if not cfg.query:
+        raise ValueError("postgres query requires 'query' field")
+    
+    # Format query with input context
+    query = _format_with_ctx(cfg.query, inputs)
+    
+    # Get database URI
+    db_uri = _get_env_value("DATABASE_URL", "")
+    if not db_uri:
+        raise RuntimeError("DATABASE_URL not configured for postgres queries")
+    
+    # Execute query in thread to avoid blocking
+    def _execute_sync():
+        with psycopg.connect(db_uri) as conn:
+            with conn.cursor() as cur:
+                cur.execute(query)
+                
+                # Check if query returns results
+                if cur.description:
+                    columns = [desc[0] for desc in cur.description]
+                    rows = cur.fetchall()
+                    return {
+                        "query_result": [dict(zip(columns, row)) for row in rows],
+                        "row_count": len(rows)
+                    }
+                else:
+                    # INSERT/UPDATE/DELETE
+                    return {
+                        "affected_rows": cur.rowcount
+                    }
+    
+    try:
+        result = await asyncio.to_thread(_execute_sync)
+        await publish_log(f"[ACTIONS] Postgres query executed successfully")
+        return result
+    except Exception as e:
+        raise RuntimeError(f"Postgres query failed: {e}") from e
+
+
+async def _execute_mongodb_query(cfg: ActionConfig, inputs: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute a MongoDB query"""
+    from data.mongo import get_collection
+    
+    if not cfg.collection:
+        raise ValueError("mongodb query requires 'collection' field")
+    
+    collection = get_collection(cfg.collection)
+    
+    # Format filter with input context
+    filter_dict = cfg.filter or {}
+    formatted_filter = {}
+    for key, value in filter_dict.items():
+        if isinstance(value, str):
+            formatted_filter[key] = _format_with_ctx(value, inputs)
+        else:
+            formatted_filter[key] = value
+    
+    # Execute query in thread
+    def _execute_sync():
+        results = list(collection.find(formatted_filter))
+        # Convert ObjectId to string for serialization
+        for doc in results:
+            if '_id' in doc:
+                doc['_id'] = str(doc['_id'])
+        return results
+    
+    try:
+        results = await asyncio.to_thread(_execute_sync)
+        await publish_log(f"[ACTIONS] MongoDB query executed successfully ({len(results)} docs)")
+        return {
+            "query_result": results,
+            "doc_count": len(results)
+        }
+    except Exception as e:
+        raise RuntimeError(f"MongoDB query failed: {e}") from e
+
+
+async def _execute_redis_query(cfg: ActionConfig, inputs: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute a Redis query (placeholder for future implementation)"""
+    raise NotImplementedError("Redis data source not yet implemented")
+
+
+async def _execute_data_pipeline(cfg: ActionConfig, inputs: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute multi-step data pipeline"""
+    if not cfg.steps:
+        raise ValueError("data_pipeline action requires 'steps' field")
+    
+    context = dict(inputs)
+    await publish_log(f"[ACTIONS] Starting data pipeline with {len(cfg.steps)} steps")
+    
+    for step_idx, step in enumerate(cfg.steps):
+        step_type = step.get("type")
+        
+        if step_type == "query":
+            # Execute a data query step
+            source = step.get("source")
+            if not source:
+                raise ValueError(f"Pipeline step {step_idx}: 'query' type requires 'source'")
+            
+            # Create temporary ActionConfig for the query
+            query_cfg = ActionConfig(
+                type=ActionType.DATA_QUERY,
+                source=source,
+                query=step.get("query"),
+                collection=step.get("collection"),
+                filter=step.get("filter")
+            )
+            result = await _execute_data_query(query_cfg, context)
+            
+            # Store result in context
+            output_key = step.get("output", "result")
+            context[output_key] = result.get("query_result", result)
+            await publish_log(f"[ACTIONS] Pipeline step {step_idx}: query completed")
+            
+        elif step_type == "transform":
+            # Apply transformation function
+            func_name = step.get("function")
+            if not func_name:
+                raise ValueError(f"Pipeline step {step_idx}: 'transform' type requires 'function'")
+            
+            # Load transformation function
+            if func_name in _ACTION_FUNCTION_REGISTRY:
+                transform_func = _ACTION_FUNCTION_REGISTRY[func_name]
+            else:
+                raise ValueError(f"Transform function '{func_name}' not found in registry")
+            
+            # Get inputs for transform
+            input_keys = step.get("inputs", [])
+            transform_inputs = {key: context.get(key) for key in input_keys}
+            
+            # Execute transform
+            if asyncio.iscoroutinefunction(transform_func):
+                transform_result = await transform_func(**transform_inputs)
+            else:
+                transform_result = await asyncio.to_thread(transform_func, **transform_inputs)
+            
+            # Store result
+            output_key = step.get("output", "result")
+            context[output_key] = transform_result
+            await publish_log(f"[ACTIONS] Pipeline step {step_idx}: transform completed")
+            
+        elif step_type == "merge":
+            # Merge multiple inputs
+            input_keys = step.get("inputs", [])
+            if len(input_keys) < 2:
+                raise ValueError(f"Pipeline step {step_idx}: 'merge' requires at least 2 inputs")
+            
+            merged = {}
+            for key in input_keys:
+                if key in context and isinstance(context[key], dict):
+                    merged = _deep_merge_dict(merged, context[key])
+            
+            output_key = step.get("output", "merged")
+            context[output_key] = merged
+            await publish_log(f"[ACTIONS] Pipeline step {step_idx}: merge completed")
+            
+        else:
+            raise ValueError(f"Pipeline step {step_idx}: unknown type '{step_type}'")
+    
+    # Return only the outputs, not the entire context
+    # Filter to only new keys added during pipeline
+    output_keys = set(context.keys()) - set(inputs.keys())
+    return {key: context[key] for key in output_keys}
+
+
+async def _execute_script(cfg: ActionConfig, inputs: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute external script"""
+    if not cfg.script_path:
+        raise ValueError("script action requires 'script_path' field")
+    
+    script_path = Path(cfg.script_path)
+    if not script_path.exists():
+        raise FileNotFoundError(f"Script not found: {script_path}")
+    
+    # Prepare input as JSON
+    input_json = json.dumps(inputs)
+    
+    # Execute script
+    await publish_log(f"[ACTIONS] Executing script: {script_path}")
+    
+    def _run_script():
+        result = subprocess.run(
+            [cfg.interpreter, str(script_path)],
+            input=input_json,
+            capture_output=True,
+            text=True,
+            timeout=cfg.timeout
+        )
+        return result
+    
+    try:
+        result = await asyncio.to_thread(_run_script)
+        
+        if result.returncode != 0:
+            raise RuntimeError(f"Script failed with exit code {result.returncode}: {result.stderr}")
+        
+        # Parse output as JSON
+        try:
+            output = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"Script output is not valid JSON: {e}\nOutput: {result.stdout}") from e
+        
+        if not isinstance(output, dict):
+            raise ValueError(f"Script must output a JSON object, got {type(output)}")
+        
+        await publish_log(f"[ACTIONS] Script executed successfully")
+        return output
+        
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"Script timed out after {cfg.timeout} seconds")
+    except Exception as e:
+        raise RuntimeError(f"Script execution failed: {e}") from e
+
+
+async def _execute_http_call(cfg: ActionConfig, inputs: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute HTTP call (simpler than REST executor - synchronous)"""
+    if not cfg.url:
+        raise ValueError("http_call action requires 'url' field")
+    
+    # Format URL with input context
+    url = _format_with_ctx(cfg.url, inputs)
+    method = (cfg.method or "GET").upper()
+    
+    await publish_log(f"[ACTIONS] HTTP {method} call to {url}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=cfg.timeout, follow_redirects=True) as client:
+            response = await client.request(
+                method,
+                url,
+                json=inputs if method in ["POST", "PUT", "PATCH"] else None,
+                headers=cfg.headers
+            )
+            response.raise_for_status()
+            
+            # Parse response
+            content_type = response.headers.get("content-type", "")
+            if "application/json" in content_type.lower():
+                result = response.json()
+            else:
+                result = {"response": response.text}
+            
+            await publish_log(f"[ACTIONS] HTTP call completed (status: {response.status_code})")
+            
+            # Ensure result is a dict
+            if not isinstance(result, dict):
+                return {"response": result}
+            return result
+            
+    except httpx.HTTPStatusError as e:
+        raise RuntimeError(f"HTTP call failed with status {e.response.status_code}: {e}") from e
+    except Exception as e:
+        raise RuntimeError(f"HTTP call failed: {e}") from e
 
 
 # Load registry from markdown at import time
@@ -622,6 +1204,10 @@ async def skilled_executor(state: AgentState):
     # REST executor path: fire-and-pause until callback arrives.
     if skill_meta.executor == "rest":
         return await _execute_rest_skill(skill_meta, state, input_ctx)
+    
+    # ACTION executor path: deterministic function execution
+    if skill_meta.executor == "action":
+        return await _execute_action_skill(skill_meta, state, input_ctx)
 
     # Dynamic Schema: In reality, read ## OUTPUT SCHEMA from an MD file
     # Here we simulate the fields based on skill_meta.produces
