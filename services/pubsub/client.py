@@ -84,24 +84,33 @@ class PostgresPubSubClient(PubSubClient):
             conn.execute(f"LISTEN {channel}")
             print(f"[PubSub] Listening on PostgreSQL channel: {channel}")
             
+            # Set a shorter timeout for connection
+            conn.execute("SET statement_timeout = '100ms'")
+            
             while not stop_flag.is_set():
-                # Keep-alive query
-                conn.execute("SELECT 1")
+                try:
+                    # Keep-alive query with shorter timeout
+                    conn.execute("SELECT 1")
+                    
+                    # Process any notifications
+                    for notify in conn.notifies():
+                        try:
+                            payload = json.loads(notify.payload)
+                        except Exception:
+                            payload = {"raw": notify.payload}
+                        callback(payload)
+                except Exception:
+                    # Ignore timeout errors during shutdown
+                    if stop_flag.is_set():
+                        break
                 
-                # Process any notifications
-                for notify in conn.notifies():
-                    try:
-                        payload = json.loads(notify.payload)
-                    except Exception:
-                        payload = {"raw": notify.payload}
-                    callback(payload)
-                
-                # Sleep to avoid tight loop (important!)
+                # Sleep briefly to allow quick shutdown
                 time.sleep(0.1)
             
             print(f"[PubSub] Stopped listening on PostgreSQL channel: {channel}")
         except Exception as e:
-            print(f"[PubSub] PostgreSQL listen error: {e}")
+            if not stop_flag.is_set():
+                print(f"[PubSub] PostgreSQL listen error: {e}")
     
     def close(self):
         """Close PostgreSQL connection."""
@@ -173,32 +182,42 @@ class RedisPubSubClient(PubSubClient):
             return False
     
     def listen(self, channel: str, callback: Callable[[Dict[str, Any]], None], stop_flag: Event):
-        """Listen via Redis SUBSCRIBE (blocking, efficient)."""
+        """Listen via Redis SUBSCRIBE with timeout for quick shutdown."""
         try:
             redis_client = self._get_redis()
             self._pubsub = redis_client.pubsub()
             self._pubsub.subscribe(channel)
             print(f"[PubSub] Listening on Redis channel: {channel}")
             
-            # Blocking listen - no polling needed!
-            for message in self._pubsub.listen():
-                if stop_flag.is_set():
+            # Use get_message with timeout instead of blocking listen
+            while not stop_flag.is_set():
+                try:
+                    # Check for messages with timeout to allow quick shutdown
+                    message = self._pubsub.get_message(timeout=0.1)
+                    
+                    if message and message['type'] == 'message':
+                        try:
+                            payload = json.loads(message['data'])
+                        except Exception:
+                            payload = {"raw": message['data']}
+                        callback(payload)
+                except Exception as e:
+                    # Ignore timeout/shutdown errors
+                    if not stop_flag.is_set():
+                        print(f"[PubSub] Redis message error: {e}")
                     break
-                
-                if message['type'] == 'message':
-                    try:
-                        payload = json.loads(message['data'])
-                    except Exception:
-                        payload = {"raw": message['data']}
-                    callback(payload)
             
             print(f"[PubSub] Stopped listening on Redis channel: {channel}")
         except Exception as e:
-            print(f"[PubSub] Redis listen error: {e}")
+            if not stop_flag.is_set():
+                print(f"[PubSub] Redis listen error: {e}")
         finally:
             if self._pubsub:
-                self._pubsub.unsubscribe(channel)
-                self._pubsub.close()
+                try:
+                    self._pubsub.unsubscribe(channel)
+                    self._pubsub.close()
+                except Exception:
+                    pass  # Ignore errors during cleanup
     
     def close(self):
         """Close Redis connections."""

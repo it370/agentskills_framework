@@ -40,6 +40,8 @@ SELECT
     c.thread_id,
     c.checkpoint_id,
     c.checkpoint_ns,
+    -- Get run_name from run_metadata if available
+    COALESCE(rm.run_name, c.thread_id) as run_name,
     -- Extract active_skill from checkpoint JSONB
     COALESCE(
         c.checkpoint->'channel_values'->>'active_skill',
@@ -136,6 +138,7 @@ SELECT
     c.metadata
 FROM latest_checkpoints c
 INNER JOIN thread_start_times ts ON c.thread_id = ts.thread_id
+LEFT JOIN run_metadata rm ON c.thread_id = rm.thread_id
 ORDER BY ts.created_at DESC NULLS LAST;
 
 COMMENT ON VIEW run_list_view IS 'Enriched view of workflow runs with computed status and metadata for admin UI. Shows one row per thread (latest checkpoint), ordered by most recent activity first.';

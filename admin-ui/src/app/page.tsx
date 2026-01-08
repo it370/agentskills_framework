@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { connectAdminEvents, fetchRuns } from "../lib/api";
+import { useRouter } from "next/navigation";
+import { connectAdminEvents, fetchRuns, rerunWorkflow } from "../lib/api";
 import { CheckpointTuple, RunEvent, RunSummary } from "../lib/types";
 import DashboardLayout from "../components/DashboardLayout";
 
@@ -14,6 +15,7 @@ type RunRow = {
   history?: string[];
   status?: string;
   sop_preview?: string;
+  run_name?: string;
 };
 
 function normalizeRun(cp: CheckpointTuple | RunSummary): RunRow {
@@ -27,6 +29,7 @@ function normalizeRun(cp: CheckpointTuple | RunSummary): RunRow {
       history: [],  // Not needed when status is pre-computed
       status: cp.status,
       sop_preview: cp.sop_preview,
+      run_name: cp.run_name,  // Include run_name from API
     };
   }
 
@@ -147,9 +150,34 @@ function formatRelativeTime(timestamp?: string): string {
 }
 
 export default function RunsPage() {
+  const router = useRouter();
   const [runs, setRuns] = useState<Record<string, RunRow>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [rerunningThreadId, setRerunningThreadId] = useState<string | null>(null);
+
+  const handleRerun = async (threadId: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    if (!confirm(`Rerun workflow ${threadId} with same inputs?`)) {
+      return;
+    }
+    
+    setRerunningThreadId(threadId);
+    try {
+      const result = await rerunWorkflow(threadId);
+      console.log("[Rerun] Success:", result);
+      
+      // Navigate to the new thread
+      router.push(`/admin/${result.thread_id}`);
+    } catch (err: any) {
+      console.error("[Rerun] Error:", err);
+      alert(`Failed to rerun: ${err.message}`);
+    } finally {
+      setRerunningThreadId(null);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -310,49 +338,36 @@ export default function RunsPage() {
         ) : (
           <div className="space-y-3">
             {orderedRuns.map((run) => (
-              <Link
+              <div
                 key={run.thread_id}
-                href={`/admin/${run.thread_id}`}
-                className="block group"
+                className="bg-white rounded-lg border border-gray-200 hover:border-gray-300 hover:shadow-lg transition-all duration-150"
               >
-                <div className="bg-white rounded-lg border border-gray-200 hover:border-gray-300 hover:shadow-lg transition-all duration-150">
-                  <div className="p-5">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-4 flex-1 min-w-0">
-                        {/* Status Indicator */}
-                        <div className="flex-shrink-0">
-                          <StatusBadge status={run.status} />
-                        </div>
+                <div className="p-5">
+                  <div className="flex items-center justify-between">
+                    <Link
+                      href={`/admin/${run.thread_id}`}
+                      className="flex items-center gap-4 flex-1 min-w-0 group"
+                    >
+                      {/* Status Indicator */}
+                      <div className="flex-shrink-0">
+                        <StatusBadge status={run.status} />
+                      </div>
 
-                        {/* Thread ID */}
-                        <div className="flex-1 min-w-0">
-                          <h3 className="text-base font-semibold text-gray-900 truncate group-hover:text-blue-600 transition-colors">
+                      {/* Thread ID / Run Name */}
+                      <div className="flex-1 min-w-0">
+                        <h3 className="text-base font-semibold text-gray-900 truncate group-hover:text-blue-600 transition-colors">
+                          {run.run_name || run.thread_id}
+                        </h3>
+                        {run.run_name && run.run_name !== run.thread_id && (
+                          <p className="text-xs text-gray-500 truncate mt-0.5">
                             {run.thread_id}
-                          </h3>
-                        </div>
+                          </p>
+                        )}
+                      </div>
 
-                        {/* Metadata */}
-                        <div className="flex items-center gap-6 text-sm text-gray-600">
-                          {run.active_skill && run.active_skill !== "END" && (
-                            <div className="flex items-center gap-2">
-                              <svg
-                                className="w-4 h-4 text-gray-400"
-                                fill="none"
-                                viewBox="0 0 24 24"
-                                stroke="currentColor"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={2}
-                                  d="M13 10V3L4 14h7v7l9-11h-7z"
-                                />
-                              </svg>
-                              <span className="font-medium">
-                                {run.active_skill}
-                              </span>
-                            </div>
-                          )}
+                      {/* Metadata */}
+                      <div className="flex items-center gap-6 text-sm text-gray-600">
+                        {run.active_skill && run.active_skill !== "END" && (
                           <div className="flex items-center gap-2">
                             <svg
                               className="w-4 h-4 text-gray-400"
@@ -364,62 +379,124 @@ export default function RunsPage() {
                                 strokeLinecap="round"
                                 strokeLinejoin="round"
                                 strokeWidth={2}
-                                d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                                d="M13 10V3L4 14h7v7l9-11h-7z"
                               />
                             </svg>
-                            <span>{formatRelativeTime(run.updated_at)}</span>
+                            <span className="font-medium">
+                              {run.active_skill}
+                            </span>
                           </div>
-                          {run.history && run.history.length > 0 && (
-                            <div className="flex items-center gap-2">
-                              <svg
-                                className="w-4 h-4 text-gray-400"
-                                fill="none"
-                                viewBox="0 0 24 24"
-                                stroke="currentColor"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={2}
-                                  d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
-                                />
-                              </svg>
-                              <span>{run.history.length} steps</span>
-                            </div>
-                          )}
+                        )}
+                        <div className="flex items-center gap-2">
+                          <svg
+                            className="w-4 h-4 text-gray-400"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                            />
+                          </svg>
+                          <span>{formatRelativeTime(run.updated_at)}</span>
                         </div>
-
-                        {/* Arrow */}
-                        <svg
-                          className="w-5 h-5 text-gray-400 group-hover:text-gray-600 flex-shrink-0 transition-colors"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          stroke="currentColor"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth={2}
-                            d="M9 5l7 7-7 7"
-                          />
-                        </svg>
+                        {run.history && run.history.length > 0 && (
+                          <div className="flex items-center gap-2">
+                            <svg
+                              className="w-4 h-4 text-gray-400"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
+                              />
+                            </svg>
+                            <span>{run.history.length} steps</span>
+                          </div>
+                        )}
                       </div>
-                    </div>
 
-                    {/* Last History Entry */}
-                    {run.history && run.history.length > 0 && (
-                      <div className="mt-3 pt-3 border-t border-gray-100">
-                        <p className="text-sm text-gray-600 truncate">
-                          <span className="font-medium text-gray-700">
-                            Latest:
-                          </span>{" "}
-                          {run.history[run.history.length - 1]}
-                        </p>
-                      </div>
-                    )}
+                      {/* Arrow */}
+                      <svg
+                        className="w-5 h-5 text-gray-400 group-hover:text-gray-600 flex-shrink-0 transition-colors"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M9 5l7 7-7 7"
+                        />
+                      </svg>
+                    </Link>
+
+                    {/* Rerun Button */}
+                    <button
+                      onClick={(e) => handleRerun(run.thread_id, e)}
+                      disabled={rerunningThreadId === run.thread_id}
+                      className="ml-4 px-3 py-2 bg-gray-100 hover:bg-gray-200 disabled:bg-gray-50 text-gray-700 disabled:text-gray-400 rounded-lg transition-colors flex items-center gap-2 text-sm font-medium"
+                      title="Rerun with same inputs"
+                    >
+                      {rerunningThreadId === run.thread_id ? (
+                        <>
+                          <svg
+                            className="animate-spin h-4 w-4"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                            />
+                          </svg>
+                          <span>Rerunning...</span>
+                        </>
+                      ) : (
+                        <>
+                          <svg
+                            className="w-4 h-4"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                            />
+                          </svg>
+                          <span>Rerun</span>
+                        </>
+                      )}
+                    </button>
                   </div>
+
+                  {/* Last History Entry */}
+                  {run.history && run.history.length > 0 && (
+                    <div className="mt-3 pt-3 border-t border-gray-100">
+                      <p className="text-sm text-gray-600 truncate">
+                        <span className="font-medium text-gray-700">
+                          Latest:
+                        </span>{" "}
+                        {run.history[run.history.length - 1]}
+                      </p>
+                    </div>
+                  )}
                 </div>
-              </Link>
+              </div>
             ))}
           </div>
         )}

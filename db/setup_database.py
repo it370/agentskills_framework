@@ -55,6 +55,7 @@ def main():
     schemas = [
         (db_dir / "checkpoints_schema.sql", "Checkpoints schema (LangGraph)"),
         (db_dir / "logs_schema.sql", "Thread logs schema"),
+        (db_dir / "run_metadata_schema.sql", "Run metadata schema (for reruns)"),
         (db_dir / "run_list_view.sql", "Run list view with computed status"),
     ]
     

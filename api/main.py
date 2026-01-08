@@ -98,28 +98,45 @@ async def _maybe_start_pubsub_listener():
 async def _stop_pubsub_listener():
     """Stop the pub/sub event listener thread."""
     global run_event_listener_thread, _pubsub_client
-    if run_event_listener_thread and run_event_listener_thread.is_alive():
-        _listener_stop_flag.set()
-        run_event_listener_thread.join(timeout=2)
+    
+    emit_log("[ADMIN] Stopping pub/sub event listener...")
+    
+    # Signal the thread to stop
+    _listener_stop_flag.set()
+    
+    # Close the client to interrupt blocking operations
     if _pubsub_client:
-        _pubsub_client.close()
+        try:
+            _pubsub_client.close()
+        except Exception as e:
+            emit_log(f"[ADMIN] Error closing pubsub client: {e}")
+    
+    # Wait briefly for thread to finish
+    if run_event_listener_thread and run_event_listener_thread.is_alive():
+        run_event_listener_thread.join(timeout=0.5)  # Reduced from 2 seconds
+        if run_event_listener_thread.is_alive():
+            emit_log("[ADMIN] Pub/sub listener thread still running (will be terminated by daemon flag)")
 
 
 @api.on_event("startup")
 async def _start_broadcast():
     # Start pub/sub listener for admin events
+    emit_log("[API] Starting background services...")
     await _maybe_start_pubsub_listener()
 
 
 @api.on_event("shutdown")
 async def _stop_broadcast():
     # Stop pub/sub listener
+    emit_log("[API] Shutting down background services...")
     await _stop_pubsub_listener()
+    emit_log("[API] Shutdown complete")
 
 class StartRequest(BaseModel):
     thread_id: str
     sop: str
     initial_data: Dict[str, Any]
+    run_name: Optional[str] = None  # Human-friendly name (optional)
 
 @api.post("/start")
 async def start_process(req: StartRequest):
@@ -132,10 +149,97 @@ async def start_process(req: StartRequest):
     }
     await publish_log(f"[API] Start requested for thread={req.thread_id}", req.thread_id)
     
+    # Use run_name if provided, otherwise default to thread_id
+    run_name = req.run_name if req.run_name and req.run_name.strip() else req.thread_id
+    
+    # Save run metadata to database for rerun functionality
+    await _save_run_metadata(req.thread_id, req.sop, req.initial_data, run_name=run_name)
+    
     # Run the workflow in the background to avoid blocking the response
     asyncio.create_task(_run_workflow(initial_state, config))
     
-    return {"status": "started", "thread_id": req.thread_id}
+    return {"status": "started", "thread_id": req.thread_id, "run_name": run_name}
+
+
+async def _save_run_metadata(thread_id: str, sop: str, initial_data: Dict[str, Any], parent_thread_id: Optional[str] = None, run_name: Optional[str] = None):
+    """Save run metadata to database for rerun functionality."""
+    db_uri = _get_env_value("DATABASE_URL", "")
+    if not db_uri:
+        emit_log("[API] DATABASE_URL not set, skipping run metadata save")
+        return
+    
+    # Default run_name to thread_id if not provided
+    if not run_name or not run_name.strip():
+        run_name = thread_id
+    
+    def _save_sync():
+        import psycopg
+        with psycopg.connect(db_uri, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                # Check if parent thread exists and get its rerun count
+                rerun_count = 0
+                if parent_thread_id:
+                    cur.execute(
+                        "SELECT rerun_count FROM run_metadata WHERE thread_id = %s",
+                        (parent_thread_id,)
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        rerun_count = row[0] + 1
+                
+                # Insert run metadata
+                cur.execute("""
+                    INSERT INTO run_metadata (thread_id, run_name, sop, initial_data, parent_thread_id, rerun_count)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (thread_id) DO UPDATE
+                    SET run_name = EXCLUDED.run_name,
+                        sop = EXCLUDED.sop,
+                        initial_data = EXCLUDED.initial_data,
+                        parent_thread_id = EXCLUDED.parent_thread_id,
+                        rerun_count = EXCLUDED.rerun_count
+                """, (thread_id, run_name, sop, json.dumps(initial_data), parent_thread_id, rerun_count))
+    
+    try:
+        await asyncio.to_thread(_save_sync)
+        await publish_log(f"[API] Saved run metadata for thread={thread_id}, name={run_name}", thread_id)
+    except Exception as e:
+        emit_log(f"[API] Failed to save run metadata: {e}")
+
+
+async def _get_run_metadata(thread_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieve run metadata from database."""
+    db_uri = _get_env_value("DATABASE_URL", "")
+    if not db_uri:
+        return None
+    
+    def _get_sync():
+        import psycopg
+        with psycopg.connect(db_uri) as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT thread_id, run_name, sop, initial_data, created_at, parent_thread_id, rerun_count, metadata
+                    FROM run_metadata
+                    WHERE thread_id = %s
+                """, (thread_id,))
+                row = cur.fetchone()
+                if row:
+                    return {
+                        "thread_id": row[0],
+                        "run_name": row[1] or row[0],  # Default to thread_id if run_name is None
+                        "sop": row[2],
+                        "initial_data": row[3],
+                        "created_at": row[4].isoformat() if row[4] else None,
+                        "parent_thread_id": row[5],
+                        "rerun_count": row[6],
+                        "metadata": row[7]
+                    }
+                return None
+    
+    try:
+        return await asyncio.to_thread(_get_sync)
+    except Exception as e:
+        emit_log(f"[API] Failed to get run metadata: {e}")
+        return None
 
 
 async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any]):
@@ -251,6 +355,7 @@ async def list_runs(limit: int = 50):
                                 thread_id,
                                 checkpoint_id,
                                 checkpoint_ns,
+                                run_name,
                                 active_skill,
                                 history_count,
                                 status,
@@ -270,14 +375,15 @@ async def list_runs(limit: int = 50):
                                 "thread_id": row[0],
                                 "checkpoint_id": row[1],
                                 "checkpoint_ns": row[2],
-                                "active_skill": row[3],
-                                "history_count": row[4],
-                                "status": row[5],
-                                "sop_preview": row[6],
-                                "created_at": row[7].isoformat() if row[7] else None,
-                                "updated_at": row[8].isoformat() if row[8] else None,
-                                "checkpoint": row[9],
-                                "metadata": row[10],
+                                "run_name": row[3],
+                                "active_skill": row[4],
+                                "history_count": row[5],
+                                "status": row[6],
+                                "sop_preview": row[7],
+                                "created_at": row[8].isoformat() if row[8] else None,
+                                "updated_at": row[9].isoformat() if row[9] else None,
+                                "checkpoint": row[10],
+                                "metadata": row[11],
                             }
                             for row in rows
                         ]
@@ -326,6 +432,73 @@ async def get_logs(thread_id: str, limit: int = 1000):
     """Retrieve historical logs for a specific thread."""
     logs = await get_thread_logs(thread_id, limit)
     return {"logs": logs, "count": len(logs)}
+
+
+@api.get("/admin/runs/{thread_id}/metadata")
+async def get_run_metadata_endpoint(thread_id: str):
+    """Get run metadata for a specific thread."""
+    metadata = await _get_run_metadata(thread_id)
+    if not metadata:
+        raise HTTPException(status_code=404, detail="Run metadata not found")
+    return metadata
+
+
+@api.post("/rerun/{thread_id}")
+async def rerun_workflow(thread_id: str):
+    """
+    Rerun a workflow with the same inputs as a previous run.
+    Creates a new thread with the same SOP and initial data.
+    """
+    import uuid
+    import re
+    
+    # Get the original run metadata
+    metadata = await _get_run_metadata(thread_id)
+    if not metadata:
+        raise HTTPException(status_code=404, detail="Original run not found")
+    
+    # Generate new thread ID with fresh GUID (no suffix appending)
+    new_thread_id = f"thread_{uuid.uuid4()}"
+    
+    # Generate new run name based on original
+    original_run_name = metadata.get('run_name', thread_id)
+    
+    # Strip any existing "(Rerun #N)" suffix to avoid duplication
+    base_run_name = re.sub(r'\s*\(Rerun #\d+\)\s*$', '', original_run_name).strip()
+    
+    # Add the new rerun suffix
+    new_run_name = f"{base_run_name} (Rerun #{metadata['rerun_count'] + 1})"
+    
+    await publish_log(f"[API] Rerun requested from thread={thread_id} -> new thread={new_thread_id}")
+    
+    # Create new run with same inputs
+    config = {"configurable": {"thread_id": new_thread_id}}
+    initial_state = {
+        "layman_sop": metadata["sop"],
+        "data_store": metadata["initial_data"],
+        "history": [f"Process Started (Rerun from {base_run_name})"],
+        "thread_id": new_thread_id,
+    }
+    
+    # Save metadata with parent reference and new run name
+    await _save_run_metadata(
+        new_thread_id, 
+        metadata["sop"], 
+        metadata["initial_data"], 
+        parent_thread_id=thread_id,
+        run_name=new_run_name
+    )
+    
+    # Start the workflow
+    asyncio.create_task(_run_workflow(initial_state, config))
+    
+    return {
+        "status": "started",
+        "thread_id": new_thread_id,
+        "run_name": new_run_name,
+        "parent_thread_id": thread_id,
+        "rerun_count": metadata["rerun_count"] + 1
+    }
 
 
 @api.post("/callback")
