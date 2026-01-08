@@ -136,7 +136,21 @@ async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any]):
     
     try:
         await app.ainvoke(initial_state, config)
-        await publish_log(f"[API] Workflow completed for thread={thread_id}", thread_id)
+        
+        # Check the actual state after workflow execution
+        state = await app.aget_state(config)
+        next_nodes = state.next or []
+        
+        # Determine if truly completed or paused at an interrupt
+        if not next_nodes or (len(next_nodes) == 1 and next_nodes[0] == "__end__"):
+            await publish_log(f"[API] Workflow completed for thread={thread_id}", thread_id)
+        elif "human_review" in next_nodes:
+            await publish_log(f"[API] Workflow paused at human_review for thread={thread_id}", thread_id)
+        elif "await_callback" in next_nodes:
+            await publish_log(f"[API] Workflow paused awaiting callback for thread={thread_id}", thread_id)
+        else:
+            await publish_log(f"[API] Workflow paused at {next_nodes} for thread={thread_id}", thread_id)
+            
     except Exception as exc:
         await publish_log(f"[API] Workflow error for thread={thread_id}: {exc}", thread_id)
 
@@ -166,11 +180,27 @@ async def approve_step(
     # If the human edited data, update the state first
     if updated_data:
         await app.aupdate_state(config, {"data_store": updated_data})
-        print(f"[API] Human updated data for {thread_id}")
+        await publish_log(f"[API] Human updated data for thread={thread_id}", thread_id)
     
-    await publish_log(f"[API] Approval received; resuming thread={thread_id}", thread_id)
+    await publish_log(f"[API] Human approval received; resuming thread={thread_id}", thread_id)
+    
     # Resume the graph
     await app.ainvoke(None, config)
+    
+    # Check the state after resuming
+    state = await app.aget_state(config)
+    next_nodes = state.next or []
+    
+    # Log appropriate status
+    if not next_nodes or (len(next_nodes) == 1 and next_nodes[0] == "__end__"):
+        await publish_log(f"[API] Workflow completed after approval for thread={thread_id}", thread_id)
+    elif "human_review" in next_nodes:
+        await publish_log(f"[API] Workflow paused again at human_review for thread={thread_id}", thread_id)
+    elif "await_callback" in next_nodes:
+        await publish_log(f"[API] Workflow paused awaiting callback for thread={thread_id}", thread_id)
+    else:
+        await publish_log(f"[API] Workflow resumed and paused at {next_nodes} for thread={thread_id}", thread_id)
+    
     return {"status": "resumed"}
 
 class CallbackPayload(BaseModel):

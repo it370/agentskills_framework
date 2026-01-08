@@ -39,6 +39,22 @@ SELECT
                OR LOWER(history_item) LIKE '%planner chose end%'
         ) THEN 'completed'
         
+        -- Check if awaiting human review (paused state)
+        WHEN EXISTS (
+            SELECT 1 FROM jsonb_array_elements_text(
+                COALESCE(
+                    c.checkpoint->'channel_values'->'history',
+                    c.checkpoint->'history',
+                    '[]'::jsonb
+                )
+            ) AS history_item
+            WHERE LOWER(history_item) LIKE '%awaiting human review%'
+               OR LOWER(history_item) LIKE '%redirecting to human_review%'
+        ) AND COALESCE(
+            c.checkpoint->'channel_values'->>'active_skill',
+            c.checkpoint->>'active_skill'
+        ) IS NULL THEN 'paused'
+        
         -- Active skill exists and is not END
         WHEN COALESCE(
             c.checkpoint->'channel_values'->>'active_skill',
@@ -49,7 +65,7 @@ SELECT
             c.checkpoint->>'active_skill'
         ) != 'END' THEN 'running'
         
-        -- Has history but no active skill
+        -- Has history but no active skill (check if truly completed or just paused)
         WHEN COALESCE(
             jsonb_array_length(c.checkpoint->'channel_values'->'history'),
             jsonb_array_length(c.checkpoint->'history'),
