@@ -5,6 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Agentic Orchestrator Dashboard.</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @keyframes fade-in {
+            from {
+                opacity: 0;
+                transform: translateY(-4px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        .animate-fade-in {
+            animation: fade-in 0.3s ease-out;
+        }
+    </style>
 </head>
 <body class="bg-gray-900 text-gray-100 min-h-screen p-8">
     <div class="max-w-6xl mx-auto">
@@ -28,7 +43,7 @@
                     <span class="text-xs text-gray-400">Streaming from server</span>
                 </div>
             </div>
-            <div id="logStream" class="text-sm font-mono h-80 overflow-y-auto bg-black p-4 rounded border border-gray-700"></div>
+            <div id="logStream" class="text-sm h-80 overflow-y-auto bg-gray-950 p-4 rounded border border-gray-700 space-y-2"></div>
         </section>
 
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -350,16 +365,16 @@
             historySnapshots.forEach(s => s.selected = false);
         }
 
-        // Color palette for different log sources
+        // Color palette for different log sources (dark theme)
         const logColors = [
-            'text-green-400',
-            'text-blue-400',
-            'text-yellow-400',
-            'text-purple-400',
-            'text-pink-400',
-            'text-cyan-400',
-            'text-orange-400',
-            'text-lime-400'
+            { text: 'text-green-400', bg: 'bg-green-950/50', border: 'border-green-800/50' },
+            { text: 'text-blue-400', bg: 'bg-blue-950/50', border: 'border-blue-800/50' },
+            { text: 'text-yellow-400', bg: 'bg-yellow-950/50', border: 'border-yellow-800/50' },
+            { text: 'text-purple-400', bg: 'bg-purple-950/50', border: 'border-purple-800/50' },
+            { text: 'text-pink-400', bg: 'bg-pink-950/50', border: 'border-pink-800/50' },
+            { text: 'text-cyan-400', bg: 'bg-cyan-950/50', border: 'border-cyan-800/50' },
+            { text: 'text-orange-400', bg: 'bg-orange-950/50', border: 'border-orange-800/50' },
+            { text: 'text-teal-400', bg: 'bg-teal-950/50', border: 'border-teal-800/50' }
         ];
         const sourceColorMap = {};
 
@@ -374,7 +389,41 @@
                 sourceColorMap[source] = logColors[colorIndex];
             }
             
-            return { source, color: sourceColorMap[source], match: sourceMatch };
+            return { source, colors: sourceColorMap[source], match: sourceMatch };
+        }
+
+        // Get icon for different agent types
+        function getIconForSource(source) {
+            const sourceLower = source.toLowerCase();
+            
+            // Planner icon - strategic brain/network
+            if (sourceLower.includes('planner') || sourceLower === 'plan') {
+                return `<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="3"></circle>
+                    <circle cx="6" cy="6" r="2"></circle>
+                    <circle cx="18" cy="6" r="2"></circle>
+                    <circle cx="6" cy="18" r="2"></circle>
+                    <circle cx="18" cy="18" r="2"></circle>
+                    <line x1="12" y1="9" x2="12" y2="6"></line>
+                    <line x1="9" y1="12" x2="6" y2="12"></line>
+                    <line x1="15" y1="12" x2="18" y2="12"></line>
+                    <line x1="12" y1="15" x2="6" y2="18"></line>
+                    <line x1="12" y1="15" x2="18" y2="18"></line>
+                </svg>`;
+            }
+            
+            // Executor icon - play/execute
+            if (sourceLower.includes('executor') || sourceLower.includes('execute')) {
+                return `<svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+                    <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                </svg>`;
+            }
+            
+            // Default agent icon - gear/cog
+            return `<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"></circle>
+                <path d="M12 1v6m0 6v6m5.2-14.8l-4.2 4.2m-1 1l-4.2 4.2M23 12h-6m-6 0H1m14.8 5.2l-4.2-4.2m-1-1l-4.2-4.2"></path>
+            </svg>`;
         }
 
         // --- Live log stream over WebSocket ---
@@ -385,25 +434,69 @@
                 logSocket.onmessage = (event) => {
                     const logDiv = document.getElementById('logStream');
                     const entry = document.createElement('div');
-                    entry.className = 'mb-1.5'; // Add vertical spacing
                     
                     // Get color based on source
-                    const { source, color, match } = getColorForSource(event.data);
+                    const { source, colors, match } = getColorForSource(event.data);
                     
-                    // Color only the source prefix, rest is white
+                    // Create chat-like bubble
+                    entry.className = `flex items-start gap-2 animate-fade-in`;
+                    
+                    // Timestamp
+                    const timestamp = new Date().toLocaleTimeString('en-US', { 
+                        hour12: false, 
+                        hour: '2-digit', 
+                        minute: '2-digit',
+                        second: '2-digit'
+                    });
+                    
+                    let messageContent = event.data;
+                    let sourceLabel = 'System';
+                    
+                    // Extract source and message
                     if (match) {
-                        const prefix = match[0];
-                        const rest = event.data.substring(prefix.length);
-                        entry.innerHTML = `<span class="${color}">${prefix}</span><span class="text-gray-300">${rest}</span>`;
-                    } else {
-                        entry.innerHTML = `<span class="text-gray-300">${event.data}</span>`;
+                        sourceLabel = source;
+                        messageContent = event.data.substring(match[0].length).trim();
                     }
                     
-                    // Highlight HITL messages
-                    if (event.data.toLowerCase().includes("hitl")) {
-                        entry.className = 'mb-1.5 text-red-400 font-bold cursor-pointer hover:text-red-300';
-                        entry.textContent = event.data;
+                    // Get appropriate icon
+                    const icon = getIconForSource(sourceLabel);
+                    
+                    // Special styling for HITL messages
+                    const isHitl = event.data.toLowerCase().includes("hitl") || event.data.toLowerCase().includes("human review");
+                    const isError = event.data.toLowerCase().includes("error") || event.data.toLowerCase().includes("failed");
+                    const isCallback = event.data.includes("CALLBACK");
+                    const isComplete = event.data.includes("Reached END") || event.data.includes("completed");
+                    
+                    let bubbleColors = colors;
+                    if (isHitl) {
+                        bubbleColors = { text: 'text-red-400', bg: 'bg-red-950/50', border: 'border-red-700/50' };
+                    } else if (isError) {
+                        bubbleColors = { text: 'text-red-400', bg: 'bg-red-950/50', border: 'border-red-800/50' };
+                    } else if (isCallback || isComplete) {
+                        bubbleColors = { text: 'text-emerald-400', bg: 'bg-emerald-950/50', border: 'border-emerald-700/50' };
+                    }
+                    
+                    entry.innerHTML = `
+                        <div class="flex-shrink-0 ${bubbleColors.text}">
+                            ${icon}
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <div class="${bubbleColors.bg} ${bubbleColors.border} border rounded-lg px-3 py-2 shadow-sm hover:shadow-md transition-shadow backdrop-blur-sm">
+                                <div class="flex items-center gap-2 mb-1">
+                                    <span class="${bubbleColors.text} font-semibold text-xs uppercase tracking-wide">${sourceLabel}</span>
+                                    <span class="text-gray-600 text-xs font-mono">•</span>
+                                    <span class="text-gray-500 text-xs font-mono">${timestamp}</span>
+                                </div>
+                                <div class="text-gray-300 text-sm leading-relaxed break-words">${messageContent || event.data}</div>
+                            </div>
+                        </div>
+                    `;
+                    
+                    // Make HITL messages clickable
+                    if (isHitl) {
+                        entry.style.cursor = 'pointer';
                         entry.onclick = () => openHitlModal();
+                        entry.querySelector('.rounded-lg').classList.add('hover:ring-2', 'hover:ring-red-400');
                     }
                     
                     logDiv.appendChild(entry);
@@ -411,7 +504,7 @@
                     while (logDiv.children.length > 200) {
                         logDiv.removeChild(logDiv.firstChild);
                     }
-                    // Auto-scroll to bottom like a console
+                    // Auto-scroll to bottom like a chat
                     logDiv.scrollTop = logDiv.scrollHeight;
 
                     // Hide REST pending spinner when callback/result messages arrive
