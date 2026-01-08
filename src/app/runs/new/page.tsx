@@ -1,0 +1,224 @@
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import DashboardLayout from "../../../components/DashboardLayout";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
+
+export default function NewRunPage() {
+  const router = useRouter();
+  const [sop, setSop] = useState(
+    "Retrieve order details of given order, if a valid company is obtained run through logbook to find the company's contact details."
+  );
+  const [initialData, setInitialData] = useState(
+    JSON.stringify({ order_number: "00000003" }, null, 2)
+  );
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const generateThreadId = () => {
+    if (typeof window !== "undefined" && window.crypto?.randomUUID) {
+      return `thread_${window.crypto.randomUUID()}`;
+    }
+    return `thread_${Date.now()}`;
+  };
+
+  const handleStart = async () => {
+    setError(null);
+    setLoading(true);
+
+    let parsedData;
+    try {
+      parsedData = JSON.parse(initialData);
+    } catch (e) {
+      setError("Initial Data must be valid JSON");
+      setLoading(false);
+      return;
+    }
+
+    const threadId = generateThreadId();
+    console.log("[NewRun] Starting thread:", threadId);
+
+    try {
+      const response = await fetch(`${API_BASE}/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          thread_id: threadId,
+          sop: sop,
+          initial_data: parsedData,
+        }),
+      });
+
+      console.log("[NewRun] Response status:", response.status);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Start failed: ${response.status} - ${errorText}`);
+      }
+
+      const result = await response.json();
+      console.log("[NewRun] Start result:", result);
+
+      // Use window.location for immediate redirect
+      const redirectUrl = `/admin/${threadId}?tab=config&sop=${encodeURIComponent(sop)}&initialData=${encodeURIComponent(initialData)}`;
+      console.log("[NewRun] Redirecting to:", redirectUrl);
+      
+      // Force navigation
+      window.location.href = redirectUrl;
+    } catch (err: any) {
+      console.error("[NewRun] Error:", err);
+      setError(err.message || "Failed to start run");
+      setLoading(false);
+    }
+  };
+
+  return (
+    <DashboardLayout>
+      <div className="p-8">
+        {/* Header */}
+        <div className="mb-6">
+          <Link
+            href="/"
+            className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900 mb-4"
+          >
+            <svg
+              className="w-4 h-4"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M15 19l-7-7 7-7"
+              />
+            </svg>
+            Back to Runs
+          </Link>
+          <h1 className="text-3xl font-bold text-gray-900">Start New Run</h1>
+          <p className="mt-2 text-sm text-gray-600">
+            Configure and launch a new workflow execution
+          </p>
+        </div>
+
+        {/* Error Alert */}
+        {error && (
+          <div className="mb-6 rounded-lg bg-red-50 border border-red-200 p-4 flex items-start gap-3">
+            <svg
+              className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+              />
+            </svg>
+            <div>
+              <h3 className="text-sm font-medium text-red-800">
+                Failed to start run
+              </h3>
+              <p className="mt-1 text-sm text-red-700">{error}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Form */}
+        <div className="max-w-4xl space-y-6">
+          <div className="bg-white rounded-lg border border-gray-200 p-6">
+            <label className="block mb-2">
+              <span className="text-sm font-medium text-gray-900">
+                Workflow Instructions (Layman SOP)
+              </span>
+              <p className="mt-1 text-xs text-gray-600">
+                Describe the workflow logic in plain language
+              </p>
+            </label>
+            <textarea
+              value={sop}
+              onChange={(e) => setSop(e.target.value)}
+              className="w-full h-32 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+              placeholder="Enter workflow instructions..."
+            />
+          </div>
+
+          <div className="bg-white rounded-lg border border-gray-200 p-6">
+            <label className="block mb-2">
+              <span className="text-sm font-medium text-gray-900">
+                Initial Data (JSON)
+              </span>
+              <p className="mt-1 text-xs text-gray-600">
+                Provide the starting data for the workflow
+              </p>
+            </label>
+            <textarea
+              value={initialData}
+              onChange={(e) => setInitialData(e.target.value)}
+              className="w-full h-64 px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+              spellCheck={false}
+              placeholder='{ "key": "value" }'
+            />
+          </div>
+
+          <div className="flex gap-4">
+            <button
+              onClick={handleStart}
+              disabled={loading || !sop.trim()}
+              className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-semibold py-3 px-6 rounded-lg transition-colors flex items-center justify-center gap-2"
+            >
+              {loading ? (
+                <>
+                  <svg
+                    className="animate-spin h-5 w-5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                    />
+                  </svg>
+                  Starting...
+                </>
+              ) : (
+                <>
+                  <svg
+                    className="w-5 h-5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M13 10V3L4 14h7v7l9-11h-7z"
+                    />
+                  </svg>
+                  Start Run
+                </>
+              )}
+            </button>
+            <Link
+              href="/"
+              className="px-6 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold rounded-lg transition-colors flex items-center justify-center"
+            >
+              Cancel
+            </Link>
+          </div>
+        </div>
+      </div>
+    </DashboardLayout>
+  );
+}
+
