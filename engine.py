@@ -480,6 +480,17 @@ async def _execute_rest_skill(skill_meta: Skill, state: AgentState, input_ctx: D
     if not skill_meta.rest:
         raise RuntimeError(f"{skill_meta.name} is missing REST configuration.")
 
+    # Safety check: don't dispatch if already pending (prevents duplicate REST calls)
+    pending_rest = _rest_pending(state["data_store"])
+    if skill_meta.name in pending_rest:
+        await publish_log(f"[EXECUTOR] {skill_meta.name} already pending REST callback. Skipping duplicate dispatch.")
+        # Return current state unchanged - workflow will pause at await_callback
+        return {
+            "history": [f"Skipped duplicate REST dispatch for {skill_meta.name}"],
+            "active_skill": skill_meta.name,
+            "data_store": state["data_store"],
+        }
+
     payload = {
         "skill": skill_meta.name,
         "thread_id": state["thread_id"],
@@ -689,7 +700,17 @@ async def skilled_executor(state: AgentState):
 
 def route_post_exec(state: AgentState):
     skill_name = state["active_skill"]
-    skill_meta = next(s for s in SKILL_REGISTRY if s.name == skill_name)
+    
+    # Handle None or missing active_skill (can happen during callback updates)
+    if not skill_name:
+        emit_log("[ROUTER] No active skill, routing to planner.")
+        return "planner"
+    
+    # Find the skill metadata safely
+    skill_meta = next((s for s in SKILL_REGISTRY if s.name == skill_name), None)
+    if not skill_meta:
+        emit_log(f"[ROUTER] Unknown skill '{skill_name}', routing to planner.")
+        return "planner"
     
     if skill_meta.executor == "rest":
         emit_log(f"[ROUTER] REST executor for {skill_name}. Waiting for callback.")

@@ -325,6 +325,12 @@ async def rest_callback(req: CallbackPayload):
     current_values = state.values or {}
     data_store = current_values.get("data_store", {}) or {}
     history = list(current_values.get("history") or [])
+    
+    # Check if this callback has already been processed
+    callback_marker = f"Executed {req.skill} (REST callback)"
+    if callback_marker in history:
+        await publish_log(f"[CALLBACK] Duplicate callback ignored for thread={req.thread_id}, skill={req.skill}")
+        return {"status": "duplicate_ignored"}
 
     await publish_log(f"[CALLBACK] Received results for thread={req.thread_id}, skill={req.skill}", req.thread_id)
 
@@ -338,16 +344,18 @@ async def rest_callback(req: CallbackPayload):
         else:
             merged.pop("_rest_pending", None)
 
-    history.append(f"Executed {req.skill} (REST callback)")
+    history.append(callback_marker)
     if req.error:
         history.append(f"Error from {req.skill}: {req.error}")
 
+    # Update state with merged data and history
+    # Don't set active_skill here - let the workflow resume naturally
     await app.aupdate_state(config, {
         "data_store": merged,
         "history": history,
-        "active_skill": None,
     })
 
+    # Resume the workflow - it will continue from await_callback node
     await app.ainvoke(None, config)
     await publish_log(f"[CALLBACK] Applied results and resumed thread={req.thread_id}", req.thread_id)
     return {"status": "resumed"}
@@ -368,6 +376,10 @@ async def demo_rest_task(req: DemoRestRequest):
     """
     Simulates a long-running partner API. Acknowledges immediately, then after
     ~10 seconds POSTs to the provided callback_url with mock results.
+    
+    Note: The durable _rest_pending mechanism in the checkpointed state prevents
+    duplicate execution at the orchestrator level. This endpoint trusts that
+    the orchestrator won't send duplicate requests for the same skill+thread.
     """
     await publish_log(f"[DEMO REST] Received request for skill={req.skill}, thread={req.thread_id}", req.thread_id)
 
@@ -383,11 +395,14 @@ async def demo_rest_task(req: DemoRestRequest):
             },
         }
         try:
+            # Log BEFORE sending so it appears in correct chronological order
+            await publish_log(f"[DEMO REST] Sending callback for thread={req.thread_id}")
             async with httpx.AsyncClient() as client:
                 await client.post(req.callback_url, json=payload)
             emit_log(f"[DEMO REST] Callback sent for thread={req.thread_id}", req.thread_id)
+            await publish_log(f"[DEMO REST] Callback completed for thread={req.thread_id}")
         except Exception as exc:
-            emit_log(f"[DEMO REST] Callback failed for thread={req.thread_id}: {exc}", req.thread_id)
+            await publish_log(f"[DEMO REST] Callback failed for thread={req.thread_id}: {exc}")
 
     asyncio.create_task(_delayed_callback())
     return {"status": "accepted", "will_callback_in": "10s"}
