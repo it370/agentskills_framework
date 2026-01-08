@@ -1,6 +1,6 @@
 ---
 name: LogbookVerification
-description: Retrieves company's contact information from logbook.
+description: Retrieves company's contact information from logbook. Do not for verification purpose.
 requires:
   - order_details.employer_company_name
 produces:
@@ -18,6 +18,10 @@ optional_produces:
 ## Purpose
 To retrieve from external REST API services (http://localhost:8000/mock/logbook) a list of known company and their preferred mode of contact.
 Returns company's known contact options like preferred mode of contact, phone, email and/or faxes if a match is found
+
+## Strict Usage
+- Should not be used for verification
+- Use only for retrieval of contact information of given company/employer
 
 ## Matching Logic
 A company is found to be matching if it satisfies any or all of the below conditions:
