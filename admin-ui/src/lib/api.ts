@@ -42,6 +42,23 @@ export async function fetchThreadLogs(
   return data.logs || [];
 }
 
+export async function approveStep(
+  threadId: string,
+  updatedData?: Record<string, any>
+): Promise<{ status: string }> {
+  const res = await fetch(`${API_BASE}/approve/${threadId}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: updatedData ? JSON.stringify(updatedData) : null,
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to approve step for thread: ${threadId}`);
+  }
+  return await res.json();
+}
+
 export function connectAdminEvents(onEvent: (event: RunEvent) => void) {
   const ws = new WebSocket(`${WS_BASE}/ws/admin`);
 

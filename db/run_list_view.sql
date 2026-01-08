@@ -25,6 +25,10 @@ SELECT
             c.checkpoint->>'active_skill'
         ) = 'END' THEN 'completed'
         
+        -- Check if at human_review interrupt (most reliable indicator)
+        WHEN c.checkpoint->'channel_values'->'branch:to:human_review' IS NOT NULL 
+        OR c.checkpoint->'branch:to:human_review' IS NOT NULL THEN 'paused'
+        
         -- Check if history contains completion markers
         WHEN EXISTS (
             SELECT 1 FROM jsonb_array_elements_text(
@@ -39,7 +43,7 @@ SELECT
                OR LOWER(history_item) LIKE '%planner chose end%'
         ) THEN 'completed'
         
-        -- Check if awaiting human review (paused state)
+        -- Check if awaiting human review (from history as fallback)
         WHEN EXISTS (
             SELECT 1 FROM jsonb_array_elements_text(
                 COALESCE(
@@ -50,6 +54,7 @@ SELECT
             ) AS history_item
             WHERE LOWER(history_item) LIKE '%awaiting human review%'
                OR LOWER(history_item) LIKE '%redirecting to human_review%'
+               OR LOWER(history_item) LIKE '%hitl enabled%'
         ) AND COALESCE(
             c.checkpoint->'channel_values'->>'active_skill',
             c.checkpoint->>'active_skill'
