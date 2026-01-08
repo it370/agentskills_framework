@@ -5,6 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Agentic Orchestrator Dashboard.</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @keyframes fade-in {
+            from {
+                opacity: 0;
+                transform: translateY(-4px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        .animate-fade-in {
+            animation: fade-in 0.3s ease-out;
+        }
+    </style>
 </head>
 <body class="bg-gray-900 text-gray-100 min-h-screen p-8">
     <div class="max-w-6xl mx-auto">
@@ -28,41 +43,40 @@
                     <span class="text-xs text-gray-400">Streaming from server</span>
                 </div>
             </div>
-            <div id="logStream" class="space-y-2 text-xs text-gray-300 h-80 overflow-y-auto bg-gray-900 p-3 rounded border border-gray-700"></div>
+            <div id="logStream" class="text-sm h-80 overflow-y-auto bg-gray-950 p-4 rounded border border-gray-700 space-y-2"></div>
         </section>
 
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
             <div class="space-y-6">
                 <section class="bg-gray-800 p-6 rounded-lg border border-gray-700 space-y-3">
                     <h2 class="text-xl font-semibold">Start New Process</h2>
-                    <!-- Check education and if qualified check criminal records. -->
-                    <!-- Retrieve order details and show the result. -->
-                    <textarea id="sopInput" placeholder="Layman SOP Logic..." class="w-full bg-gray-700 p-2 rounded h-20 border border-gray-600">
-Retrieve order details of given order, if a valid company is obtained run through logbook to find the company's contact details.
-
-                    </textarea>
+                    
+                    <div>
+                        <label class="text-sm text-gray-300 mb-2 block">Workflow Instructions (SOP Logic)</label>
+                        <textarea 
+                            id="sopInput" 
+                            placeholder="Describe the workflow steps in plain language..." 
+                            class="w-full bg-gray-700 p-3 rounded h-48 border border-gray-600 focus:border-blue-500 focus:ring-2 focus:ring-blue-500 outline-none text-sm" 
+                            autofocus
+                        >Retrieve order details of given order, if a valid company is obtained run through logbook to find the company's contact details.</textarea>
+                    </div>
+                    
                     <div>
                         <div class="flex items-center justify-between mb-1">
                             <label class="text-sm text-gray-300">Initial Data (JSON)</label>
                             <span class="text-xs text-gray-500">Edit to change inputs</span>
                         </div>
-                        <!-- {
-                          "cv_text": "Masters in CS, 2020. Name: Alice Smith. DOB: 1992-05-12",
-                          "full_name": "Alice Smith"
-                        } -->
-                        <textarea id="initialDataInput" class="w-full bg-gray-900 text-green-200 font-mono p-3 rounded border border-gray-700 h-40" spellcheck="false">
+                        <textarea id="initialDataInput" class="w-full bg-gray-900 text-green-200 font-mono p-3 rounded border border-gray-700 h-32 text-xs" spellcheck="false">
 {
     "order_number": "00000003"
-}
-</textarea>
-<!-- ,  "dob": "1992-05-12" -->
+}</textarea>
                     </div>
                     <button onclick="startProcess()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 rounded transition">Start Agent</button>
                 </section>
 
                 <section class="bg-gray-800 p-6 rounded-lg border border-gray-700">
                     <h2 class="text-xl font-semibold mb-4">Execution History</h2>
-                    <div id="historyList" class="space-y-2 text-sm text-gray-400 h-64 overflow-y-auto"></div>
+                    <div id="historyList" class="space-y-1 text-sm text-gray-400 h-64 overflow-y-auto"></div>
                 </section>
 
             </div>
@@ -77,6 +91,30 @@ Retrieve order details of given order, if a valid company is obtained run throug
                         </div>
                     </div>
                     <textarea id="dataEditor" class="w-full h-96 bg-black text-green-400 font-mono p-4 rounded border border-gray-700 focus:border-blue-500 outline-none" spellcheck="false"></textarea>
+                </section>
+            </div>
+
+            <!-- History Detail Panel -->
+            <div class="space-y-6">
+                <section id="historyDetailPanel" class="bg-gray-800 p-6 rounded-lg border border-gray-700 min-h-[400px] hidden">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-xl font-semibold text-blue-400">Step Details</h2>
+                        <button onclick="closeHistoryDetail()" class="text-gray-400 hover:text-gray-200">
+                            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="space-y-4">
+                        <div>
+                            <h4 class="text-xs font-semibold text-gray-400 mb-2">Event</h4>
+                            <div id="detailEventText" class="bg-gray-900 p-3 rounded text-sm text-white border-l-4 border-blue-500"></div>
+                        </div>
+                        <div>
+                            <h4 class="text-xs font-semibold text-gray-400 mb-2">Input / Output / State</h4>
+                            <pre id="detailContext" class="bg-black text-green-400 font-mono p-3 rounded border border-gray-700 text-xs overflow-auto max-h-[600px]"></pre>
+                        </div>
+                    </div>
                 </section>
             </div>
         </div>
@@ -113,6 +151,7 @@ Retrieve order details of given order, if a valid company is obtained run throug
         let lastActiveSkill = "";
         let lastResumeTarget = "planner";
         let statusFetchInFlight = false;
+        let historySnapshots = []; // Store snapshots of data store at each history point
 
         function generateThreadId() {
             if (crypto && crypto.randomUUID) {
@@ -185,9 +224,57 @@ Retrieve order details of given order, if a valid company is obtained run throug
                 restPendingEl.classList.add('hidden');
             }
             
-            // Update History
+            // Update History with clickable items - fetch historical checkpoint data
             const historyDiv = document.getElementById('historyList');
-            historyDiv.innerHTML = data.history.map(h => `<div class="border-l-2 border-blue-500 pl-2 py-1 bg-gray-700/30">${h}</div>`).reverse().join('');
+            const history = data.history || [];
+            
+            // Fetch checkpoint history for detailed state at each step
+            let checkpointHistory = [];
+            try {
+                const historyRes = await fetch(`${API_BASE}/admin/runs/${currentThread}`);
+                if (historyRes.ok) {
+                    const checkpointData = await historyRes.json();
+                    // Extract writes/history from checkpoint data if available
+                    checkpointHistory = checkpointData.pending_writes || [];
+                }
+            } catch (e) {
+                console.log("[UI] Could not fetch checkpoint history", e);
+            }
+            
+            // Parse history to extract input/output/reasoning from execution logs
+            historySnapshots = history.map((h, idx) => {
+                // Try to extract structured data from history messages
+                let detail = { event: h, index: idx };
+                
+                // Check if it's an execution message with input/output
+                if (h.includes('Executed ')) {
+                    const skillMatch = h.match(/Executed (\w+)/);
+                    const skill = skillMatch ? skillMatch[1] : 'Unknown';
+                    detail.skill = skill;
+                    detail.type = 'execution';
+                }
+                
+                // Try to find associated data in pending writes or store
+                if (checkpointHistory[idx]) {
+                    detail.data = checkpointHistory[idx];
+                } else {
+                    // Fallback to showing current store
+                    detail.data = store;
+                }
+                
+                return detail;
+            });
+            
+            historyDiv.innerHTML = history.map((h, idx) => {
+                const selected = historySnapshots.find(s => s.index === idx)?.selected ? 'bg-blue-900/50' : '';
+                return `<div class="border-l-2 border-blue-500 pl-2 py-1 ${selected} cursor-pointer hover:bg-gray-600/50 transition-colors" 
+                      onclick="showHistoryDetail(${idx})">
+                    <div class="flex items-start gap-2">
+                        <span class="text-gray-500 text-xs">${idx + 1}.</span>
+                        <span class="flex-1 text-xs">${h}</span>
+                    </div>
+                </div>`;
+            }).reverse().join('');
 
             // Show HITL modal if paused or at human_review
             const badge = document.getElementById('hitlBadge');
@@ -244,6 +331,101 @@ Retrieve order details of given order, if a valid company is obtained run throug
             document.getElementById('hitlModal').classList.add('hidden');
         }
 
+        function showHistoryDetail(index) {
+            const snapshot = historySnapshots[index];
+            if (!snapshot) return;
+            
+            // Mark as selected
+            historySnapshots.forEach(s => s.selected = false);
+            snapshot.selected = true;
+            
+            const panel = document.getElementById('historyDetailPanel');
+            const eventText = document.getElementById('detailEventText');
+            const context = document.getElementById('detailContext');
+            
+            eventText.textContent = snapshot.event;
+            
+            // Format the context data nicely
+            let contextData = {};
+            if (snapshot.skill) {
+                contextData.skill = snapshot.skill;
+                contextData.type = snapshot.type;
+            }
+            if (snapshot.data) {
+                contextData.state = snapshot.data;
+            }
+            
+            context.textContent = JSON.stringify(contextData, null, 2);
+            
+            panel.classList.remove('hidden');
+        }
+
+        function closeHistoryDetail() {
+            document.getElementById('historyDetailPanel').classList.add('hidden');
+            historySnapshots.forEach(s => s.selected = false);
+        }
+
+        // Color palette for different log sources (dark theme)
+        const logColors = [
+            { text: 'text-green-400', bg: 'bg-green-950/50', border: 'border-green-800/50' },
+            { text: 'text-blue-400', bg: 'bg-blue-950/50', border: 'border-blue-800/50' },
+            { text: 'text-yellow-400', bg: 'bg-yellow-950/50', border: 'border-yellow-800/50' },
+            { text: 'text-purple-400', bg: 'bg-purple-950/50', border: 'border-purple-800/50' },
+            { text: 'text-pink-400', bg: 'bg-pink-950/50', border: 'border-pink-800/50' },
+            { text: 'text-cyan-400', bg: 'bg-cyan-950/50', border: 'border-cyan-800/50' },
+            { text: 'text-orange-400', bg: 'bg-orange-950/50', border: 'border-orange-800/50' },
+            { text: 'text-teal-400', bg: 'bg-teal-950/50', border: 'border-teal-800/50' }
+        ];
+        const sourceColorMap = {};
+
+        function getColorForSource(logText) {
+            // Extract source from log (e.g., [API], [Planner], skill name, etc.)
+            const sourceMatch = logText.match(/^\[([^\]]+)\]/) || logText.match(/^(\w+):/);
+            const source = sourceMatch ? sourceMatch[1] : 'default';
+            
+            // Assign a color to this source if not already assigned
+            if (!sourceColorMap[source]) {
+                const colorIndex = Object.keys(sourceColorMap).length % logColors.length;
+                sourceColorMap[source] = logColors[colorIndex];
+            }
+            
+            return { source, colors: sourceColorMap[source], match: sourceMatch };
+        }
+
+        // Get icon for different agent types
+        function getIconForSource(source) {
+            const sourceLower = source.toLowerCase();
+            
+            // Planner icon - strategic brain/network
+            if (sourceLower.includes('planner') || sourceLower === 'plan') {
+                return `<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="3"></circle>
+                    <circle cx="6" cy="6" r="2"></circle>
+                    <circle cx="18" cy="6" r="2"></circle>
+                    <circle cx="6" cy="18" r="2"></circle>
+                    <circle cx="18" cy="18" r="2"></circle>
+                    <line x1="12" y1="9" x2="12" y2="6"></line>
+                    <line x1="9" y1="12" x2="6" y2="12"></line>
+                    <line x1="15" y1="12" x2="18" y2="12"></line>
+                    <line x1="12" y1="15" x2="6" y2="18"></line>
+                    <line x1="12" y1="15" x2="18" y2="18"></line>
+                </svg>`;
+            }
+            
+            // Executor icon - play/execute
+            if (sourceLower.includes('executor') || sourceLower.includes('execute')) {
+                return `<svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+                    <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                </svg>`;
+            }
+            
+            // Default agent icon - gear/cog
+            return `<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"></circle>
+                <path d="M12 1v6m0 6v6m5.2-14.8l-4.2 4.2m-1 1l-4.2 4.2M23 12h-6m-6 0H1m14.8 5.2l-4.2-4.2m-1-1l-4.2-4.2"></path>
+            </svg>`;
+        }
+
         // --- Live log stream over WebSocket ---
         function ensureLogSocket() {
             if (logSocket && logSocket.readyState === WebSocket.OPEN) return;
@@ -252,18 +434,77 @@ Retrieve order details of given order, if a valid company is obtained run throug
                 logSocket.onmessage = (event) => {
                     const logDiv = document.getElementById('logStream');
                     const entry = document.createElement('div');
-                    entry.className = "text-xs text-gray-300 bg-gray-800 border border-gray-700 rounded px-2 py-1";
-                    entry.textContent = event.data;
-                    if (event.data.toLowerCase().includes("hitl")) {
-                        entry.classList.add("cursor-pointer", "border-red-500", "shadow");
-                        entry.onclick = () => openHitlModal();
+                    
+                    // Get color based on source
+                    const { source, colors, match } = getColorForSource(event.data);
+                    
+                    // Create chat-like bubble
+                    entry.className = `flex items-start gap-2 animate-fade-in`;
+                    
+                    // Timestamp
+                    const timestamp = new Date().toLocaleTimeString('en-US', { 
+                        hour12: false, 
+                        hour: '2-digit', 
+                        minute: '2-digit',
+                        second: '2-digit'
+                    });
+                    
+                    let messageContent = event.data;
+                    let sourceLabel = 'System';
+                    
+                    // Extract source and message
+                    if (match) {
+                        sourceLabel = source;
+                        messageContent = event.data.substring(match[0].length).trim();
                     }
+                    
+                    // Get appropriate icon
+                    const icon = getIconForSource(sourceLabel);
+                    
+                    // Special styling for HITL messages
+                    const isHitl = event.data.toLowerCase().includes("hitl") || event.data.toLowerCase().includes("human review");
+                    const isError = event.data.toLowerCase().includes("error") || event.data.toLowerCase().includes("failed");
+                    const isCallback = event.data.includes("CALLBACK");
+                    const isComplete = event.data.includes("Reached END") || event.data.includes("completed");
+                    
+                    let bubbleColors = colors;
+                    if (isHitl) {
+                        bubbleColors = { text: 'text-red-400', bg: 'bg-red-950/50', border: 'border-red-700/50' };
+                    } else if (isError) {
+                        bubbleColors = { text: 'text-red-400', bg: 'bg-red-950/50', border: 'border-red-800/50' };
+                    } else if (isCallback || isComplete) {
+                        bubbleColors = { text: 'text-emerald-400', bg: 'bg-emerald-950/50', border: 'border-emerald-700/50' };
+                    }
+                    
+                    entry.innerHTML = `
+                        <div class="flex-shrink-0 ${bubbleColors.text}">
+                            ${icon}
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <div class="${bubbleColors.bg} ${bubbleColors.border} border rounded-lg px-3 py-2 shadow-sm hover:shadow-md transition-shadow backdrop-blur-sm">
+                                <div class="flex items-center gap-2 mb-1">
+                                    <span class="${bubbleColors.text} font-semibold text-xs uppercase tracking-wide">${sourceLabel}</span>
+                                    <span class="text-gray-600 text-xs font-mono">•</span>
+                                    <span class="text-gray-500 text-xs font-mono">${timestamp}</span>
+                                </div>
+                                <div class="text-gray-300 text-sm leading-relaxed break-words">${messageContent || event.data}</div>
+                            </div>
+                        </div>
+                    `;
+                    
+                    // Make HITL messages clickable
+                    if (isHitl) {
+                        entry.style.cursor = 'pointer';
+                        entry.onclick = () => openHitlModal();
+                        entry.querySelector('.rounded-lg').classList.add('hover:ring-2', 'hover:ring-red-400');
+                    }
+                    
                     logDiv.appendChild(entry);
                     // Keep to ~200 entries to avoid DOM bloat
                     while (logDiv.children.length > 200) {
                         logDiv.removeChild(logDiv.firstChild);
                     }
-                    // Auto-scroll to bottom like a chat window
+                    // Auto-scroll to bottom like a chat
                     logDiv.scrollTop = logDiv.scrollHeight;
 
                     // Hide REST pending spinner when callback/result messages arrive
