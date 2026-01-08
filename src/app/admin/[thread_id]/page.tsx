@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { connectAdminEvents, connectLogs, fetchRunDetail, fetchThreadLogs } from "../../../lib/api";
+import { connectAdminEvents, connectLogs, fetchRunDetail, fetchThreadLogs, approveStep } from "../../../lib/api";
 import { CheckpointTuple, RunEvent } from "../../../lib/types";
 import DashboardLayout from "../../../components/DashboardLayout";
 
@@ -18,8 +18,12 @@ export default function RunDetailPage() {
   const [activeTab, setActiveTab] = useState<string>(searchParams.get("tab") || "config");
   const [logs, setLogs] = useState<Array<{id: number, text: string, timestamp: Date, threadId?: string}>>([]);
   const [historicalLogsLoaded, setHistoricalLogsLoaded] = useState(false);
+  const [showHitlModal, setShowHitlModal] = useState(false);
+  const [hitlData, setHitlData] = useState<string>("");
+  const [approving, setApproving] = useState(false);
   const logIdCounter = useRef(0);
   const logContainerRef = useRef<HTMLDivElement>(null);
+  const hasCheckedInitialState = useRef(false);
 
   // Get config from URL params if starting from new run
   const sopFromUrl = searchParams.get("sop");
@@ -119,6 +123,10 @@ export default function RunDetailPage() {
 
   const dataStore = run?.checkpoint?.channel_values?.data_store || run?.checkpoint?.data_store || {};
   
+  // Check if we're at a human review interrupt (most reliable)
+  const isAtHumanReview = run?.checkpoint?.channel_values?.["branch:to:human_review"] !== undefined ||
+                          run?.checkpoint?.["branch:to:human_review"] !== undefined;
+  
   // Extract layman_sop from checkpoint if available, otherwise use URL param or stored initial config
   const laymanSop = run?.checkpoint?.channel_values?.layman_sop || 
                     initialConfig?.sop || 
@@ -164,7 +172,29 @@ export default function RunDetailPage() {
     }
   }, [logs.length, threadLogs.length, threadId, logs]);
 
-  const status = activeSkill === "END" ? "completed" : activeSkill ? "running" : "pending";
+  const status: "pending" | "running" | "paused" | "completed" = 
+    activeSkill === "END" ? "completed" :
+    // Check explicit human review state first (most reliable)
+    isAtHumanReview ? "paused" :
+    activeSkill && activeSkill !== "END" ? "running" : 
+    // Fallback: check history for HITL markers
+    history.some(h => h.toLowerCase().includes("awaiting human review") || 
+                      h.toLowerCase().includes("redirecting to human_review") ||
+                      h.toLowerCase().includes("hitl enabled")) ? "paused" :
+    history.length > 0 ? "completed" :
+    "pending";
+
+  // Debug status detection
+  useEffect(() => {
+    console.log("[RunDetail] Status detection:", {
+      status,
+      activeSkill,
+      isAtHumanReview,
+      historyLength: history.length,
+      lastHistory: history[history.length - 1],
+      branchValue: run?.checkpoint?.channel_values?.["branch:to:human_review"]
+    });
+  }, [status, activeSkill, history, isAtHumanReview, run]);
 
   const getStatusConfig = () => {
     switch (status) {
@@ -172,6 +202,8 @@ export default function RunDetailPage() {
         return { bg: "bg-emerald-100", text: "text-emerald-800", dot: "bg-emerald-500" };
       case "running":
         return { bg: "bg-blue-100", text: "text-blue-800", dot: "bg-blue-500 animate-pulse" };
+      case "paused":
+        return { bg: "bg-amber-100", text: "text-amber-800", dot: "bg-amber-500 animate-pulse" };
       default:
         return { bg: "bg-gray-100", text: "text-gray-700", dot: "bg-gray-400" };
     }
@@ -185,6 +217,55 @@ export default function RunDetailPage() {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
   }, [threadLogs.length, activeTab]);
+
+  // Check if workflow is paused and waiting for human review
+  const isPaused = status === "paused";
+  const lastHistoryEntry = history[history.length - 1] || "";
+  const awaitingSkill = lastHistoryEntry.match(/Awaiting human review for (.+)/i)?.[1] || 
+                       lastHistoryEntry.match(/HITL enabled for (.+)\./i)?.[1] || 
+                       activeSkill || "Unknown";
+
+  // Debug HITL state
+  useEffect(() => {
+    console.log("[RunDetail] HITL state:", {
+      isPaused,
+      showHitlModal,
+      awaitingSkill,
+      hasCheckedInitialState: hasCheckedInitialState.current,
+      loading
+    });
+  }, [isPaused, showHitlModal, awaitingSkill, loading]);
+
+  // Update HITL data when dataStore changes
+  useEffect(() => {
+    if (isPaused) {
+      setHitlData(JSON.stringify(dataStore, null, 2));
+      
+      // Auto-open modal on initial mount if paused
+      if (!hasCheckedInitialState.current && !loading) {
+        hasCheckedInitialState.current = true;
+        setShowHitlModal(true);
+      }
+    }
+  }, [isPaused, dataStore, loading]);
+
+  const handleApprove = async (withChanges: boolean) => {
+    setApproving(true);
+    try {
+      let updatedData = undefined;
+      if (withChanges) {
+        updatedData = JSON.parse(hitlData);
+      }
+      await approveStep(threadId, updatedData);
+      setShowHitlModal(false);
+      // Reload the run data
+      setTimeout(() => load(), 500);
+    } catch (err: any) {
+      setError(err.message || "Failed to approve step");
+    } finally {
+      setApproving(false);
+    }
+  };
 
   return (
     <DashboardLayout>
@@ -210,6 +291,17 @@ export default function RunDetailPage() {
                   <span className={`w-2 h-2 rounded-full ${statusConfig.dot}`}></span>
                   {status.charAt(0).toUpperCase() + status.slice(1)}
                 </span>
+                {isPaused && (
+                  <button
+                    onClick={() => setShowHitlModal(true)}
+                    className="inline-flex items-center gap-2 px-3 py-1 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-full transition-colors animate-pulse"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                    Review Required
+                  </button>
+                )}
                 {activeSkill && activeSkill !== "END" && (
                   <span className="text-sm text-gray-600">
                     <span className="font-medium">Active:</span> {activeSkill}
@@ -217,26 +309,39 @@ export default function RunDetailPage() {
                 )}
               </div>
             </div>
-            <button
-              onClick={load}
-              disabled={loading}
-              className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
-            >
-              <svg
-                className={`w-4 h-4 ${loading ? "animate-spin" : ""}`}
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
+            <div className="flex items-center gap-3">
+              {isPaused && (
+                <button
+                  onClick={() => setShowHitlModal(true)}
+                  className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white border border-red-700 rounded-lg transition-colors shadow-lg"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+                  </svg>
+                  HITL Review
+                </button>
+              )}
+              <button
+                onClick={load}
+                disabled={loading}
+                className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
               >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-                />
-              </svg>
-              Refresh
-            </button>
+                <svg
+                  className={`w-4 h-4 ${loading ? "animate-spin" : ""}`}
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                  />
+                </svg>
+                Refresh
+              </button>
+            </div>
           </div>
         </div>
 
@@ -418,7 +523,7 @@ export default function RunDetailPage() {
                 </div>
                 <div
                   ref={logContainerRef}
-                  className="bg-gray-900 text-green-400 p-4 rounded-lg overflow-auto font-mono text-sm"
+                  className="bg-gray-900 text-white p-4 rounded-lg overflow-auto font-mono text-sm"
                   style={{ height: "600px" }}
                 >
                   {threadLogs.length === 0 ? (
@@ -435,14 +540,67 @@ export default function RunDetailPage() {
                     </div>
                   ) : (
                     <div className="space-y-1">
-                      {threadLogs.map((logEntry) => (
-                        <div key={logEntry.id} className="hover:bg-gray-800/50 px-2 -mx-2 rounded">
-                          <span className="text-gray-600 select-none mr-3 text-xs">
-                            {logEntry.timestamp.toLocaleTimeString()}
-                          </span>
-                          <span className="whitespace-pre-wrap break-all">{logEntry.text}</span>
-                        </div>
-                      ))}
+                      {threadLogs.map((logEntry) => {
+                        // Parse log entry to extract source
+                        const logText = logEntry.text;
+                        const sourceMatch = logText.match(/^\[([^\]]+)\]/);
+                        const source = sourceMatch ? sourceMatch[1] : null;
+                        const message = sourceMatch ? logText.substring(sourceMatch[0].length).trim() : logText;
+                        
+                        // Determine icon and color based on source
+                        let icon = "📋"; // Default
+                        let sourceColor = "text-gray-400";
+                        
+                        if (source) {
+                          const sourceLower = source.toLowerCase();
+                          if (sourceLower.includes("planner") || sourceLower.includes("router")) {
+                            icon = "🧠"; // Brain for planner
+                            sourceColor = "text-purple-400";
+                          } else if (sourceLower.includes("executor")) {
+                            icon = "⚡"; // Lightning for executor
+                            sourceColor = "text-yellow-400";
+                          } else if (sourceLower.includes("api")) {
+                            icon = "🔌"; // Plug for API
+                            sourceColor = "text-blue-400";
+                          } else if (sourceLower.includes("callback")) {
+                            icon = "🔄"; // Loop for callbacks
+                            sourceColor = "text-green-400";
+                          } else if (sourceLower.includes("admin")) {
+                            icon = "👤"; // User for admin
+                            sourceColor = "text-cyan-400";
+                          } else if (sourceLower.includes("demo")) {
+                            icon = "🧪"; // Test tube for demo
+                            sourceColor = "text-pink-400";
+                          } else if (sourceLower.includes("checkpointer")) {
+                            icon = "💾"; // Disk for storage
+                            sourceColor = "text-indigo-400";
+                          } else {
+                            icon = "🤖"; // Robot for other AI agents
+                            sourceColor = "text-emerald-400";
+                          }
+                        }
+                        
+                        return (
+                          <div key={logEntry.id} className="hover:bg-gray-800/50 px-2 -mx-2 rounded flex items-start gap-2">
+                            <span className="text-gray-600 select-none text-xs flex-shrink-0 mt-0.5">
+                              {logEntry.timestamp.toLocaleTimeString()}
+                            </span>
+                            {source && (
+                              <>
+                                <span className="flex-shrink-0" title={source}>
+                                  {icon}
+                                </span>
+                                <span className={`${sourceColor} font-semibold flex-shrink-0`}>
+                                  [{source}]
+                                </span>
+                              </>
+                            )}
+                            <span className="whitespace-pre-wrap break-all flex-1">
+                              {message}
+                            </span>
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -470,6 +628,58 @@ export default function RunDetailPage() {
           </div>
         )}
       </div>
+
+      {/* HITL Modal */}
+      {showHitlModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-white border border-gray-200 rounded-lg shadow-2xl max-w-3xl w-full mx-4">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-red-50">
+              <div>
+                <h3 className="text-lg font-semibold text-red-800">Human Review Required</h3>
+                <p className="text-sm text-red-600 mt-1">Triggered by: {awaitingSkill}</p>
+              </div>
+              <button
+                onClick={() => setShowHitlModal(false)}
+                className="text-gray-400 hover:text-gray-600 text-2xl leading-none"
+              >
+                ×
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-sm text-gray-700">
+                Review and optionally edit the data store below, then approve to continue the workflow.
+              </p>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Data Store (JSON)
+                </label>
+                <textarea
+                  value={hitlData}
+                  onChange={(e) => setHitlData(e.target.value)}
+                  className="w-full h-64 bg-gray-900 text-green-400 font-mono p-4 rounded border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500 outline-none text-sm"
+                  spellCheck={false}
+                />
+              </div>
+            </div>
+            <div className="px-6 py-4 border-t border-gray-200 flex gap-4 bg-gray-50">
+              <button
+                onClick={() => handleApprove(false)}
+                disabled={approving}
+                className="flex-1 bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-bold py-3 rounded transition-colors"
+              >
+                {approving ? "Approving..." : "Approve & Continue"}
+              </button>
+              <button
+                onClick={() => handleApprove(true)}
+                disabled={approving}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-bold py-3 rounded transition-colors"
+              >
+                {approving ? "Approving..." : "Approve with Changes"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </DashboardLayout>
   );
 }

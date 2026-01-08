@@ -92,6 +92,12 @@ function StatusBadge({ status }: { status?: string }) {
       dot: "bg-blue-500 animate-pulse",
       label: "Running",
     },
+    paused: {
+      bg: "bg-amber-100",
+      text: "text-amber-800",
+      dot: "bg-amber-500 animate-pulse",
+      label: "Awaiting Review",
+    },
     error: {
       bg: "bg-red-100",
       text: "text-red-800",
