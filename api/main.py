@@ -12,7 +12,7 @@ from fastapi.websockets import WebSocketDisconnect
 from pydantic import BaseModel
 from psycopg import Connection as SyncConnection
 
-from engine import AgentState, app, _deep_merge_dict, checkpointer, _safe_serialize, _get_env_value
+from engine import AgentState, app, _deep_merge_dict, checkpointer, _safe_serialize, _get_env_value, _AsyncPostgresSaver
 import log_stream
 from log_stream import publish_log, emit_log, set_log_context, get_thread_logs
 from .mock_api import router as mock_router
@@ -193,6 +193,59 @@ def _serialize_checkpoint_tuple(cp_tuple):
 
 @api.get("/admin/runs")
 async def list_runs(limit: int = 50):
+    """List workflow runs with computed status from database view."""
+    # Try to use the database view for better performance
+    db_uri = _get_env_value("DATABASE_URL", "")
+    
+    if db_uri and isinstance(checkpointer, _AsyncPostgresSaver):
+        # Use database view with pre-computed status
+        try:
+            import psycopg
+            
+            def _fetch_from_view():
+                with psycopg.connect(db_uri, autocommit=True) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT 
+                                thread_id,
+                                checkpoint_id,
+                                checkpoint_ns,
+                                active_skill,
+                                history_count,
+                                status,
+                                sop_preview,
+                                updated_at,
+                                checkpoint,
+                                metadata
+                            FROM run_list_view
+                            ORDER BY updated_at DESC NULLS LAST
+                            LIMIT %s
+                        """, (limit,))
+                        rows = cur.fetchall()
+                        
+                        return [
+                            {
+                                "thread_id": row[0],
+                                "checkpoint_id": row[1],
+                                "checkpoint_ns": row[2],
+                                "active_skill": row[3],
+                                "history_count": row[4],
+                                "status": row[5],
+                                "sop_preview": row[6],
+                                "updated_at": row[7].isoformat() if row[7] else None,
+                                "checkpoint": row[8],
+                                "metadata": row[9],
+                            }
+                            for row in rows
+                        ]
+            
+            runs = await asyncio.to_thread(_fetch_from_view)
+            return {"runs": runs}
+            
+        except Exception as e:
+            emit_log(f"[ADMIN] Failed to fetch from view, falling back to checkpointer: {e}")
+    
+    # Fallback to original checkpointer method
     cp = checkpointer
     runs = []
     try:
@@ -205,6 +258,7 @@ async def list_runs(limit: int = 50):
     except NotImplementedError:
         pass
     return {"runs": runs}
+
 
 
 @api.get("/admin/runs/{thread_id}")

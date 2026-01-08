@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { connectAdminEvents, fetchRuns } from "../lib/api";
-import { CheckpointTuple, RunEvent } from "../lib/types";
+import { CheckpointTuple, RunEvent, RunSummary } from "../lib/types";
 import DashboardLayout from "../components/DashboardLayout";
 
 type RunRow = {
@@ -13,22 +13,35 @@ type RunRow = {
   updated_at?: string;
   history?: string[];
   status?: string;
+  sop_preview?: string;
 };
 
-function normalizeRun(cp: CheckpointTuple): RunRow {
+function normalizeRun(cp: CheckpointTuple | RunSummary): RunRow {
+  // If the API already provided enriched data with status, use it directly
+  if ('status' in cp && cp.status) {
+    return {
+      thread_id: cp.thread_id,
+      checkpoint_id: cp.checkpoint_id,
+      active_skill: cp.active_skill || null,
+      updated_at: cp.updated_at,
+      history: [],  // Not needed when status is pre-computed
+      status: cp.status,
+      sop_preview: cp.sop_preview,
+    };
+  }
+
+  // Fallback to computing status from checkpoint data
+  const checkpointData = cp as CheckpointTuple;
   const threadId =
-    cp.config?.configurable?.thread_id || cp.metadata?.thread_id || "unknown";
-  const history = (cp.checkpoint?.channel_values?.history ||
-    cp.checkpoint?.history ||
+    checkpointData.config?.configurable?.thread_id || checkpointData.metadata?.thread_id || "unknown";
+  const history = (checkpointData.checkpoint?.channel_values?.history ||
+    checkpointData.checkpoint?.history ||
     []) as string[];
   const active =
-    cp.checkpoint?.channel_values?.active_skill ||
-    cp.checkpoint?.active_skill ||
+    checkpointData.checkpoint?.channel_values?.active_skill ||
+    checkpointData.checkpoint?.active_skill ||
     null;
-  const updated = cp.metadata?.ts || cp.metadata?.updated_at;
-
-  // Debug: log the checkpoint to understand structure
-  // console.log("Normalizing run:", { threadId, active, historyLength: history.length, checkpoint: cp.checkpoint });
+  const updated = checkpointData.metadata?.ts || checkpointData.metadata?.updated_at;
 
   // Derive status from active_skill and history
   let status = "pending";
@@ -55,11 +68,9 @@ function normalizeRun(cp: CheckpointTuple): RunRow {
     status = "completed";
   }
 
-  // console.log("Status determined:", status);
-
   return {
     thread_id: threadId,
-    checkpoint_id: cp.checkpoint?.id,
+    checkpoint_id: checkpointData.checkpoint?.id,
     active_skill: active,
     updated_at: updated,
     history,
