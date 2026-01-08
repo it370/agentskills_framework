@@ -28,7 +28,7 @@ function normalizeRun(cp: CheckpointTuple): RunRow {
   const updated = cp.metadata?.ts || cp.metadata?.updated_at;
 
   // Debug: log the checkpoint to understand structure
-  console.log("Normalizing run:", { threadId, active, historyLength: history.length, checkpoint: cp.checkpoint });
+  // console.log("Normalizing run:", { threadId, active, historyLength: history.length, checkpoint: cp.checkpoint });
 
   // Derive status from active_skill and history
   let status = "pending";
@@ -55,7 +55,7 @@ function normalizeRun(cp: CheckpointTuple): RunRow {
     status = "completed";
   }
 
-  console.log("Status determined:", status);
+  // console.log("Status determined:", status);
 
   return {
     thread_id: threadId,

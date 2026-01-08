@@ -16,7 +16,7 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from psycopg_pool import ConnectionPool
 from env_loader import load_env_once
 
-from log_stream import publish_log, emit_log
+from log_stream import publish_log, emit_log, set_db_pool
 
 class RestConfig(BaseModel):
     url: str
@@ -821,10 +821,31 @@ def _build_checkpointer():
         checkpointer = _AsyncPostgresSaver(pool)
         checkpointer.setup()
         emit_log("[CHECKPOINTER] Postgres checkpointer initialized.")
+        
+        # Initialize log persistence with async pool
+        _init_log_persistence(DB_URI)
+        
         return checkpointer
     except Exception as exc:
         emit_log(f"[CHECKPOINTER] Postgres checkpointer unavailable; falling back to memory. Reason: {exc}")
         return MemorySaver()
+
+
+def _init_log_persistence(db_uri: str):
+    """Initialize sync database pool for log persistence (Windows compatible)."""
+    try:
+        # Create sync pool for log persistence (accessed via asyncio.to_thread)
+        log_pool = ConnectionPool(
+            conninfo=db_uri,
+            min_size=1,
+            max_size=10,
+            kwargs={"autocommit": True, "prepare_threshold": 0}
+        )
+        set_db_pool(log_pool)
+        emit_log("[LOG_PERSIST] Log persistence initialized with sync pool.")
+    except Exception as exc:
+        emit_log(f"[LOG_PERSIST] Failed to initialize log persistence: {exc}")
+
 
 
 # Compile graph with async-friendly checkpointer (Postgres if available, else Memory)

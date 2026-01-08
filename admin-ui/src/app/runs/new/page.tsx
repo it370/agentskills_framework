@@ -10,7 +10,8 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 export default function NewRunPage() {
   const router = useRouter();
   const [sop, setSop] = useState(
-    "Retrieve order details of given order, if a valid company is obtained run through logbook to find the company's contact details."
+    // "Retrieve order details of given order, if a valid company is obtained run through logbook to find the company's contact details."
+    "Just execute Profiler Retriever, display result and end."
   );
   const [initialData, setInitialData] = useState(
     JSON.stringify({ order_number: "00000003" }, null, 2)

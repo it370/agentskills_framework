@@ -14,7 +14,7 @@ from psycopg import Connection as SyncConnection
 
 from engine import AgentState, app, _deep_merge_dict, checkpointer, _safe_serialize, _get_env_value
 import log_stream
-from log_stream import publish_log, emit_log
+from log_stream import publish_log, emit_log, set_log_context, get_thread_logs
 from .mock_api import router as mock_router
 from env_loader import load_env_once
 from admin_events import broadcast_run_event, register_admin, unregister_admin
@@ -119,7 +119,7 @@ async def start_process(req: StartRequest):
         "history": ["Process Started"],
         "thread_id": req.thread_id,
     }
-    await publish_log(f"[API] Start requested for thread={req.thread_id}")
+    await publish_log(f"[API] Start requested for thread={req.thread_id}", req.thread_id)
     
     # Run the workflow in the background to avoid blocking the response
     asyncio.create_task(_run_workflow(initial_state, config))
@@ -130,11 +130,15 @@ async def start_process(req: StartRequest):
 async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any]):
     """Run workflow in background without blocking the start endpoint."""
     thread_id = config.get("configurable", {}).get("thread_id", "unknown")
+    
+    # Set the thread context for all logs in this workflow
+    set_log_context(thread_id)
+    
     try:
         await app.ainvoke(initial_state, config)
-        await publish_log(f"[API] Workflow completed for thread={thread_id}")
+        await publish_log(f"[API] Workflow completed for thread={thread_id}", thread_id)
     except Exception as exc:
-        await publish_log(f"[API] Workflow error for thread={thread_id}: {exc}")
+        await publish_log(f"[API] Workflow error for thread={thread_id}: {exc}", thread_id)
 
 @api.get("/status/{thread_id}")
 async def get_status(thread_id: str):
@@ -164,7 +168,7 @@ async def approve_step(
         await app.aupdate_state(config, {"data_store": updated_data})
         print(f"[API] Human updated data for {thread_id}")
     
-    await publish_log(f"[API] Approval received; resuming thread={thread_id}")
+    await publish_log(f"[API] Approval received; resuming thread={thread_id}", thread_id)
     # Resume the graph
     await app.ainvoke(None, config)
     return {"status": "resumed"}
@@ -219,6 +223,14 @@ async def run_detail(thread_id: str):
         raise HTTPException(status_code=404, detail="Run not found")
     return _serialize_checkpoint_tuple(cp_tuple)
 
+
+@api.get("/admin/runs/{thread_id}/logs")
+async def get_logs(thread_id: str, limit: int = 1000):
+    """Retrieve historical logs for a specific thread."""
+    logs = await get_thread_logs(thread_id, limit)
+    return {"logs": logs, "count": len(logs)}
+
+
 @api.post("/callback")
 async def rest_callback(req: CallbackPayload):
     config = {"configurable": {"thread_id": req.thread_id}}
@@ -230,7 +242,7 @@ async def rest_callback(req: CallbackPayload):
     data_store = current_values.get("data_store", {}) or {}
     history = list(current_values.get("history") or [])
 
-    await publish_log(f"[CALLBACK] Received results for thread={req.thread_id}, skill={req.skill}")
+    await publish_log(f"[CALLBACK] Received results for thread={req.thread_id}, skill={req.skill}", req.thread_id)
 
     merged = _deep_merge_dict(data_store, req.data)
     # Clear pending REST marker if present
@@ -253,7 +265,7 @@ async def rest_callback(req: CallbackPayload):
     })
 
     await app.ainvoke(None, config)
-    await publish_log(f"[CALLBACK] Applied results and resumed thread={req.thread_id}")
+    await publish_log(f"[CALLBACK] Applied results and resumed thread={req.thread_id}", req.thread_id)
     return {"status": "resumed"}
 
 
@@ -273,7 +285,7 @@ async def demo_rest_task(req: DemoRestRequest):
     Simulates a long-running partner API. Acknowledges immediately, then after
     ~10 seconds POSTs to the provided callback_url with mock results.
     """
-    await publish_log(f"[DEMO REST] Received request for skill={req.skill}, thread={req.thread_id}")
+    await publish_log(f"[DEMO REST] Received request for skill={req.skill}, thread={req.thread_id}", req.thread_id)
 
     async def _delayed_callback():
         await asyncio.sleep(10)
@@ -289,9 +301,9 @@ async def demo_rest_task(req: DemoRestRequest):
         try:
             async with httpx.AsyncClient() as client:
                 await client.post(req.callback_url, json=payload)
-            emit_log(f"[DEMO REST] Callback sent for thread={req.thread_id}")
+            emit_log(f"[DEMO REST] Callback sent for thread={req.thread_id}", req.thread_id)
         except Exception as exc:
-            emit_log(f"[DEMO REST] Callback failed for thread={req.thread_id}: {exc}")
+            emit_log(f"[DEMO REST] Callback failed for thread={req.thread_id}: {exc}", req.thread_id)
 
     asyncio.create_task(_delayed_callback())
     return {"status": "accepted", "will_callback_in": "10s"}
