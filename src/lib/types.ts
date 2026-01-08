@@ -13,6 +13,11 @@ export type RunSummary = {
   metadata?: Record<string, any>;
   checkpoint?: Record<string, any>;
   updated_at?: string;
+  // Enriched fields from view
+  active_skill?: string;
+  history_count?: number;
+  status?: string;
+  sop_preview?: string;
 };
 
 export type RunEvent = {
@@ -22,5 +27,5 @@ export type RunEvent = {
   metadata?: Record<string, any>;
 };
 
-export type RunListResponse = { runs: CheckpointTuple[] };
+export type RunListResponse = { runs: (CheckpointTuple | RunSummary)[] };
 
