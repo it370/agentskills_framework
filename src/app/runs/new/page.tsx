@@ -9,6 +9,7 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 
 export default function NewRunPage() {
   const router = useRouter();
+  const [runName, setRunName] = useState("");
   const [sop, setSop] = useState(
     // "Retrieve order details of given order, if a valid company is obtained run through logbook to find the company's contact details."
     "Just execute Profiler Retriever, display result and end."
@@ -50,6 +51,7 @@ export default function NewRunPage() {
           thread_id: threadId,
           sop: sop,
           initial_data: parsedData,
+          run_name: runName.trim() || undefined,  // Send only if provided
         }),
       });
 
@@ -133,6 +135,24 @@ export default function NewRunPage() {
 
         {/* Form */}
         <div className="max-w-4xl space-y-6">
+          <div className="bg-white rounded-lg border border-gray-200 p-6">
+            <label className="block mb-2">
+              <span className="text-sm font-medium text-gray-900">
+                Run Name (Optional)
+              </span>
+              <p className="mt-1 text-xs text-gray-600">
+                A human-friendly name for this run. Defaults to thread ID if not provided.
+              </p>
+            </label>
+            <input
+              type="text"
+              value={runName}
+              onChange={(e) => setRunName(e.target.value)}
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+              placeholder="e.g., Order Processing for Customer XYZ"
+            />
+          </div>
+
           <div className="bg-white rounded-lg border border-gray-200 p-6">
             <label className="block mb-2">
               <span className="text-sm font-medium text-gray-900">

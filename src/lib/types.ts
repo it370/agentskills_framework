@@ -18,6 +18,7 @@ export type RunSummary = {
   history_count?: number;
   status?: string;
   sop_preview?: string;
+  run_name?: string;  // Human-friendly name
 };
 
 export type RunEvent = {

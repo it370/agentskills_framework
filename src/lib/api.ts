@@ -59,6 +59,43 @@ export async function approveStep(
   return await res.json();
 }
 
+export async function rerunWorkflow(
+  threadId: string
+): Promise<{ status: string; thread_id: string; parent_thread_id: string; rerun_count: number }> {
+  const res = await fetch(`${API_BASE}/rerun/${threadId}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+  });
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Failed to rerun workflow: ${res.status} - ${errorText}`);
+  }
+  return await res.json();
+}
+
+export async function getRunMetadata(
+  threadId: string
+): Promise<{
+  thread_id: string;
+  sop: string;
+  initial_data: Record<string, any>;
+  created_at: string;
+  parent_thread_id?: string;
+  rerun_count: number;
+  metadata: Record<string, any>;
+}> {
+  const res = await fetch(`${API_BASE}/admin/runs/${threadId}/metadata`, {
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`Run metadata not found: ${threadId}`);
+  }
+  return await res.json();
+}
+
+
 export function connectAdminEvents(onEvent: (event: RunEvent) => void) {
   const ws = new WebSocket(`${WS_BASE}/ws/admin`);
 

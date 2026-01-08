@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { connectAdminEvents, connectLogs, fetchRunDetail, fetchThreadLogs, approveStep } from "../../../lib/api";
+import { connectAdminEvents, connectLogs, fetchRunDetail, fetchThreadLogs, approveStep, getRunMetadata } from "../../../lib/api";
 import { CheckpointTuple, RunEvent } from "../../../lib/types";
 import DashboardLayout from "../../../components/DashboardLayout";
 
@@ -13,6 +13,7 @@ export default function RunDetailPage() {
   const router = useRouter();
   const threadId = params?.thread_id as string;
   const [run, setRun] = useState<CheckpointTuple | null>(null);
+  const [runName, setRunName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<string>(searchParams.get("tab") || "config");
@@ -48,17 +49,48 @@ export default function RunDetailPage() {
   const load = () => {
     setLoading(true);
     fetchRunDetail(threadId)
-      .then((data) => {
-        setRun(data);
+      .then((runData) => {
+        setRun(runData);
         setError(null);
+        
+        // Only fetch metadata if we don't already have run_name
+        if (!runName) {
+          getRunMetadata(threadId)
+            .then((metadata) => {
+              setRunName(metadata?.run_name || threadId);
+            })
+            .catch(() => {
+              setRunName(threadId);
+            });
+        }
       })
-      .catch((err) => setError(err.message))
+      .catch((err) => {
+        setError(err.message);
+        if (!runName) {
+          setRunName(threadId); // Fallback to thread_id on error
+        }
+      })
       .finally(() => setLoading(false));
   };
 
   useEffect(() => {
     if (!threadId) return;
+    
+    // Immediately fetch run metadata for the name (fast query)
+    getRunMetadata(threadId)
+      .then((metadata) => {
+        if (metadata?.run_name) {
+          setRunName(metadata.run_name);
+        }
+      })
+      .catch(() => {
+        // Silently fail - will use thread_id as fallback
+        setRunName(threadId);
+      });
+    
+    // Then load the full run details
     load();
+    
     const ws = connectAdminEvents((evt: RunEvent) => {
       if (evt.thread_id === threadId) {
         load();
@@ -283,7 +315,14 @@ export default function RunDetailPage() {
           </Link>
           <div className="flex items-start justify-between">
             <div className="flex-1 min-w-0">
-              <h1 className="text-3xl font-bold text-gray-900 truncate">{threadId}</h1>
+              <h1 className="text-3xl font-bold text-gray-900 truncate">
+                {runName || threadId}
+              </h1>
+              {runName && runName !== threadId && (
+                <p className="text-sm text-gray-500 mt-1 font-mono">
+                  Thread ID: {threadId}
+                </p>
+              )}
               <div className="flex items-center gap-4 mt-3">
                 <span
                   className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-medium ${statusConfig.bg} ${statusConfig.text}`}
