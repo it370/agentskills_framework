@@ -244,6 +244,7 @@ async def list_runs(limit: int = 50):
                                 history_count,
                                 status,
                                 sop_preview,
+                                created_at,
                                 updated_at,
                                 checkpoint,
                                 metadata
@@ -262,9 +263,10 @@ async def list_runs(limit: int = 50):
                                 "history_count": row[4],
                                 "status": row[5],
                                 "sop_preview": row[6],
-                                "updated_at": row[7].isoformat() if row[7] else None,
-                                "checkpoint": row[8],
-                                "metadata": row[9],
+                                "created_at": row[7].isoformat() if row[7] else None,
+                                "updated_at": row[8].isoformat() if row[8] else None,
+                                "checkpoint": row[9],
+                                "metadata": row[10],
                             }
                             for row in rows
                         ]

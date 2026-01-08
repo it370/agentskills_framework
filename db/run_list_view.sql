@@ -1,7 +1,41 @@
 -- View for runs list with computed status and metadata
 -- This view enriches checkpoint data with derived fields for the admin UI
 
-CREATE OR REPLACE VIEW run_list_view AS
+-- Drop existing view first since we're changing the column structure
+DROP VIEW IF EXISTS run_list_view CASCADE;
+
+CREATE VIEW run_list_view AS
+WITH thread_start_times AS (
+    -- Get the earliest timestamp for each thread (when it was created)
+    SELECT 
+        thread_id,
+        MIN(COALESCE(
+            (checkpoint->>'ts')::timestamp with time zone,
+            (metadata->>'ts')::timestamp with time zone
+        )) as created_at
+    FROM checkpoints
+    WHERE checkpoint_ns = ''
+    GROUP BY thread_id
+),
+latest_checkpoints AS (
+    -- Get the LATEST checkpoint for each thread (for current status)
+    SELECT DISTINCT ON (thread_id)
+        thread_id,
+        checkpoint_id,
+        checkpoint_ns,
+        checkpoint,
+        metadata,
+        COALESCE(
+            (checkpoint->>'ts')::timestamp with time zone,
+            (metadata->>'ts')::timestamp with time zone
+        ) as updated_at
+    FROM checkpoints
+    WHERE checkpoint_ns = ''
+    ORDER BY thread_id, COALESCE(
+        (checkpoint->>'ts')::timestamp with time zone,
+        (metadata->>'ts')::timestamp with time zone
+    ) DESC NULLS LAST
+)
 SELECT 
     c.thread_id,
     c.checkpoint_id,
@@ -93,21 +127,16 @@ SELECT
         ),
         200
     ) as sop_preview,
-    -- Timestamp from metadata
-    COALESCE(
-        (c.metadata->>'ts')::timestamp with time zone,
-        (c.metadata->>'updated_at')::timestamp with time zone
-    ) as updated_at,
+    -- Timestamp from latest checkpoint (most recent activity)
+    c.updated_at,
+    -- Thread creation timestamp (from CTE join)
+    ts.created_at,
     -- Full checkpoint and metadata for details
     c.checkpoint,
     c.metadata
-FROM checkpoints c
-WHERE c.checkpoint_ns = ''  -- Only root checkpoints
-ORDER BY updated_at DESC NULLS LAST;
+FROM latest_checkpoints c
+INNER JOIN thread_start_times ts ON c.thread_id = ts.thread_id
+ORDER BY ts.created_at DESC NULLS LAST;
 
--- Note: We don't create additional indexes here as the checkpoint table
--- already has indexes from LangGraph. JSONB operators in computed columns
--- cannot be used in indexes without IMMUTABLE functions.
-
-COMMENT ON VIEW run_list_view IS 'Enriched view of workflow runs with computed status and metadata for admin UI';
+COMMENT ON VIEW run_list_view IS 'Enriched view of workflow runs with computed status and metadata for admin UI. Shows one row per thread (latest checkpoint), ordered by most recent activity first.';
 
