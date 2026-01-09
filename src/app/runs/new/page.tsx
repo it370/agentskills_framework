@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import DashboardLayout from "../../../components/DashboardLayout";
 
@@ -9,6 +9,8 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 
 export default function NewRunPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  
   const [runName, setRunName] = useState("");
   const [sop, setSop] = useState(
     // "Retrieve order details of given order, if a valid company is obtained run through logbook to find the company's contact details."
@@ -19,6 +21,25 @@ export default function NewRunPage() {
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Pre-populate from query params (for Edit and Rerun)
+  useEffect(() => {
+    const paramRunName = searchParams.get('runName');
+    const paramSop = searchParams.get('sop');
+    const paramInitialData = searchParams.get('initialData');
+    
+    if (paramRunName) setRunName(paramRunName);
+    if (paramSop) setSop(paramSop);
+    if (paramInitialData) {
+      try {
+        // Parse and re-format to ensure valid JSON
+        const parsed = JSON.parse(paramInitialData);
+        setInitialData(JSON.stringify(parsed, null, 2));
+      } catch {
+        setInitialData(paramInitialData);
+      }
+    }
+  }, [searchParams]);
 
   const generateThreadId = () => {
     if (typeof window !== "undefined" && window.crypto?.randomUUID) {
@@ -102,9 +123,13 @@ export default function NewRunPage() {
             </svg>
             Back to Runs
           </Link>
-          <h1 className="text-3xl font-bold text-gray-900">Start New Run</h1>
+          <h1 className="text-3xl font-bold text-gray-900">
+            {searchParams.get('sop') ? 'Edit and Rerun' : 'Start New Run'}
+          </h1>
           <p className="mt-2 text-sm text-gray-600">
-            Configure and launch a new workflow execution
+            {searchParams.get('sop') 
+              ? 'Modify the configuration below and start a new run'
+              : 'Configure and launch a new workflow execution'}
           </p>
         </div>
 

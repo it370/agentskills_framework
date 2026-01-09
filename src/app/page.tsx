@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { connectAdminEvents, fetchRuns, rerunWorkflow } from "../lib/api";
+import { connectAdminEvents, fetchRuns, rerunWorkflow, getRunMetadata } from "../lib/api";
 import { CheckpointTuple, RunEvent, RunSummary } from "../lib/types";
 import DashboardLayout from "../components/DashboardLayout";
 
@@ -171,12 +171,15 @@ export default function RunsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [rerunningThreadId, setRerunningThreadId] = useState<string | null>(null);
+  const [openMenuThreadId, setOpenMenuThreadId] = useState<string | null>(null);
 
-  const handleRerun = async (threadId: string, e: React.MouseEvent) => {
+  const handleRerunAsIs = async (threadId: string, e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     
-    if (!confirm(`Rerun workflow ${threadId} with same inputs?`)) {
+    setOpenMenuThreadId(null); // Close menu
+    
+    if (!confirm(`Rerun workflow with same inputs?`)) {
       return;
     }
     
@@ -192,6 +195,30 @@ export default function RunsPage() {
       alert(`Failed to rerun: ${err.message}`);
     } finally {
       setRerunningThreadId(null);
+    }
+  };
+
+  const handleEditAndRerun = async (threadId: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    setOpenMenuThreadId(null); // Close menu
+    
+    try {
+      // Fetch the run metadata
+      const metadata = await getRunMetadata(threadId);
+      
+      // Navigate to new run page with pre-populated data
+      const params = new URLSearchParams({
+        runName: metadata.run_name || '',
+        sop: metadata.sop,
+        initialData: JSON.stringify(metadata.initial_data, null, 2)
+      });
+      
+      router.push(`/runs/new?${params.toString()}`);
+    } catch (err: any) {
+      console.error("[EditRerun] Error:", err);
+      alert(`Failed to load run data: ${err.message}`);
     }
   };
 
@@ -493,49 +520,89 @@ export default function RunsPage() {
                       </svg>
                     </Link>
 
-                    {/* Rerun Button */}
-                    <button
-                      onClick={(e) => handleRerun(run.thread_id, e)}
-                      disabled={rerunningThreadId === run.thread_id}
-                      className="ml-4 px-3 py-2 bg-gray-100 hover:bg-gray-200 disabled:bg-gray-50 text-gray-700 disabled:text-gray-400 rounded-lg transition-colors flex items-center gap-2 text-sm font-medium"
-                      title="Rerun with same inputs"
-                    >
-                      {rerunningThreadId === run.thread_id ? (
+                    {/* Rerun Menu */}
+                    <div className="ml-4 relative">
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setOpenMenuThreadId(openMenuThreadId === run.thread_id ? null : run.thread_id);
+                        }}
+                        className="p-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition-colors"
+                        title="Rerun options"
+                      >
+                        <svg
+                          className="w-5 h-5"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"
+                          />
+                        </svg>
+                      </button>
+
+                      {/* Dropdown Menu */}
+                      {openMenuThreadId === run.thread_id && (
                         <>
-                          <svg
-                            className="animate-spin h-4 w-4"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={2}
-                              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-                            />
-                          </svg>
-                          <span>Rerunning...</span>
-                        </>
-                      ) : (
-                        <>
-                          <svg
-                            className="w-4 h-4"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={2}
-                              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-                            />
-                          </svg>
-                          <span>Rerun</span>
+                          {/* Backdrop to close menu */}
+                          <div
+                            className="fixed inset-0 z-10"
+                            onClick={() => setOpenMenuThreadId(null)}
+                          />
+                          
+                          {/* Menu */}
+                          <div className="absolute right-0 mt-2 w-56 rounded-lg shadow-lg bg-white ring-1 ring-black ring-opacity-5 z-20">
+                            <div className="py-1">
+                              <button
+                                onClick={(e) => handleRerunAsIs(run.thread_id, e)}
+                                disabled={rerunningThreadId === run.thread_id}
+                                className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                              >
+                                <svg
+                                  className="w-4 h-4"
+                                  fill="none"
+                                  viewBox="0 0 24 24"
+                                  stroke="currentColor"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                                  />
+                                </svg>
+                                {rerunningThreadId === run.thread_id ? 'Rerunning...' : 'Rerun as is'}
+                              </button>
+                              
+                              <button
+                                onClick={(e) => handleEditAndRerun(run.thread_id, e)}
+                                className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+                              >
+                                <svg
+                                  className="w-4 h-4"
+                                  fill="none"
+                                  viewBox="0 0 24 24"
+                                  stroke="currentColor"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                                  />
+                                </svg>
+                                Edit and rerun
+                              </button>
+                            </div>
+                          </div>
                         </>
                       )}
-                    </button>
+                    </div>
                   </div>
 
                   {/* Last History Entry */}
