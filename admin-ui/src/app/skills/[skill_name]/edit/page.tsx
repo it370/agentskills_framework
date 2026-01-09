@@ -464,6 +464,7 @@ export default function EditSkillPage() {
                       >
                         <option value="python_function">Python Function (Inline Code)</option>
                         <option value="data_query">Data Query (SQL)</option>
+                        <option value="data_pipeline">Data Pipeline (Multi-step)</option>
                         <option value="rest_call">REST API Call</option>
                       </select>
                     </div>
@@ -510,7 +511,11 @@ export default function EditSkillPage() {
 
                 <div>
                   <label className="block text-sm font-medium text-gray-900 mb-2">
-                    {actionType === "data_query" ? "SQL Query" : "Python Code"}
+                    {actionType === "data_query" 
+                      ? "SQL Query" 
+                      : actionType === "data_pipeline" 
+                      ? "Action Pipeline" 
+                      : "Python Code"}
                   </label>
                   <textarea
                     value={actionCodeOrQuery}
@@ -518,10 +523,45 @@ export default function EditSkillPage() {
                     placeholder={
                       actionType === "data_query"
                         ? "SELECT * FROM users WHERE id = {user_id}"
+                        : actionType === "data_pipeline"
+                        ? `steps:
+  - type: query
+    name: fetch_sales
+    source: postgres
+    query: "SELECT * FROM sales WHERE date >= {start_date}"
+    outputs: [sales_data]
+  
+  - type: query
+    name: fetch_expenses
+    source: postgres
+    query: "SELECT * FROM expenses WHERE date >= {start_date}"
+    outputs: [expense_data]
+  
+  - type: merge
+    name: combine_data
+    inputs: [sales_data, expense_data]
+    output: raw_financial_data
+  
+  - type: skill
+    name: llm_analysis
+    skill: FinancialAnalyzer
+    inputs: [raw_financial_data]
+  
+  - type: transform
+    name: compute_metrics
+    function: compute_financial_metrics
+    inputs: [raw_financial_data]
+    outputs: [computed_metrics]
+  
+  - type: transform
+    name: format_report
+    function: format_financial_report
+    inputs: [computed_metrics]
+    outputs: [final_report]`
                         : "def my_function(data_store, **kwargs):\n    # Your code here\n    return {'result': 'value'}"
                     }
                     className="w-full h-48 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm bg-gray-900 text-gray-100"
-                  />
+                  />`
                   <p className="text-xs text-gray-600 mt-2">
                     {actionType === "python_function" && (
                       <>
@@ -531,6 +571,11 @@ export default function EditSkillPage() {
                     {actionType === "data_query" && (
                       <>
                         Write SQL with <code className="bg-gray-100 px-1 rounded">{'"{param}"'}</code> placeholders from data_store.
+                      </>
+                    )}
+                    {actionType === "data_pipeline" && (
+                      <>
+                        Define multi-step pipeline with <code className="bg-gray-100 px-1 rounded">query</code>, <code className="bg-gray-100 px-1 rounded">transform</code>, <code className="bg-gray-100 px-1 rounded">skill</code>, and <code className="bg-gray-100 px-1 rounded">merge</code> steps. Edit in database after creation for complex pipelines.
                       </>
                     )}
                   </p>
