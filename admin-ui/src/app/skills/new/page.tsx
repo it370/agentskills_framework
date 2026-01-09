@@ -22,6 +22,17 @@ export default function NewSkillPage() {
   // String versions for input fields
   const [requiresStr, setRequiresStr] = useState("");
   const [producesStr, setProducesStr] = useState("");
+  
+  // Action executor fields
+  const [actionType, setActionType] = useState("python_function");
+  const [actionSource, setActionSource] = useState(""); // For data_query: postgres, mysql, etc.
+  const [credentialRef, setCredentialRef] = useState("");
+  const [actionCodeOrQuery, setActionCodeOrQuery] = useState("");
+  
+  // REST executor fields
+  const [restUrl, setRestUrl] = useState("");
+  const [restMethod, setRestMethod] = useState("GET");
+  const [restTimeout, setRestTimeout] = useState("30000");
 
   const handleSubmit = async () => {
     setError(null);
@@ -55,6 +66,42 @@ export default function NewSkillPage() {
       requires,
       produces,
     };
+    
+    // Add REST config if REST executor
+    if (formData.executor === "rest") {
+      skillData.rest_config = {
+        url: restUrl,
+        method: restMethod,
+        timeout: parseInt(restTimeout) || 30000,
+        headers: {},
+      };
+    }
+    
+    // Add Action config if Action executor
+    if (formData.executor === "action") {
+      skillData.action_config = {
+        type: actionType,
+      };
+      
+      // For data_query, source is required
+      if (actionType === "data_query") {
+        if (!actionSource.trim()) {
+          setError("Data source is required for data_query actions");
+          setLoading(false);
+          return;
+        }
+        skillData.action_config.source = actionSource;
+        skillData.action_config.query = actionCodeOrQuery;
+      }
+      
+      if (credentialRef.trim()) {
+        skillData.action_config.credential_ref = credentialRef.trim();
+      }
+      
+      if (actionType === "python_function" && actionCodeOrQuery.trim()) {
+        skillData.action_code = actionCodeOrQuery;
+      }
+    }
 
     try {
       const result = await createSkill(skillData);
@@ -261,19 +308,144 @@ export default function NewSkillPage() {
               {/* Note for REST/Action */}
               {formData.executor === "rest" && (
                 <div className="mt-4 p-4 bg-orange-50 rounded-lg">
-                  <p className="text-sm text-orange-800">
-                    REST executor configuration will be available in the full editor.
-                    For now, create as LLM and edit the database directly.
+                  <p className="text-sm text-orange-800 mb-2 font-medium">
+                    REST Executor Configuration
                   </p>
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-900 mb-1">
+                        URL
+                      </label>
+                      <input
+                        type="text"
+                        value={restUrl}
+                        onChange={(e) => setRestUrl(e.target.value)}
+                        placeholder="https://api.example.com/endpoint"
+                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-medium text-gray-900 mb-1">
+                          Method
+                        </label>
+                        <select
+                          value={restMethod}
+                          onChange={(e) => setRestMethod(e.target.value)}
+                          className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          <option>GET</option>
+                          <option>POST</option>
+                          <option>PUT</option>
+                          <option>DELETE</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-900 mb-1">
+                          Timeout (ms)
+                        </label>
+                        <input
+                          type="number"
+                          value={restTimeout}
+                          onChange={(e) => setRestTimeout(e.target.value)}
+                          placeholder="30000"
+                          className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                    </div>
+                  </div>
                 </div>
               )}
 
               {formData.executor === "action" && (
-                <div className="mt-4 p-4 bg-pink-50 rounded-lg">
-                  <p className="text-sm text-pink-800">
-                    Action executor configuration will be available in the full editor.
-                    For now, create as LLM and edit the database directly.
-                  </p>
+                <div className="mt-4 space-y-4">
+                  <div className="p-4 bg-pink-50 rounded-lg">
+                    <p className="text-sm text-pink-800 mb-3 font-medium">
+                      Action Executor Configuration
+                    </p>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-xs font-medium text-gray-900 mb-1">
+                          Action Type *
+                        </label>
+                        <select
+                          value={actionType}
+                          onChange={(e) => setActionType(e.target.value)}
+                          className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          <option value="python_function">Python Function (Inline Code)</option>
+                          <option value="data_query">Data Query (SQL)</option>
+                          <option value="rest_call">REST API Call</option>
+                        </select>
+                      </div>
+                      
+                      {actionType === "data_query" && (
+                        <div>
+                          <label className="block text-xs font-medium text-gray-900 mb-1">
+                            Data Source * <span className="text-xs text-gray-500">(Database Type)</span>
+                          </label>
+                          <select
+                            value={actionSource}
+                            onChange={(e) => setActionSource(e.target.value)}
+                            className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          >
+                            <option value="">Select database type...</option>
+                            <option value="postgres">PostgreSQL</option>
+                            <option value="mysql">MySQL</option>
+                            <option value="sqlite">SQLite</option>
+                            <option value="mongodb">MongoDB</option>
+                          </select>
+                          <p className="text-xs text-gray-600 mt-1">
+                            Type of database connection
+                          </p>
+                        </div>
+                      )}
+                      
+                      <div>
+                        <label className="block text-xs font-medium text-gray-900 mb-1">
+                          Credential Reference {actionType === "data_query" ? "*" : "(optional)"}
+                        </label>
+                        <input
+                          type="text"
+                          value={credentialRef}
+                          onChange={(e) => setCredentialRef(e.target.value)}
+                          placeholder="postgres_aiven_cloud_db, my_api_key"
+                          className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                        <p className="text-xs text-gray-600 mt-1">
+                          Name of credential from vault (e.g., postgres_aiven_cloud_db)
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-900 mb-2">
+                      {actionType === "data_query" ? "SQL Query" : "Python Code"}
+                    </label>
+                    <textarea
+                      value={actionCodeOrQuery}
+                      onChange={(e) => setActionCodeOrQuery(e.target.value)}
+                      placeholder={
+                        actionType === "data_query"
+                          ? "SELECT * FROM users WHERE id = {user_id}"
+                          : "def my_function(data_store, **kwargs):\n    # Your code here\n    return {'result': 'value'}"
+                      }
+                      className="w-full h-48 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm bg-gray-900 text-gray-100"
+                    />
+                    <p className="text-xs text-gray-600 mt-2">
+                      {actionType === "python_function" && (
+                        <>
+                          Write a Python function that accepts <code className="bg-gray-100 px-1 rounded">data_store</code> and returns a dict.
+                        </>
+                      )}
+                      {actionType === "data_query" && (
+                        <>
+                          Write SQL with <code className="bg-gray-100 px-1 rounded">{'"{param}"'}</code> placeholders from data_store.
+                        </>
+                      )}
+                    </p>
+                  </div>
                 </div>
               )}
             </div>

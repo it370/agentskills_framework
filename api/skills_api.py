@@ -117,6 +117,8 @@ async def get_skill(skill_name: str):
         skill_dict["action_config"] = {
             "type": skill.action.type,
         }
+        if skill.action.source:
+            skill_dict["action_config"]["source"] = skill.action.source
         if skill.action.module:
             skill_dict["action_config"]["module"] = skill.action.module
         if skill.action.function:

@@ -231,7 +231,11 @@ async def _update_run_status(thread_id: str, status: str, error_message: Optiona
         emit_log(f"[API] Updated run status to '{status}' for thread={thread_id}")
         
         # Broadcast admin event to trigger UI refresh
-        await broadcast_run_event(thread_id, f"status_updated:{status}")
+        await broadcast_run_event({
+            "thread_id": thread_id,
+            "status": status,
+            "event": "status_updated"
+        })
     except Exception as e:
         emit_log(f"[API] Failed to update run status: {e}")
 
