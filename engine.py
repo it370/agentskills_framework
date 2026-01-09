@@ -735,102 +735,6 @@ async def _execute_rest_skill(skill_meta: Skill, state: AgentState, input_ctx: D
 
 # --- ACTION EXECUTORS ---
 
-async def _execute_action_skill(skill_meta: Skill, state: AgentState, input_ctx: Dict[str, Any]):
-    """Execute a skill using the action executor"""
-    if not skill_meta.action:
-        raise RuntimeError(f"{skill_meta.name} is missing action configuration.")
-    
-    action_cfg = skill_meta.action
-    await publish_log(f"[EXECUTOR] Running action {skill_meta.name} (type: {action_cfg.type.value})")
-    
-    try:
-        # Execute based on action type
-        if action_cfg.type == ActionType.PYTHON_FUNCTION:
-            result = await _execute_python_function(action_cfg, input_ctx, state)
-            
-        elif action_cfg.type == ActionType.DATA_QUERY:
-            result = await _execute_data_query(action_cfg, input_ctx)
-            
-        elif action_cfg.type == ActionType.DATA_PIPELINE:
-            result = await _execute_data_pipeline(action_cfg, input_ctx)
-            
-        elif action_cfg.type == ActionType.SCRIPT:
-            result = await _execute_script(action_cfg, input_ctx)
-            
-        elif action_cfg.type == ActionType.HTTP_CALL:
-            result = await _execute_http_call(action_cfg, input_ctx)
-            
-        else:
-            raise ValueError(f"Unknown action type: {action_cfg.type}")
-        
-        # Validate result is a dict
-        if not isinstance(result, dict):
-            raise ValueError(f"Action {skill_meta.name} must return a dict, got {type(result)}")
-        
-        # Map result to skill's produces field
-        # If produces has 1 key: store entire result object under that key
-        # If produces has multiple keys: map result keys by position to produces keys
-        mapped_result = {}
-        produces_list = list(skill_meta.produces)
-        
-        if len(produces_list) == 1:
-            # Single produces key: store entire result under it
-            target_key = produces_list[0]
-            mapped_result[target_key] = result
-            await publish_log(f"[EXECUTOR] Stored entire result under '{target_key}'")
-        else:
-            # Multiple produces keys: map by position
-            result_keys = list(result.keys())
-            
-            if len(result_keys) != len(produces_list):
-                await publish_log(
-                    f"[EXECUTOR] Warning: Action {skill_meta.name} returned {len(result_keys)} keys "
-                    f"but skill defines {len(produces_list)} produces. Mapping by position."
-                )
-            
-            # Map by position: first result key -> first produces key, etc.
-            for idx, result_key in enumerate(result_keys):
-                if idx < len(produces_list):
-                    target_key = produces_list[idx]
-                    mapped_result[target_key] = result[result_key]
-                    if result_key != target_key:
-                        await publish_log(f"[EXECUTOR] Mapped '{result_key}' -> '{target_key}'")
-                else:
-                    # Extra keys beyond produces list - keep with original name
-                    mapped_result[result_key] = result[result_key]
-                    await publish_log(f"[EXECUTOR] Warning: Extra key '{result_key}' not in produces list")
-        
-        # Merge mapped results into data_store
-        updated_store = state["data_store"]
-        for path, val in mapped_result.items():
-            updated_store = _set_path_value(updated_store, path, val)
-        
-        await publish_log(f"[EXECUTOR] Action {skill_meta.name} completed. Results: {list(mapped_result.keys())}")
-        
-        return {
-            "data_store": updated_store,
-            "history": [f"Executed {skill_meta.name} (action)"],
-            "active_skill": None  # Clear active skill to allow planner to continue
-        }
-        
-    except Exception as exc:
-        error_msg = str(exc)
-        await publish_log(f"[EXECUTOR] Action {skill_meta.name} failed: {error_msg}")
-        
-        # Instead of raising, return error state and force workflow to END
-        # This ensures the workflow completes gracefully with error status
-        updated_store = state["data_store"]
-        updated_store["_error"] = error_msg
-        updated_store["_failed_skill"] = skill_meta.name
-        updated_store["_status"] = "failed"
-        
-        return {
-            "data_store": updated_store,
-            "history": [f"Action {skill_meta.name} failed: {error_msg}"],
-            "active_skill": "END"  # Force workflow to end
-        }
-
-
 async def _execute_python_function(cfg: ActionConfig, inputs: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
     """Execute a plain Python function"""
     if not cfg.function or not cfg.module:
@@ -1267,12 +1171,51 @@ async def _execute_data_pipeline(cfg: ActionConfig, inputs: Dict[str, Any]) -> D
             
             merged = {}
             for key in input_keys:
-                if key in context and isinstance(context[key], dict):
-                    merged = _deep_merge_dict(merged, context[key])
+                if key in context:
+                    merged[key] = context[key]
             
             output_key = step.get("output", "merged")
             context[output_key] = merged
             await publish_log(f"[ACTIONS] Pipeline step {step_idx}: merge completed")
+            
+        elif step_type == "skill":
+            # Invoke another skill (typically LLM) with current context
+            skill_name = step.get("skill")
+            if not skill_name:
+                raise ValueError(f"Pipeline step {step_idx}: 'skill' type requires 'skill' field")
+            
+            # Find the skill in registry
+            skill = next((s for s in SKILL_REGISTRY if s.name == skill_name), None)
+            if not skill:
+                raise ValueError(f"Skill '{skill_name}' not found in registry")
+            
+            # Get inputs for the skill
+            input_keys = step.get("inputs", [])
+            skill_inputs = {}
+            for key in input_keys:
+                if key in context:
+                    skill_inputs[key] = context[key]
+                else:
+                    await publish_log(f"[ACTIONS] Warning: Input '{key}' not found in context for skill '{skill_name}'")
+            
+            await publish_log(f"[ACTIONS] Pipeline step {step_idx}: invoking skill '{skill_name}'")
+            
+            # Execute the skill using the core executor (reuses all existing execution logic!)
+            # Create a minimal state for the skill execution
+            minimal_state = {
+                "data_store": context,
+                "history": [],
+                "active_skill": skill_name,
+                "layman_sop": "Pipeline execution"
+            }
+            skill_result = await _execute_skill_core(skill, skill_inputs, minimal_state)
+            
+            # Merge skill results into context
+            # All outputs from the skill are added to pipeline context
+            for key, value in skill_result.items():
+                context[key] = value
+            
+            await publish_log(f"[ACTIONS] Pipeline step {step_idx}: skill '{skill_name}' completed, produced: {list(skill_result.keys())}")
             
         else:
             raise ValueError(f"Pipeline step {step_idx}: unknown type '{step_type}'")
@@ -1494,30 +1437,84 @@ async def autonomous_planner(state: AgentState):
     await publish_log(f"[PLANNER] Decision: {chosen} | Reasoning: {reason}")
     return {"active_skill": chosen, "history": [f"Planner chose {chosen}"]}
 
-async def skilled_executor(state: AgentState):
-    skill_name = state["active_skill"]
-    skill_meta = next(s for s in SKILL_REGISTRY if s.name == skill_name)
-    
-    await publish_log(f"[EXECUTOR] Running {skill_name}...")
-    
-    present_keys = _available_keys(state["data_store"])
-    missing_inputs = {req for req in skill_meta.requires if req not in present_keys}
-    if missing_inputs:
-        missing_list = ", ".join(sorted(missing_inputs))
-        raise RuntimeError(f"{skill_name} cannot run. Missing required inputs: {missing_list}")
-    
-    input_ctx = {k: _get_path_value(state["data_store"], k) for k in skill_meta.requires}
-
-    # REST executor path: fire-and-pause until callback arrives.
+async def _execute_skill_core(skill_meta: Skill, input_ctx: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
+    """
+    Core skill execution logic - reusable from both executor node and pipelines.
+    Returns a dict with the skill's outputs.
+    """
+    # REST executor path
     if skill_meta.executor == "rest":
-        return await _execute_rest_skill(skill_meta, state, input_ctx)
+        # REST skills need full state for callback handling
+        result = await _execute_rest_skill(skill_meta, state, input_ctx)
+        # Extract outputs from result for pipeline use
+        if "data_store" in result:
+            outputs = {}
+            for key in skill_meta.produces:
+                if key in result["data_store"]:
+                    outputs[key] = result["data_store"][key]
+            return outputs
+        return {}
     
-    # ACTION executor path: deterministic function execution
+    # ACTION executor path
     if skill_meta.executor == "action":
-        return await _execute_action_skill(skill_meta, state, input_ctx)
-
-    # Dynamic Schema: In reality, read ## OUTPUT SCHEMA from an MD file
-    # Here we simulate the fields based on skill_meta.produces
+        # Actions return outputs directly
+        if not skill_meta.action:
+            raise RuntimeError(f"{skill_meta.name} is missing action configuration.")
+        
+        action_cfg = skill_meta.action
+        await publish_log(f"[EXECUTOR] Running action {skill_meta.name} (type: {action_cfg.type.value})")
+        
+        # Execute based on action type
+        if action_cfg.type == ActionType.PYTHON_FUNCTION:
+            result = await _execute_python_function(action_cfg, input_ctx, state)
+        elif action_cfg.type == ActionType.DATA_QUERY:
+            result = await _execute_data_query(action_cfg, input_ctx)
+        elif action_cfg.type == ActionType.DATA_PIPELINE:
+            result = await _execute_data_pipeline(action_cfg, input_ctx)
+        elif action_cfg.type == ActionType.SCRIPT:
+            result = await _execute_script(action_cfg, input_ctx)
+        elif action_cfg.type == ActionType.HTTP_CALL:
+            result = await _execute_http_call(action_cfg, input_ctx)
+        else:
+            raise ValueError(f"Unknown action type: {action_cfg.type}")
+        
+        # Validate result is a dict
+        if not isinstance(result, dict):
+            raise ValueError(f"Action {skill_meta.name} must return a dict, got {type(result)}")
+        
+        # Map result keys to skill's produces field
+        mapped_result = {}
+        produces_list = list(skill_meta.produces)
+        
+        if len(produces_list) == 1:
+            # Single produces key: store entire result under it
+            target_key = produces_list[0]
+            mapped_result[target_key] = result
+            await publish_log(f"[EXECUTOR] Stored entire result under '{target_key}'")
+        else:
+            # Multiple produces keys: map by position
+            result_keys = list(result.keys())
+            
+            if len(result_keys) != len(produces_list):
+                await publish_log(
+                    f"[EXECUTOR] Warning: Action {skill_meta.name} returned {len(result_keys)} keys "
+                    f"but skill defines {len(produces_list)} produces. Mapping by position."
+                )
+            
+            for idx, result_key in enumerate(result_keys):
+                if idx < len(produces_list):
+                    target_key = produces_list[idx]
+                    mapped_result[target_key] = result[result_key]
+                    if result_key != target_key:
+                        await publish_log(f"[EXECUTOR] Mapped '{result_key}' -> '{target_key}'")
+                else:
+                    mapped_result[result_key] = result[result_key]
+                    await publish_log(f"[EXECUTOR] Warning: Extra key '{result_key}' not in produces list")
+        
+        await publish_log(f"[EXECUTOR] Action {skill_meta.name} completed. Results: {list(mapped_result.keys())}")
+        return mapped_result
+    
+    # LLM executor path
     def _field_name(path: str) -> str:
         return path.replace(".", "__")
 
@@ -1530,12 +1527,12 @@ async def skilled_executor(state: AgentState):
         __config__=ConfigDict(populate_by_name=True),
         **fields,
     )
-    
+
     llm = _structured_llm(DynamicModel)
-    
-    # Simulate processing (Add a tiny delay for realism)
+
+    # Simulate processing
     await asyncio.sleep(1)
-    
+
     prompt_text = skill_meta.prompt or f"Process this input to produce: {', '.join(sorted(skill_meta.produces))}."
     system_prompt = skill_meta.system_prompt
     tool_hint = (
@@ -1554,10 +1551,17 @@ async def skilled_executor(state: AgentState):
     ]
     if system_prompt:
         base_messages.append(SystemMessage(content=system_prompt))
+    
+    # Use layman_sop from state if available (for node execution), otherwise skip it (for pipeline execution)
+    context_str = state.get("layman_sop", "N/A") if state else "N/A"
+    
+    # Properly serialize input context for LLM (especially important for complex nested data from queries)
+    input_serialized = _safe_serialize(input_ctx, limit=5000)
+    
     base_messages.append(
         HumanMessage(
             content=(
-                f"{prompt_text}\nContext: {state['layman_sop']}\nInput: {input_ctx}\n\n"
+                f"{prompt_text}\nContext: {context_str}\nInput: {input_serialized}\n\n"
                 f"{tool_hint}"
             )
         )
@@ -1577,22 +1581,72 @@ async def skilled_executor(state: AgentState):
 
     result = await llm.ainvoke(final_messages)
     
-    output_data = result.model_dump(by_alias=True, exclude_none=True)
-    updated_store = state["data_store"]
-    for path, val in output_data.items():
-        updated_store = _set_path_value(updated_store, path, val)
+    # The result from with_structured_output() is the Pydantic model itself, not a BaseMessage
+    if not result:
+        raise RuntimeError(f"{skill_meta.name}: Failed to extract structured output from LLM.")
 
-    await publish_log(f"[EXECUTOR] {skill_name} finished. Results: {output_data}")
-    history_entry = [f"Executed {skill_name}"]
-    if tool_runs:
-        used = ", ".join(sorted({run.get("tool") or "unknown_tool" for run in tool_runs}))
-        history_entry.append(f"Agent tools used: {used}")
-    if skill_meta.hitl_enabled:
-        history_entry.append(f"Awaiting human review for {skill_name}")
-    return {
-        "data_store": updated_store,
-        "history": history_entry
-    }
+    # Extract outputs from the Pydantic model
+    outputs = {}
+    for k in skill_meta.produces:
+        field_alias = _field_name(k)
+        val = getattr(result, field_alias, None)
+        if val is not None:
+            outputs[k] = val
+    for k in skill_meta.optional_produces:
+        field_alias = _field_name(k)
+        val = getattr(result, field_alias, None)
+        if val is not None:
+            outputs[k] = val
+
+    await publish_log(f"[EXECUTOR] {skill_meta.name} finished. Results: {_safe_serialize(outputs, limit=500)}")
+    return outputs
+
+
+async def skilled_executor(state: AgentState):
+    skill_name = state["active_skill"]
+    skill_meta = next(s for s in SKILL_REGISTRY if s.name == skill_name)
+
+    await publish_log(f"[EXECUTOR] Running {skill_name}...")
+
+    present_keys = _available_keys(state["data_store"])
+    missing_inputs = {req for req in skill_meta.requires if req not in present_keys}
+    if missing_inputs:
+        missing_list = ", ".join(sorted(missing_inputs))
+        raise RuntimeError(f"{skill_name} cannot run. Missing required inputs: {missing_list}")
+
+    input_ctx = {k: _get_path_value(state["data_store"], k) for k in skill_meta.requires}
+
+    try:
+        # Use core execution logic
+        outputs = await _execute_skill_core(skill_meta, input_ctx, state)
+        
+        # Merge outputs into data_store
+        updated_store = state["data_store"]
+        for path, val in outputs.items():
+            updated_store = _set_path_value(updated_store, path, val)
+        
+        return {
+            "data_store": updated_store,
+            "history": [f"Executed {skill_meta.name} ({skill_meta.executor})"],
+            "active_skill": None  # Clear active skill to allow planner to continue
+        }
+        
+    except Exception as exc:
+        error_msg = str(exc)
+        await publish_log(f"[EXECUTOR] Skill {skill_meta.name} failed: {error_msg}")
+        
+        # Return error state and force workflow to END
+        updated_store = state["data_store"]
+        updated_store["_error"] = error_msg
+        updated_store["_failed_skill"] = skill_meta.name
+        updated_store["_status"] = "failed"
+        
+        return {
+            "data_store": updated_store,
+            "history": [f"Skill {skill_meta.name} failed: {error_msg}"],
+            "active_skill": "END"  # Force workflow to end
+        }
+
 
 def route_post_exec(state: AgentState):
     skill_name = state["active_skill"]
@@ -1767,3 +1821,24 @@ def _init_log_persistence(db_uri: str):
 # Compile graph with async-friendly checkpointer (Postgres if available, else Memory)
 checkpointer = _build_checkpointer()
 app = workflow.compile(checkpointer=checkpointer, interrupt_before=["human_review", "await_callback"])
+
+
+# --- Register Pipeline Functions ---
+# Auto-discover and register functions from pipeline modules
+try:
+    from skills.FinancialAnalysisPipeline.pipeline_functions import (
+        compute_financial_metrics,
+        format_financial_report,
+        calculate_growth_metrics
+    )
+    
+    # Register each function
+    register_action_function("compute_financial_metrics", compute_financial_metrics)
+    register_action_function("format_financial_report", format_financial_report)
+    register_action_function("calculate_growth_metrics", calculate_growth_metrics)
+    
+    emit_log("[ACTIONS] Registered FinancialAnalysisPipeline functions")
+except ImportError as e:
+    emit_log(f"[ACTIONS] Warning: Could not import FinancialAnalysisPipeline functions: {e}")
+except Exception as e:
+    emit_log(f"[ACTIONS] Error registering FinancialAnalysisPipeline functions: {e}")
