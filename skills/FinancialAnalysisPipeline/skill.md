@@ -76,7 +76,7 @@ action:
       # These are automatically added to the pipeline context
     
     # Step 5: Mathematical computations (Python function)
-    - type: function
+    - type: transform
       name: calculate_financial_metrics
       function: compute_financial_metrics
       inputs:
@@ -84,7 +84,7 @@ action:
       output: computed_metrics
     
     # Step 6: Format final output
-    - type: function
+    - type: transform
       name: format_report
       function: format_financial_report
       inputs:
