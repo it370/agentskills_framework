@@ -7,4 +7,5 @@ python-dotenv
 pyyaml
 httpx
 pymongo
+cryptography
 

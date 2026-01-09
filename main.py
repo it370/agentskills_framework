@@ -12,8 +12,18 @@ def run():
     - HOST: bind address (default "0.0.0.0")
     - PORT: bind port (default 8000)
     - RELOAD: enable auto-reload (set to "true" to enable; default off)
+    - DEFAULT_USER_ID: default user for credential access (default "system")
     """
     load_dotenv()  # pick up .env before reading config
+    
+    # Initialize global auth context for credential access
+    try:
+        from services.credentials import AuthContext
+        auth = AuthContext.initialize_from_env()
+        print(f"[AUTH] Initialized global auth context for user: {auth.get_current_user().user_id}")
+    except Exception as e:
+        print(f"[AUTH] Warning: Could not initialize auth context: {e}")
+        print("[AUTH] Credential-based skills may not work without user_context in inputs")
 
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8000"))

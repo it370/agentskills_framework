@@ -89,6 +89,16 @@ class ActionConfig(BaseModel):
     collection: Optional[str] = Field(default=None, description="Collection/table name")
     filter: Optional[Dict[str, Any]] = Field(default=None, description="Query filter for NoSQL")
     
+    # Database configuration (skill-local)
+    credential_ref: Optional[str] = Field(
+        default=None,
+        description="Reference to credential in secure vault (e.g., 'my_postgres_db')"
+    )
+    db_config_file: Optional[str] = Field(
+        default=None,
+        description="[DEPRECATED] Path to db_config.json (use credential_ref instead)"
+    )
+    
     # For data_pipeline type
     steps: Optional[List[Dict[str, Any]]] = Field(
         default=None,
@@ -167,6 +177,9 @@ def _resolve_skill_local_action(action_cfg: ActionConfig, skill_dir: Path, skill
     - If script_path is relative → resolve from skill directory
     - If function/module starts with '.' → treat as skill-local
     """
+    
+    # Store skill path for later use (e.g., resolving db_config.json)
+    action_cfg._skill_path = skill_dir
     
     # Handle python_function with skill-local module
     if action_cfg.type == ActionType.PYTHON_FUNCTION:
@@ -846,8 +859,217 @@ async def _execute_data_query(cfg: ActionConfig, inputs: Dict[str, Any]) -> Dict
         raise ValueError(f"Unknown data source: {cfg.source}")
 
 
+async def _resolve_database_uri(
+    cfg: ActionConfig, 
+    inputs: Dict[str, Any],
+    db_type: str
+) -> str:
+    """
+    Resolve database URI with support for secure credentials.
+    
+    Resolution order:
+    1. Direct credential_ref in action config (recommended)
+    2. Skill-local db_config.json with credential reference (deprecated but supported)
+    3. Global DATABASE_URL environment variable (fallback)
+    
+    Args:
+        cfg: Action configuration
+        inputs: Input context (may contain user_context)
+        db_type: Database type (postgres, mongodb, etc.)
+    
+    Returns:
+        Connection URI string
+    """
+    # Option 1: Direct credential reference (recommended)
+    if cfg.credential_ref:
+        return await _resolve_secure_credential(cfg, inputs, cfg.credential_ref)
+    
+    # Option 2: Skill-local db_config.json (deprecated but supported)
+    if cfg.db_config_file:
+        return await _resolve_secure_credential_from_file(cfg, inputs)
+    
+    # Option 3: Global environment variable (fallback)
+    db_uri = _get_env_value("DATABASE_URL", "")
+    if not db_uri:
+        raise RuntimeError(
+            f"Database configuration not found. Either:\n"
+            f"  1. Set 'credential_ref' in skill action config for secure credentials, or\n"
+            f"  2. Set DATABASE_URL environment variable\n"
+            f"\n"
+            f"Example:\n"
+            f"  action:\n"
+            f"    type: data_query\n"
+            f"    source: postgres\n"
+            f"    credential_ref: 'my_postgres_db'"
+        )
+    
+    await publish_log(f"[ACTIONS] Using global DATABASE_URL for {db_type}")
+    return db_uri
+
+
+async def _resolve_secure_credential(
+    cfg: ActionConfig,
+    inputs: Dict[str, Any],
+    credential_ref: str
+) -> str:
+    """
+    Resolve database credentials from secure vault using credential reference.
+    
+    Args:
+        cfg: Action configuration
+        inputs: Input context (may contain user_context, or uses global auth)
+        credential_ref: Name or ID of credential in vault
+    
+    Gets user_context from inputs or global AuthContext.
+    """
+    try:
+        from services.credentials import get_vault, UserContext, get_current_user
+    except ImportError:
+        raise RuntimeError(
+            "Secure credentials system not available. "
+            "Install required dependencies: pip install cryptography"
+        )
+    
+    # Get user context for authorization
+    # Try inputs first, then fall back to global AuthContext
+    user_context = inputs.get("user_context")
+    if not user_context:
+        try:
+            user_context = get_current_user()
+            await publish_log(
+                f"[ACTIONS] Using global auth context for user {user_context.user_id}"
+            )
+        except RuntimeError:
+            raise RuntimeError(
+                "user_context required for secure credentials. Either:\n"
+                "  1. Pass user_context in inputs, or\n"
+                "  2. Initialize global auth at startup:\n"
+                "     from services.credentials import AuthContext, get_system_user\n"
+                "     AuthContext.initialize(get_system_user())"
+            )
+    
+    # Convert dict to UserContext if needed
+    if isinstance(user_context, dict):
+        user_context = UserContext(**user_context)
+    
+    # Resolve credential from vault
+    vault = get_vault()
+    try:
+        credential = vault.get_credential(user_context, credential_ref)
+        await publish_log(
+            f"[ACTIONS] Using secure credential '{credential_ref}' "
+            f"for user {user_context.user_id}"
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to resolve credential '{credential_ref}': {e}\n"
+            f"Make sure the credential exists and belongs to user {user_context.user_id}\n"
+            f"\n"
+            f"To create a credential:\n"
+            f"  python -m scripts.credential_manager add --user {user_context.user_id} --name {credential_ref}"
+        )
+    
+    # Build connection string
+    return vault.build_connection_string(credential)
+
+
+async def _resolve_secure_credential_from_file(
+    cfg: ActionConfig,
+    inputs: Dict[str, Any]
+) -> str:
+    """
+    [DEPRECATED] Resolve database credentials from skill-local db_config.json.
+    
+    Use credential_ref directly in action config instead.
+    """
+    import json
+    from pathlib import Path
+    
+    try:
+        from services.credentials import get_vault, UserContext
+    except ImportError:
+        raise RuntimeError(
+            "Secure credentials system not available. "
+            "Install required dependencies: pip install cryptography"
+        )
+    
+    # Get user context for authorization
+    user_context = inputs.get("user_context")
+    if not user_context:
+        raise RuntimeError(
+            "user_context required in inputs for secure credentials. "
+            "Pass UserContext(user_id='...', username='...', roles=[]) in inputs."
+        )
+    
+    # Convert dict to UserContext if needed
+    if isinstance(user_context, dict):
+        user_context = UserContext(**user_context)
+    
+    # Get skill path from config
+    skill_path = cfg._skill_path if hasattr(cfg, '_skill_path') else None
+    if not skill_path:
+        raise RuntimeError(
+            "Skill path not available. This is a framework bug - "
+            "skill path should be set during skill loading."
+        )
+    
+    # Load db_config.json
+    config_path = Path(skill_path) / cfg.db_config_file
+    if not config_path.exists():
+        raise FileNotFoundError(
+            f"Database config file not found: {config_path}\n"
+            f"Create db_config.json in skill folder with credential reference."
+        )
+    
+    try:
+        db_config = json.loads(config_path.read_text())
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in {config_path}: {e}")
+    
+    # Get credential reference
+    credential_ref = db_config.get("credential_ref")
+    if not credential_ref:
+        raise ValueError(
+            f"db_config.json must contain 'credential_ref' field.\n"
+            f"Example: {{'credential_ref': 'my_postgres_db'}}"
+        )
+    
+    await publish_log(
+        f"[ACTIONS] WARNING: db_config_file is deprecated. "
+        f"Use 'credential_ref: {credential_ref}' directly in action config instead."
+    )
+    
+    # Resolve credential from vault
+    vault = get_vault()
+    try:
+        credential = vault.get_credential(user_context, credential_ref)
+        await publish_log(
+            f"[ACTIONS] Using secure credential '{credential_ref}' "
+            f"for user {user_context.user_id}"
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to resolve credential '{credential_ref}': {e}\n"
+            f"Make sure the credential exists and belongs to user {user_context.user_id}"
+        )
+    
+    # Build connection string with optional overrides
+    overrides = {
+        "host": db_config.get("host"),
+        "port": db_config.get("port"),
+        "database": db_config.get("database")
+    }
+    overrides = {k: v for k, v in overrides.items() if v is not None}
+    
+    return vault.build_connection_string(credential, overrides if overrides else None)
+
+
 async def _execute_postgres_query(cfg: ActionConfig, inputs: Dict[str, Any]) -> Dict[str, Any]:
-    """Execute a PostgreSQL query"""
+    """
+    Execute a PostgreSQL query.
+    
+    Supports both global DATABASE_URL and skill-local secure credentials.
+    """
     import psycopg
     
     if not cfg.query:
@@ -856,10 +1078,8 @@ async def _execute_postgres_query(cfg: ActionConfig, inputs: Dict[str, Any]) -> 
     # Format query with input context
     query = _format_with_ctx(cfg.query, inputs)
     
-    # Get database URI
-    db_uri = _get_env_value("DATABASE_URL", "")
-    if not db_uri:
-        raise RuntimeError("DATABASE_URL not configured for postgres queries")
+    # Get database URI (with support for secure credentials)
+    db_uri = await _resolve_database_uri(cfg, inputs, "postgres")
     
     # Execute query in thread to avoid blocking
     def _execute_sync():
