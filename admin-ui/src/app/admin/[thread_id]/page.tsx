@@ -14,6 +14,7 @@ export default function RunDetailPage() {
   const threadId = params?.thread_id as string;
   const [run, setRun] = useState<CheckpointTuple | null>(null);
   const [runName, setRunName] = useState<string | null>(null);
+  const [runMetadata, setRunMetadata] = useState<any>(null); // Store full metadata
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<string>(searchParams.get("tab") || "config");
@@ -48,27 +49,29 @@ export default function RunDetailPage() {
 
   const load = () => {
     setLoading(true);
-    fetchRunDetail(threadId)
-      .then((runData) => {
+    
+    // Fetch both run detail and metadata in parallel
+    Promise.all([
+      fetchRunDetail(threadId),
+      getRunMetadata(threadId)
+    ])
+      .then(([runData, metadata]) => {
         setRun(runData);
+        setRunMetadata(metadata);
+        setRunName(metadata?.run_name || threadId);
         setError(null);
-        
-        // Only fetch metadata if we don't already have run_name
-        if (!runName) {
-          getRunMetadata(threadId)
-            .then((metadata) => {
-              setRunName(metadata?.run_name || threadId);
-            })
-            .catch(() => {
-              setRunName(threadId);
-            });
-        }
       })
       .catch((err) => {
         setError(err.message);
-        if (!runName) {
-          setRunName(threadId); // Fallback to thread_id on error
-        }
+        // Try to at least get metadata on error
+        getRunMetadata(threadId)
+          .then((metadata) => {
+            setRunMetadata(metadata);
+            setRunName(metadata?.run_name || threadId);
+          })
+          .catch(() => {
+            setRunName(threadId);
+          });
       })
       .finally(() => setLoading(false));
   };
@@ -76,24 +79,13 @@ export default function RunDetailPage() {
   useEffect(() => {
     if (!threadId) return;
     
-    // Immediately fetch run metadata for the name (fast query)
-    getRunMetadata(threadId)
-      .then((metadata) => {
-        if (metadata?.run_name) {
-          setRunName(metadata.run_name);
-        }
-      })
-      .catch(() => {
-        // Silently fail - will use thread_id as fallback
-        setRunName(threadId);
-      });
-    
-    // Then load the full run details
+    // Load initial data
     load();
     
+    // Set up WebSocket for real-time updates
     const ws = connectAdminEvents((evt: RunEvent) => {
       if (evt.thread_id === threadId) {
-        load();
+        load(); // Reload on any checkpoint update
       }
     });
     return () => ws.close();
@@ -164,14 +156,17 @@ export default function RunDetailPage() {
   const isAtHumanReview = run?.checkpoint?.channel_values?.["branch:to:human_review"] !== undefined ||
                           run?.checkpoint?.["branch:to:human_review"] !== undefined;
   
-  // Extract layman_sop from checkpoint if available, otherwise use URL param or stored initial config
-  const laymanSop = run?.checkpoint?.channel_values?.layman_sop || 
+  // Extract layman_sop and initial_data from run_metadata (primary source)
+  // Fallback to checkpoint or URL params for new runs
+  const laymanSop = runMetadata?.sop || 
+                    run?.checkpoint?.channel_values?.layman_sop || 
                     initialConfig?.sop || 
                     sopFromUrl || 
                     "—";
   
-  // For initial data, prefer stored initial config, then URL param, then empty
-  const initialData = initialConfig?.data || 
+  // For initial data, prefer run_metadata, then checkpoint, then URL param
+  const initialData = runMetadata?.initial_data || 
+                     initialConfig?.data || 
                      (initialDataFromUrl ? (() => { try { return JSON.parse(initialDataFromUrl); } catch { return {}; } })() : {});
 
   // Filter logs for this specific thread
