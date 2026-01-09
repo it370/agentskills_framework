@@ -65,6 +65,7 @@ def main():
         (db_dir / "logs_schema.sql", "Thread logs schema"),
         (db_dir / "run_metadata_schema.sql", "Run metadata schema (for reruns)"),
         (db_dir / "add_status_columns_migration.sql", "Status tracking columns (migration)"),
+        (db_dir / "dynamic_skills_schema.sql", "Dynamic skills schema (UI skill builder)"),
         (db_dir / "run_list_view.sql", "Run list view with computed status"),
     ]
     

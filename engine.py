@@ -1340,8 +1340,33 @@ async def _execute_http_call(cfg: ActionConfig, inputs: Dict[str, Any]) -> Dict[
         raise RuntimeError(f"HTTP call failed: {e}") from e
 
 
-# Load registry from markdown at import time
+# Load registry from markdown at import time, then merge with database skills
 SKILL_REGISTRY = load_skill_registry()
+
+# Try to load and merge database skills
+try:
+    from skill_manager import load_skills_from_database
+    from pydantic import ValidationError
+    
+    db_skill_dicts = load_skills_from_database()
+    db_skills = []
+    for skill_dict in db_skill_dicts:
+        try:
+            skill = Skill(**skill_dict)
+            db_skills.append(skill)
+        except ValidationError as e:
+            print(f"[SKILL_DB] Warning: Invalid database skill '{skill_dict.get('name')}': {e}")
+    
+    # Merge database skills (override filesystem if name conflicts)
+    if db_skills:
+        skill_map = {s.name: s for s in SKILL_REGISTRY}
+        for db_skill in db_skills:
+            skill_map[db_skill.name] = db_skill
+        SKILL_REGISTRY = list(skill_map.values())
+        print(f"[ENGINE] Loaded {len(SKILL_REGISTRY)} total skills ({len(SKILL_REGISTRY) - len(db_skills)} filesystem, {len(db_skills)} database)")
+except Exception as e:
+    print(f"[ENGINE] Warning: Failed to load database skills: {e}")
+    print(f"[ENGINE] Loaded {len(SKILL_REGISTRY)} skills from filesystem only")
 
 # --- 3. NODES ---
 

@@ -229,6 +229,9 @@ async def _update_run_status(thread_id: str, status: str, error_message: Optiona
     try:
         await asyncio.to_thread(_update_sync)
         emit_log(f"[API] Updated run status to '{status}' for thread={thread_id}")
+        
+        # Broadcast admin event to trigger UI refresh
+        await broadcast_run_event(thread_id, f"status_updated:{status}")
     except Exception as e:
         emit_log(f"[API] Failed to update run status: {e}")
 
@@ -300,8 +303,10 @@ async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any]):
             await _update_run_status(thread_id, "completed")
             await publish_log(f"[API] Workflow completed for thread={thread_id}", thread_id)
         elif "human_review" in next_nodes:
-            await publish_log(f"[API] Workflow paused at human_review for thread={thread_id}", thread_id)
+            await _update_run_status(thread_id, "paused")
+            await publish_log(f"[API] Workflow paused at human_review (HITL) for thread={thread_id}", thread_id)
         elif "await_callback" in next_nodes:
+            await _update_run_status(thread_id, "paused")
             await publish_log(f"[API] Workflow paused awaiting callback for thread={thread_id}", thread_id)
         else:
             await publish_log(f"[API] Workflow paused at {next_nodes} for thread={thread_id}", thread_id)
@@ -367,6 +372,9 @@ async def approve_step(
 ):
     config = {"configurable": {"thread_id": thread_id}}
     
+    # Update status to 'running' when resuming from HITL pause
+    await _update_run_status(thread_id, "running")
+    
     # If the human edited data, update the state first
     if updated_data:
         await app.aupdate_state(config, {"data_store": updated_data})
@@ -381,13 +389,26 @@ async def approve_step(
     state = await app.aget_state(config)
     next_nodes = state.next or []
     
-    # Log appropriate status
+    # Update status based on where workflow ended up
     if not next_nodes or (len(next_nodes) == 1 and next_nodes[0] == "__end__"):
         await publish_log(f"[API] Workflow completed after approval for thread={thread_id}", thread_id)
+        # Check if it failed or completed successfully
+        data_store = state.values.get("data_store", {})
+        if data_store.get("_status") == "failed":
+            await _update_run_status(
+                thread_id, 
+                "error", 
+                data_store.get("_error", "Workflow failed"),
+                data_store.get("_failed_skill")
+            )
+        else:
+            await _update_run_status(thread_id, "completed")
     elif "human_review" in next_nodes:
         await publish_log(f"[API] Workflow paused again at human_review for thread={thread_id}", thread_id)
+        await _update_run_status(thread_id, "paused")
     elif "await_callback" in next_nodes:
         await publish_log(f"[API] Workflow paused awaiting callback for thread={thread_id}", thread_id)
+        await _update_run_status(thread_id, "paused")
     else:
         await publish_log(f"[API] Workflow resumed and paused at {next_nodes} for thread={thread_id}", thread_id)
     
@@ -691,6 +712,9 @@ async def websocket_admin(websocket: WebSocket):
             await websocket.receive_text()
     except WebSocketDisconnect:
         await unregister_admin(websocket)
+
+# Import skill management endpoints
+from api.skills_api import *
 
 if __name__ == "__main__":
     import uvicorn
