@@ -21,6 +21,17 @@ export default function EditSkillPage() {
   const [requiresStr, setRequiresStr] = useState("");
   const [producesStr, setProducesStr] = useState("");
   const [optionalProducesStr, setOptionalProducesStr] = useState("");
+  
+  // Action executor fields
+  const [actionType, setActionType] = useState("python_function");
+  const [actionSource, setActionSource] = useState("");
+  const [credentialRef, setCredentialRef] = useState("");
+  const [actionCodeOrQuery, setActionCodeOrQuery] = useState("");
+  
+  // REST executor fields
+  const [restUrl, setRestUrl] = useState("");
+  const [restMethod, setRestMethod] = useState("GET");
+  const [restTimeout, setRestTimeout] = useState("30000");
 
   useEffect(() => {
     const load = async () => {
@@ -39,6 +50,27 @@ export default function EditSkillPage() {
         setRequiresStr((data.requires || []).join(", "));
         setProducesStr((data.produces || []).join(", "));
         setOptionalProducesStr((data.optional_produces || []).join(", "));
+        
+        // Parse action config if present
+        if (data.action_config) {
+          setActionType(data.action_config.type || "python_function");
+          setActionSource(data.action_config.source || "");
+          setCredentialRef(data.action_config.credential_ref || "");
+          if (data.action_config.query) {
+            setActionCodeOrQuery(data.action_config.query);
+          }
+        }
+        if (data.action_code) {
+          setActionCodeOrQuery(data.action_code);
+        }
+        
+        // Parse REST config if present
+        if (data.rest_config) {
+          setRestUrl(data.rest_config.url || "");
+          setRestMethod(data.rest_config.method || "GET");
+          setRestTimeout(String(data.rest_config.timeout || 30000));
+        }
+        
         setError(null);
       } catch (err: any) {
         setError(err.message);
@@ -77,11 +109,44 @@ export default function EditSkillPage() {
         hitl_enabled: formData.hitl_enabled,
         prompt: formData.prompt,
         system_prompt: formData.system_prompt,
-        rest_config: formData.rest_config,
-        action_config: formData.action_config,
-        action_code: formData.action_code,
-        enabled: formData.enabled,
       };
+      
+      // Add REST config if REST executor
+      if (formData.executor === "rest") {
+        updates.rest_config = {
+          url: restUrl,
+          method: restMethod,
+          timeout: parseInt(restTimeout) || 30000,
+          headers: {},
+        };
+      }
+      
+      // Add Action config if Action executor
+      if (formData.executor === "action") {
+        updates.action_config = {
+          type: actionType,
+        };
+        
+        if (actionType === "data_query") {
+          if (!actionSource.trim()) {
+            setError("Data source is required for data_query actions");
+            setLoading(false);
+            return;
+          }
+          updates.action_config.source = actionSource;
+          updates.action_config.query = actionCodeOrQuery;
+        }
+        
+        if (credentialRef.trim()) {
+          updates.action_config.credential_ref = credentialRef.trim();
+        }
+        
+        if (actionType === "python_function" && actionCodeOrQuery.trim()) {
+          updates.action_code = actionCodeOrQuery;
+        }
+      }
+      
+      updates.enabled = formData.enabled;
 
       await updateSkill(skillName, updates);
       alert("Skill updated successfully!");
@@ -244,14 +309,56 @@ export default function EditSkillPage() {
           {/* Executor Config */}
           <div className="bg-white rounded-lg border border-gray-200 p-6">
             <h3 className="text-lg font-semibold text-gray-900 mb-4">
-              Executor Type: {formData.executor?.toUpperCase()}
+              Executor Type
             </h3>
-            <p className="text-sm text-gray-600 mb-4">
-              Executor type cannot be changed after creation
-            </p>
+            
+            <div className="space-y-4">
+              <div className="flex items-center gap-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    value="llm"
+                    checked={formData.executor === "llm"}
+                    onChange={(e) =>
+                      setFormData({ ...formData, executor: e.target.value as any })
+                    }
+                    className="w-4 h-4 text-blue-600"
+                  />
+                  <span className="text-sm font-medium">LLM (AI-powered)</span>
+                </label>
 
-            {/* LLM Fields */}
-            {formData.executor === "llm" && (
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    value="rest"
+                    checked={formData.executor === "rest"}
+                    onChange={(e) =>
+                      setFormData({ ...formData, executor: e.target.value as any })
+                    }
+                    className="w-4 h-4 text-blue-600"
+                  />
+                  <span className="text-sm font-medium">REST (API call)</span>
+                </label>
+
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    value="action"
+                    checked={formData.executor === "action"}
+                    onChange={(e) =>
+                      setFormData({ ...formData, executor: e.target.value as any })
+                    }
+                    className="w-4 h-4 text-blue-600"
+                  />
+                  <span className="text-sm font-medium">
+                    Action (Deterministic)
+                  </span>
+                </label>
+              </div>
+            </div>
+
+              {/* LLM Fields */}
+              {formData.executor === "llm" && (
               <div className="space-y-4 p-4 bg-purple-50 rounded-lg">
                 <div>
                   <label className="block text-sm font-medium text-gray-900 mb-2">
@@ -286,69 +393,147 @@ export default function EditSkillPage() {
               </div>
             )}
 
-            {/* REST/Action - JSON editor */}
+            {/* REST Config */}
             {formData.executor === "rest" && (
-              <div className="p-4 bg-orange-50 rounded-lg">
-                <label className="block text-sm font-medium text-gray-900 mb-2">
-                  REST Configuration (JSON)
-                </label>
-                <textarea
-                  value={
-                    formData.rest_config
-                      ? JSON.stringify(formData.rest_config, null, 2)
-                      : ""
-                  }
-                  onChange={(e) => {
-                    try {
-                      const parsed = JSON.parse(e.target.value);
-                      setFormData({ ...formData, rest_config: parsed });
-                    } catch {
-                      // Invalid JSON, ignore
-                    }
-                  }}
-                  className="w-full h-48 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
-                  placeholder='{"url": "...", "method": "GET"}'
-                />
+              <div className="mt-4 p-4 bg-orange-50 rounded-lg">
+                <p className="text-sm text-orange-800 mb-2 font-medium">
+                  REST Executor Configuration
+                </p>
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-900 mb-1">
+                      URL
+                    </label>
+                    <input
+                      type="text"
+                      value={restUrl}
+                      onChange={(e) => setRestUrl(e.target.value)}
+                      placeholder="https://api.example.com/endpoint"
+                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-900 mb-1">
+                        Method
+                      </label>
+                      <select
+                        value={restMethod}
+                        onChange={(e) => setRestMethod(e.target.value)}
+                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option>GET</option>
+                        <option>POST</option>
+                        <option>PUT</option>
+                        <option>DELETE</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-900 mb-1">
+                        Timeout (ms)
+                      </label>
+                      <input
+                        type="number"
+                        value={restTimeout}
+                        onChange={(e) => setRestTimeout(e.target.value)}
+                        placeholder="30000"
+                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
 
+            {/* Action Config */}
             {formData.executor === "action" && (
-              <div className="space-y-4">
+              <div className="mt-4 space-y-4">
                 <div className="p-4 bg-pink-50 rounded-lg">
-                  <label className="block text-sm font-medium text-gray-900 mb-2">
-                    Action Configuration (JSON)
-                  </label>
-                  <textarea
-                    value={
-                      formData.action_config
-                        ? JSON.stringify(formData.action_config, null, 2)
-                        : ""
-                    }
-                    onChange={(e) => {
-                      try {
-                        const parsed = JSON.parse(e.target.value);
-                        setFormData({ ...formData, action_config: parsed });
-                      } catch {
-                        // Invalid JSON, ignore
-                      }
-                    }}
-                    className="w-full h-32 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
-                    placeholder='{"type": "python_function"}'
-                  />
+                  <p className="text-sm text-pink-800 mb-3 font-medium">
+                    Action Executor Configuration
+                  </p>
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-900 mb-1">
+                        Action Type *
+                      </label>
+                      <select
+                        value={actionType}
+                        onChange={(e) => setActionType(e.target.value)}
+                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="python_function">Python Function (Inline Code)</option>
+                        <option value="data_query">Data Query (SQL)</option>
+                        <option value="rest_call">REST API Call</option>
+                      </select>
+                    </div>
+                    
+                    {actionType === "data_query" && (
+                      <div>
+                        <label className="block text-xs font-medium text-gray-900 mb-1">
+                          Data Source * <span className="text-xs text-gray-500">(Database Type)</span>
+                        </label>
+                        <select
+                          value={actionSource}
+                          onChange={(e) => setActionSource(e.target.value)}
+                          className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          <option value="">Select database type...</option>
+                          <option value="postgres">PostgreSQL</option>
+                          <option value="mysql">MySQL</option>
+                          <option value="sqlite">SQLite</option>
+                          <option value="mongodb">MongoDB</option>
+                        </select>
+                        <p className="text-xs text-gray-600 mt-1">
+                          Type of database connection
+                        </p>
+                      </div>
+                    )}
+                    
+                    <div>
+                      <label className="block text-xs font-medium text-gray-900 mb-1">
+                        Credential Reference {actionType === "data_query" ? "*" : "(optional)"}
+                      </label>
+                      <input
+                        type="text"
+                        value={credentialRef}
+                        onChange={(e) => setCredentialRef(e.target.value)}
+                        placeholder="postgres_aiven_cloud_db, my_api_key"
+                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                      <p className="text-xs text-gray-600 mt-1">
+                        Name of credential from vault (e.g., postgres_aiven_cloud_db)
+                      </p>
+                    </div>
+                  </div>
                 </div>
 
-                <div className="p-4 bg-gray-50 rounded-lg">
+                <div>
                   <label className="block text-sm font-medium text-gray-900 mb-2">
-                    Python Code (for python_function type)
+                    {actionType === "data_query" ? "SQL Query" : "Python Code"}
                   </label>
                   <textarea
-                    value={formData.action_code || ""}
-                    onChange={(e) =>
-                      setFormData({ ...formData, action_code: e.target.value })
+                    value={actionCodeOrQuery}
+                    onChange={(e) => setActionCodeOrQuery(e.target.value)}
+                    placeholder={
+                      actionType === "data_query"
+                        ? "SELECT * FROM users WHERE id = {user_id}"
+                        : "def my_function(data_store, **kwargs):\n    # Your code here\n    return {'result': 'value'}"
                     }
-                    className="w-full h-64 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm bg-gray-900 text-gray-100"
-                    placeholder="def my_function(data_store, **kwargs):&#10;    # Your code here&#10;    return {'result': 'value'}"
+                    className="w-full h-48 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm bg-gray-900 text-gray-100"
                   />
+                  <p className="text-xs text-gray-600 mt-2">
+                    {actionType === "python_function" && (
+                      <>
+                        Write a Python function that accepts <code className="bg-gray-100 px-1 rounded">data_store</code> and returns a dict.
+                      </>
+                    )}
+                    {actionType === "data_query" && (
+                      <>
+                        Write SQL with <code className="bg-gray-100 px-1 rounded">{'"{param}"'}</code> placeholders from data_store.
+                      </>
+                    )}
+                  </p>
                 </div>
               </div>
             )}

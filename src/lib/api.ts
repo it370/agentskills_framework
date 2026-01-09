@@ -175,6 +175,7 @@ export interface Skill {
     module?: string;
     function?: string;
     query?: string;
+    source?: string;
     credential_ref?: string;
   };
   action_code?: string;
