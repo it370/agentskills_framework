@@ -1,11 +1,11 @@
-import { CheckpointTuple, RunEvent, RunListResponse } from "./types";
+import { CheckpointTuple, RunEvent, RunListResponse, RunSummary } from "./types";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") || "http://localhost:8000";
 const WS_BASE =
   process.env.NEXT_PUBLIC_WS_BASE?.replace(/\/$/, "") || "ws://localhost:8000";
 
-export async function fetchRuns(limit = 50): Promise<CheckpointTuple[]> {
+export async function fetchRuns(limit = 50): Promise<(CheckpointTuple | RunSummary)[]> {
   const res = await fetch(`${API_BASE}/admin/runs?limit=${limit}`, {
     cache: "no-store",
   });
@@ -79,12 +79,17 @@ export async function getRunMetadata(
   threadId: string
 ): Promise<{
   thread_id: string;
+  run_name?: string;
   sop: string;
   initial_data: Record<string, any>;
   created_at: string;
   parent_thread_id?: string;
   rerun_count: number;
   metadata: Record<string, any>;
+  status?: string;
+  error_message?: string;
+  failed_skill?: string;
+  completed_at?: string;
 }> {
   const res = await fetch(`${API_BASE}/admin/runs/${threadId}/metadata`, {
     cache: "no-store",

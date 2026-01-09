@@ -10,6 +10,7 @@ from enum import Enum
 import httpx
 
 import yaml
+import psycopg
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage, ToolMessage
 from langchain_core.tools import tool
@@ -775,12 +776,26 @@ async def _execute_action_skill(skill_meta: Skill, state: AgentState, input_ctx:
         
         return {
             "data_store": updated_store,
-            "history": [f"Executed {skill_meta.name} (action)"]
+            "history": [f"Executed {skill_meta.name} (action)"],
+            "active_skill": None  # Clear active skill to allow planner to continue
         }
         
     except Exception as exc:
-        await publish_log(f"[EXECUTOR] Action {skill_meta.name} failed: {exc}")
-        raise
+        error_msg = str(exc)
+        await publish_log(f"[EXECUTOR] Action {skill_meta.name} failed: {error_msg}")
+        
+        # Instead of raising, return error state and force workflow to END
+        # This ensures the workflow completes gracefully with error status
+        updated_store = state["data_store"]
+        updated_store["_error"] = error_msg
+        updated_store["_failed_skill"] = skill_meta.name
+        updated_store["_status"] = "failed"
+        
+        return {
+            "data_store": updated_store,
+            "history": [f"Action {skill_meta.name} failed: {error_msg}"],
+            "active_skill": "END"  # Force workflow to end
+        }
 
 
 async def _execute_python_function(cfg: ActionConfig, inputs: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
@@ -1335,6 +1350,20 @@ async def autonomous_planner(state: AgentState):
     
     current_keys = _available_keys(state["data_store"])
     pending_rest = _rest_pending(state["data_store"])
+
+    # Check if workflow has failed - if so, go directly to END
+    data_store = state.get("data_store", {})
+    if data_store.get("_status") == "failed":
+        failed_skill = data_store.get("_failed_skill", "unknown")
+        error = data_store.get("_error", "Unknown error")
+        await publish_log(f"[PLANNER] Workflow failed at {failed_skill}: {error}")
+        await publish_log(f"[PLANNER] Reached END. Execution failed.")
+        # Explicitly preserve the data_store with failed status when returning END
+        return {
+            "active_skill": "END",
+            "history": [f"Workflow ended due to failure in {failed_skill}"],
+            "data_store": data_store  # Preserve the failed status
+        }
 
     # Guardrail: if any REST skill is pending, do not plan new work. Wait for callback.
     if pending_rest:

@@ -189,8 +189,8 @@ async def _save_run_metadata(thread_id: str, sop: str, initial_data: Dict[str, A
                 
                 # Insert run metadata
                 cur.execute("""
-                    INSERT INTO run_metadata (thread_id, run_name, sop, initial_data, parent_thread_id, rerun_count)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    INSERT INTO run_metadata (thread_id, run_name, sop, initial_data, parent_thread_id, rerun_count, status)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'running')
                     ON CONFLICT (thread_id) DO UPDATE
                     SET run_name = EXCLUDED.run_name,
                         sop = EXCLUDED.sop,
@@ -206,6 +206,33 @@ async def _save_run_metadata(thread_id: str, sop: str, initial_data: Dict[str, A
         emit_log(f"[API] Failed to save run metadata: {e}")
 
 
+async def _update_run_status(thread_id: str, status: str, error_message: Optional[str] = None, failed_skill: Optional[str] = None):
+    """Update the run status in run_metadata table."""
+    db_uri = _get_env_value("DATABASE_URL", "")
+    if not db_uri:
+        return
+    
+    def _update_sync():
+        import psycopg
+        from datetime import datetime
+        with psycopg.connect(db_uri, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE run_metadata
+                    SET status = %s,
+                        error_message = %s,
+                        failed_skill = %s,
+                        completed_at = %s
+                    WHERE thread_id = %s
+                """, (status, error_message, failed_skill, datetime.utcnow(), thread_id))
+    
+    try:
+        await asyncio.to_thread(_update_sync)
+        emit_log(f"[API] Updated run status to '{status}' for thread={thread_id}")
+    except Exception as e:
+        emit_log(f"[API] Failed to update run status: {e}")
+
+
 async def _get_run_metadata(thread_id: str) -> Optional[Dict[str, Any]]:
     """Retrieve run metadata from database."""
     db_uri = _get_env_value("DATABASE_URL", "")
@@ -217,7 +244,8 @@ async def _get_run_metadata(thread_id: str) -> Optional[Dict[str, Any]]:
         with psycopg.connect(db_uri) as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT thread_id, run_name, sop, initial_data, created_at, parent_thread_id, rerun_count, metadata
+                    SELECT thread_id, run_name, sop, initial_data, created_at, parent_thread_id, rerun_count, metadata,
+                           status, error_message, failed_skill, completed_at
                     FROM run_metadata
                     WHERE thread_id = %s
                 """, (thread_id,))
@@ -231,7 +259,11 @@ async def _get_run_metadata(thread_id: str) -> Optional[Dict[str, Any]]:
                         "created_at": row[4].isoformat() if row[4] else None,
                         "parent_thread_id": row[5],
                         "rerun_count": row[6],
-                        "metadata": row[7]
+                        "metadata": row[7],
+                        "status": row[8],
+                        "error_message": row[9],
+                        "failed_skill": row[10],
+                        "completed_at": row[11].isoformat() if row[11] else None
                     }
                 return None
     
@@ -255,9 +287,17 @@ async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any]):
         # Check the actual state after workflow execution
         state = await app.aget_state(config)
         next_nodes = state.next or []
+        data_store = state.values.get("data_store", {})
         
+        # Check if workflow failed
+        if data_store.get("_status") == "failed":
+            error_msg = data_store.get("_error", "Unknown error")
+            failed_skill = data_store.get("_failed_skill")
+            await _update_run_status(thread_id, "error", error_msg, failed_skill)
+            await publish_log(f"[API] Workflow failed for thread={thread_id}", thread_id)
         # Determine if truly completed or paused at an interrupt
-        if not next_nodes or (len(next_nodes) == 1 and next_nodes[0] == "__end__"):
+        elif not next_nodes or (len(next_nodes) == 1 and next_nodes[0] == "__end__"):
+            await _update_run_status(thread_id, "completed")
             await publish_log(f"[API] Workflow completed for thread={thread_id}", thread_id)
         elif "human_review" in next_nodes:
             await publish_log(f"[API] Workflow paused at human_review for thread={thread_id}", thread_id)
@@ -267,7 +307,32 @@ async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any]):
             await publish_log(f"[API] Workflow paused at {next_nodes} for thread={thread_id}", thread_id)
             
     except Exception as exc:
+        # Log the error
         await publish_log(f"[API] Workflow error for thread={thread_id}: {exc}", thread_id)
+        
+        # Update run status
+        await _update_run_status(thread_id, "error", str(exc))
+        
+        # Update state to mark as failed and force workflow to END
+        try:
+            current_state = await app.aget_state(config)
+            history = list(current_state.values.get("history", []))
+            history.append(f"WORKFLOW FAILED: {exc}")
+            
+            # Update state with error information and set active_skill to END
+            await app.aupdate_state(config, {
+                "active_skill": "END",
+                "history": history,
+                "data_store": {
+                    **current_state.values.get("data_store", {}),
+                    "_error": str(exc),
+                    "_status": "failed"
+                }
+            })
+            
+            await publish_log(f"[API] Workflow marked as failed and stopped for thread={thread_id}", thread_id)
+        except Exception as update_exc:
+            emit_log(f"[API] Failed to update workflow state after error: {update_exc}")
 
 @api.get("/status/{thread_id}")
 async def get_status(thread_id: str):
@@ -276,14 +341,24 @@ async def get_status(thread_id: str):
     next_nodes = state.next or []
     is_human_review = "human_review" in next_nodes
     is_waiting_callback = "await_callback" in next_nodes
+    
+    # Check for error/failed status
+    data_store = state.values.get("data_store", {})
+    status = data_store.get("_status")
+    error = data_store.get("_error")
+    failed_skill = data_store.get("_failed_skill")
+    
     return {
         "is_paused": len(next_nodes) > 0,
         "is_human_review": is_human_review,
         "is_waiting_callback": is_waiting_callback,
         "next_node": next_nodes,
         "active_skill": state.values.get("active_skill"),
-        "data": state.values.get("data_store"),
-        "history": state.values.get("history")
+        "data": data_store,
+        "history": state.values.get("history"),
+        "status": status,
+        "error": error,
+        "failed_skill": failed_skill
     }
 
 @api.post("/approve/{thread_id}")

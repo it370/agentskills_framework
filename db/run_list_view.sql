@@ -53,8 +53,14 @@ SELECT
         jsonb_array_length(c.checkpoint->'history'),
         0
     ) as history_count,
-    -- Compute status based on active_skill and history
+    -- Compute status based on run_metadata (simple!) or fallback to checkpoint analysis
     CASE
+        -- Use run_metadata status if available (primary source of truth)
+        WHEN rm.status IS NOT NULL THEN rm.status
+        
+        -- Fallback: Check metadata for workflow_status (for older runs)
+        WHEN COALESCE(c.metadata->>'workflow_status', '') = 'failed' THEN 'error'
+        
         -- Explicitly marked as END
         WHEN COALESCE(
             c.checkpoint->'channel_values'->>'active_skill',
@@ -129,6 +135,9 @@ SELECT
         ),
         200
     ) as sop_preview,
+    -- Extract error information from run_metadata (simple!)
+    rm.error_message,
+    rm.failed_skill,
     -- Timestamp from latest checkpoint (most recent activity)
     c.updated_at,
     -- Thread creation timestamp (from CTE join)

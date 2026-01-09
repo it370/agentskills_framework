@@ -17,7 +17,7 @@ import psycopg
 def apply_schema(conn, schema_file: Path, description: str):
     """Apply a single schema file."""
     if not schema_file.exists():
-        print(f"⚠ Warning: {schema_file.name} not found, skipping")
+        print(f"WARNING: {schema_file.name} not found, skipping")
         return False
     
     print(f"\n{'='*60}")
@@ -29,10 +29,15 @@ def apply_schema(conn, schema_file: Path, description: str):
     try:
         with conn.cursor() as cur:
             cur.execute(schema_sql)
-            print(f"✓ {description} applied successfully")
+            print(f"[OK] {description} applied successfully")
             return True
     except Exception as e:
-        print(f"✗ Failed to apply {description}: {e}")
+        error_msg = str(e)
+        # Checkpoints schema may fail if already exists - that's okay
+        if "already exists" in error_msg.lower() or "cannot run inside a transaction" in error_msg.lower():
+            print(f"[SKIP] {description} already exists or requires special handling")
+            return True  # Count as success
+        print(f"[FAIL] Failed to apply {description}: {e}")
         return False
 
 
@@ -47,15 +52,19 @@ def main():
     
     db_uri = os.getenv("DATABASE_URL")
     if not db_uri:
-        print("\n✗ ERROR: DATABASE_URL not set in environment")
+        print("\n[ERROR] DATABASE_URL not set in environment")
         sys.exit(1)
     
     db_dir = Path(__file__).parent
     
+    # Schema files to apply in order
+    # Note: Migrations are included for new installations
+    # For existing databases, run migrations separately if needed
     schemas = [
         (db_dir / "checkpoints_schema.sql", "Checkpoints schema (LangGraph)"),
         (db_dir / "logs_schema.sql", "Thread logs schema"),
         (db_dir / "run_metadata_schema.sql", "Run metadata schema (for reruns)"),
+        (db_dir / "add_status_columns_migration.sql", "Status tracking columns (migration)"),
         (db_dir / "run_list_view.sql", "Run list view with computed status"),
     ]
     
@@ -65,7 +74,7 @@ def main():
     
     try:
         with psycopg.connect(db_uri, autocommit=True) as conn:
-            print(f"✓ Connected successfully")
+            print(f"[OK] Connected successfully")
             
             for schema_file, description in schemas:
                 if apply_schema(conn, schema_file, description):
@@ -88,7 +97,7 @@ def main():
                     ORDER BY table_name
                 """)
                 tables = [row[0] for row in cur.fetchall()]
-                print(f"✓ Tables: {', '.join(tables)}")
+                print(f"[OK] Tables: {', '.join(tables)}")
                 
                 # Check views
                 cur.execute("""
@@ -98,30 +107,30 @@ def main():
                     ORDER BY table_name
                 """)
                 views = [row[0] for row in cur.fetchall()]
-                print(f"✓ Views: {', '.join(views) if views else '(none)'}")
+                print(f"[OK] Views: {', '.join(views) if views else '(none)'}")
                 
                 # Check thread_logs count
                 if 'thread_logs' in tables:
                     cur.execute("SELECT COUNT(*) FROM thread_logs")
                     log_count = cur.fetchone()[0]
-                    print(f"✓ thread_logs: {log_count} log entries")
+                    print(f"[OK] thread_logs: {log_count} log entries")
                 
                 # Check run_list_view count
                 if 'run_list_view' in views:
                     cur.execute("SELECT COUNT(*) FROM run_list_view")
                     run_count = cur.fetchone()[0]
-                    print(f"✓ run_list_view: {run_count} runs")
+                    print(f"[OK] run_list_view: {run_count} runs")
             
             print(f"\n{'='*60}")
-            print("✓ Database setup complete!")
+            print("[OK] Database setup complete!")
             print(f"{'='*60}\n")
             
             if success_count < total_count:
-                print(f"⚠ Warning: Some schemas failed to apply")
+                print(f"WARNING: Some schemas failed to apply")
                 sys.exit(1)
                 
     except Exception as e:
-        print(f"\n✗ ERROR: {e}")
+        print(f"\n[ERROR] {e}")
         sys.exit(1)
 
 
