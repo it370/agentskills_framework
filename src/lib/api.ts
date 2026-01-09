@@ -152,3 +152,103 @@ export function connectLogs(onLog: (line: string, threadId?: string) => void) {
   return ws;
 }
 
+// --- SKILL MANAGEMENT API ---
+
+export interface Skill {
+  name: string;
+  description: string;
+  requires: string[];
+  produces: string[];
+  optional_produces?: string[];
+  executor: "llm" | "rest" | "action";
+  hitl_enabled?: boolean;
+  prompt?: string;
+  system_prompt?: string;
+  rest_config?: {
+    url: string;
+    method: string;
+    timeout?: number;
+    headers?: Record<string, string>;
+  };
+  action_config?: {
+    type: string;
+    module?: string;
+    function?: string;
+    query?: string;
+    credential_ref?: string;
+  };
+  action_code?: string;
+  source?: string;
+  enabled?: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export async function fetchSkills(): Promise<{skills: Skill[], count: number}> {
+  const res = await fetch(`${API_BASE}/admin/skills`, {
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch skills: ${res.status}`);
+  }
+  return await res.json();
+}
+
+export async function fetchSkill(name: string): Promise<Skill> {
+  const res = await fetch(`${API_BASE}/admin/skills/${encodeURIComponent(name)}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch skill: ${res.status}`);
+  }
+  return await res.json();
+}
+
+export async function createSkill(skill: Skill): Promise<any> {
+  const res = await fetch(`${API_BASE}/admin/skills`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(skill),
+  });
+  if (!res.ok) {
+    const error = await res.text();
+    throw new Error(`Failed to create skill: ${error}`);
+  }
+  return await res.json();
+}
+
+export async function updateSkill(name: string, updates: Partial<Skill>): Promise<any> {
+  const res = await fetch(`${API_BASE}/admin/skills/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) {
+    const error = await res.text();
+    throw new Error(`Failed to update skill: ${error}`);
+  }
+  return await res.json();
+}
+
+export async function deleteSkill(name: string): Promise<any> {
+  const res = await fetch(`${API_BASE}/admin/skills/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const error = await res.text();
+    throw new Error(`Failed to delete skill: ${error}`);
+  }
+  return await res.json();
+}
+
+export async function reloadSkills(): Promise<any> {
+  const res = await fetch(`${API_BASE}/admin/skills/reload`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const error = await res.text();
+    throw new Error(`Failed to reload skills: ${error}`);
+  }
+  return await res.json();
+}
+

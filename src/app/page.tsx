@@ -338,6 +338,13 @@ export default function RunsPage() {
               </div>
               <div className="w-px h-8 bg-gray-200"></div>
               <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-gray-600">Paused</span>
+                <span className="text-lg font-bold text-amber-600">
+                  {orderedRuns.filter((r) => r.status === "paused").length}
+                </span>
+              </div>
+              <div className="w-px h-8 bg-gray-200"></div>
+              <div className="flex items-center gap-2">
                 <span className="text-xs font-medium text-gray-600">Completed</span>
                 <span className="text-lg font-bold text-emerald-600">
                   {orderedRuns.filter((r) => r.status === "completed").length}
