@@ -45,12 +45,28 @@ function normalizeRun(cp: CheckpointTuple | RunSummary): RunRow {
     checkpointData.checkpoint?.active_skill ||
     null;
   const updated = checkpointData.metadata?.ts || checkpointData.metadata?.updated_at;
+  
+  // Check data_store for error status first
+  const dataStore = checkpointData.checkpoint?.channel_values?.data_store || 
+                    checkpointData.checkpoint?.data_store || {};
 
-  // Derive status from active_skill and history
+  // Derive status from data_store._status, active_skill and history
   let status = "pending";
   
-  // Check if explicitly marked as END
-  if (active === "END") {
+  // PRIORITY 1: Check if explicitly failed in data_store
+  if (dataStore._status === "failed") {
+    status = "error";
+  }
+  // PRIORITY 2: Check history for failure markers
+  else if (history.some((h) => {
+    const lower = h.toLowerCase();
+    return lower.includes("workflow failed") || 
+           lower.includes("action") && lower.includes("failed");
+  })) {
+    status = "error";
+  }
+  // PRIORITY 3: Check if explicitly marked as END
+  else if (active === "END") {
     status = "completed";
   } 
   // Check history for completion markers
@@ -201,18 +217,49 @@ export default function RunsPage() {
   useEffect(() => {
     const ws = connectAdminEvents((evt: RunEvent) => {
       if (!evt.thread_id) return;
-      const threadId = evt.thread_id; // Capture for type narrowing
-      setRuns((prev) => ({
-        ...prev,
-        [threadId]: {
-          ...(prev[threadId] || { thread_id: threadId }),
-          checkpoint_id: evt.checkpoint_id || prev[threadId]?.checkpoint_id,
-          updated_at: evt.metadata?.ts || prev[threadId]?.updated_at,
-          active_skill:
-            evt.metadata?.active_skill || prev[threadId]?.active_skill,
-          status: prev[threadId]?.status || "running",
-        },
-      }));
+      const threadId = evt.thread_id;
+      
+      // Refetch the run data from API to get latest status from view
+      fetchRuns().then((data) => {
+        const updatedRun = data.find((cp) => {
+          const cpThreadId = 'thread_id' in cp ? cp.thread_id : 
+                            cp.config?.configurable?.thread_id || 
+                            cp.metadata?.thread_id;
+          return cpThreadId === threadId;
+        });
+        
+        if (updatedRun) {
+          setRuns((prev) => ({
+            ...prev,
+            [threadId]: normalizeRun(updatedRun),
+          }));
+        } else {
+          // Fallback to update from event if not found in list
+          setRuns((prev) => ({
+            ...prev,
+            [threadId]: {
+              ...(prev[threadId] || { thread_id: threadId }),
+              checkpoint_id: evt.checkpoint_id || prev[threadId]?.checkpoint_id,
+              updated_at: evt.metadata?.ts || prev[threadId]?.updated_at,
+              active_skill: evt.metadata?.active_skill || prev[threadId]?.active_skill,
+              status: prev[threadId]?.status || "running",
+            },
+          }));
+        }
+      }).catch(err => {
+        console.error("[Runs] Failed to refetch after event:", err);
+        // Fallback to basic update
+        setRuns((prev) => ({
+          ...prev,
+          [threadId]: {
+            ...(prev[threadId] || { thread_id: threadId }),
+            checkpoint_id: evt.checkpoint_id || prev[threadId]?.checkpoint_id,
+            updated_at: evt.metadata?.ts || prev[threadId]?.updated_at,
+            active_skill: evt.metadata?.active_skill || prev[threadId]?.active_skill,
+            status: prev[threadId]?.status || "running",
+          },
+        }));
+      });
     });
     return () => ws.close();
   }, []);
@@ -267,6 +314,13 @@ export default function RunsPage() {
                 <span className="text-xs font-medium text-gray-600">Completed</span>
                 <span className="text-lg font-bold text-emerald-600">
                   {orderedRuns.filter((r) => r.status === "completed").length}
+                </span>
+              </div>
+              <div className="w-px h-8 bg-gray-200"></div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-gray-600">Error</span>
+                <span className="text-lg font-bold text-red-600">
+                  {orderedRuns.filter((r) => r.status === "error").length}
                 </span>
               </div>
               <div className="w-px h-8 bg-gray-200"></div>

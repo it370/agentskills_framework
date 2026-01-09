@@ -19,6 +19,8 @@ export type RunSummary = {
   status?: string;
   sop_preview?: string;
   run_name?: string;  // Human-friendly name
+  error_message?: string;  // Error message if status is error
+  failed_skill?: string;  // Skill that failed
 };
 
 export type RunEvent = {

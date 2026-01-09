@@ -155,6 +155,11 @@ export default function RunDetailPage() {
 
   const dataStore = run?.checkpoint?.channel_values?.data_store || run?.checkpoint?.data_store || {};
   
+  // Check data_store for error status
+  const isFailedRun = dataStore._status === "failed";
+  const errorMessage = dataStore._error || null;
+  const failedSkill = dataStore._failed_skill || null;
+  
   // Check if we're at a human review interrupt (most reliable)
   const isAtHumanReview = run?.checkpoint?.channel_values?.["branch:to:human_review"] !== undefined ||
                           run?.checkpoint?.["branch:to:human_review"] !== undefined;
@@ -204,9 +209,12 @@ export default function RunDetailPage() {
     }
   }, [logs.length, threadLogs.length, threadId, logs]);
 
-  const status: "pending" | "running" | "paused" | "completed" = 
+  const status: "pending" | "running" | "paused" | "completed" | "error" = 
+    // PRIORITY 1: Check if workflow failed
+    isFailedRun ? "error" :
+    // PRIORITY 2: Check for END state
     activeSkill === "END" ? "completed" :
-    // Check explicit human review state first (most reliable)
+    // Check explicit human review state (most reliable for paused)
     isAtHumanReview ? "paused" :
     activeSkill && activeSkill !== "END" ? "running" : 
     // Fallback: check history for HITL markers
@@ -236,6 +244,8 @@ export default function RunDetailPage() {
         return { bg: "bg-blue-100", text: "text-blue-800", dot: "bg-blue-500 animate-pulse" };
       case "paused":
         return { bg: "bg-amber-100", text: "text-amber-800", dot: "bg-amber-500 animate-pulse" };
+      case "error":
+        return { bg: "bg-red-100", text: "text-red-800", dot: "bg-red-500" };
       default:
         return { bg: "bg-gray-100", text: "text-gray-700", dot: "bg-gray-400" };
     }
@@ -330,6 +340,14 @@ export default function RunDetailPage() {
                   <span className={`w-2 h-2 rounded-full ${statusConfig.dot}`}></span>
                   {status.charAt(0).toUpperCase() + status.slice(1)}
                 </span>
+                {isFailedRun && errorMessage && (
+                  <div className="flex-1 px-3 py-2 bg-red-50 border border-red-200 rounded-lg">
+                    <p className="text-sm text-red-800">
+                      <span className="font-semibold">Error in {failedSkill || 'Unknown'}:</span>{" "}
+                      {errorMessage.length > 150 ? errorMessage.substring(0, 150) + "..." : errorMessage}
+                    </p>
+                  </div>
+                )}
                 {isPaused && (
                   <button
                     onClick={() => setShowHitlModal(true)}
@@ -341,7 +359,7 @@ export default function RunDetailPage() {
                     Review Required
                   </button>
                 )}
-                {activeSkill && activeSkill !== "END" && (
+                {activeSkill && activeSkill !== "END" && !isFailedRun && (
                   <span className="text-sm text-gray-600">
                     <span className="font-medium">Active:</span> {activeSkill}
                   </span>
