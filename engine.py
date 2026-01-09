@@ -767,12 +767,45 @@ async def _execute_action_skill(skill_meta: Skill, state: AgentState, input_ctx:
         if not isinstance(result, dict):
             raise ValueError(f"Action {skill_meta.name} must return a dict, got {type(result)}")
         
-        # Merge results into data_store
+        # Map result to skill's produces field
+        # If produces has 1 key: store entire result object under that key
+        # If produces has multiple keys: map result keys by position to produces keys
+        mapped_result = {}
+        produces_list = list(skill_meta.produces)
+        
+        if len(produces_list) == 1:
+            # Single produces key: store entire result under it
+            target_key = produces_list[0]
+            mapped_result[target_key] = result
+            await publish_log(f"[EXECUTOR] Stored entire result under '{target_key}'")
+        else:
+            # Multiple produces keys: map by position
+            result_keys = list(result.keys())
+            
+            if len(result_keys) != len(produces_list):
+                await publish_log(
+                    f"[EXECUTOR] Warning: Action {skill_meta.name} returned {len(result_keys)} keys "
+                    f"but skill defines {len(produces_list)} produces. Mapping by position."
+                )
+            
+            # Map by position: first result key -> first produces key, etc.
+            for idx, result_key in enumerate(result_keys):
+                if idx < len(produces_list):
+                    target_key = produces_list[idx]
+                    mapped_result[target_key] = result[result_key]
+                    if result_key != target_key:
+                        await publish_log(f"[EXECUTOR] Mapped '{result_key}' -> '{target_key}'")
+                else:
+                    # Extra keys beyond produces list - keep with original name
+                    mapped_result[result_key] = result[result_key]
+                    await publish_log(f"[EXECUTOR] Warning: Extra key '{result_key}' not in produces list")
+        
+        # Merge mapped results into data_store
         updated_store = state["data_store"]
-        for path, val in result.items():
+        for path, val in mapped_result.items():
             updated_store = _set_path_value(updated_store, path, val)
         
-        await publish_log(f"[EXECUTOR] Action {skill_meta.name} completed. Results: {list(result.keys())}")
+        await publish_log(f"[EXECUTOR] Action {skill_meta.name} completed. Results: {list(mapped_result.keys())}")
         
         return {
             "data_store": updated_store,
