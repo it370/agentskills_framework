@@ -17,6 +17,8 @@ export default function SkillsPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [reloading, setReloading] = useState(false);
   const [deletingSkill, setDeletingSkill] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(10);
 
   const loadSkills = async () => {
     try {
@@ -85,6 +87,17 @@ export default function SkillsPage() {
 
     return matchesSource && matchesExecutor && matchesActionType && matchesSearch;
   });
+
+  // Pagination calculations
+  const totalPages = Math.ceil(filteredSkills.length / itemsPerPage);
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const endIndex = startIndex + itemsPerPage;
+  const paginatedSkills = filteredSkills.slice(startIndex, endIndex);
+
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filter, executorFilter, actionTypeFilter, searchTerm]);
 
   const stats = {
     total: skills.length,
@@ -250,6 +263,19 @@ export default function SkillsPage() {
                 <option value="python_function">Python Function</option>
               </select>
             )}
+            <select
+              value={itemsPerPage}
+              onChange={(e) => {
+                setItemsPerPage(Number(e.target.value));
+                setCurrentPage(1);
+              }}
+              className="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="10">10 per page</option>
+              <option value="25">25 per page</option>
+              <option value="50">50 per page</option>
+              <option value="100">100 per page</option>
+            </select>
           </div>
         </div>
 
@@ -273,127 +299,196 @@ export default function SkillsPage() {
                 : "No skills found. Create your first skill!"}
             </p>
           </div>
+        ) : paginatedSkills.length === 0 ? (
+          <div className="bg-white rounded-lg border border-gray-200 p-12 text-center">
+            <p className="text-gray-600">
+              No skills on this page. Please adjust pagination or filters.
+            </p>
+          </div>
         ) : (
-          <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Skill Name
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Description
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Executor
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Action Type
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Source
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {filteredSkills.map((skill) => (
-                  <tr key={skill.name} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm font-medium text-gray-900">
-                        {skill.name}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="text-sm text-gray-600 max-w-md truncate">
-                        {skill.description}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span
-                        className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                          skill.executor === "llm"
-                            ? "bg-purple-100 text-purple-800"
-                            : skill.executor === "rest"
-                            ? "bg-orange-100 text-orange-800"
-                            : "bg-pink-100 text-pink-800"
-                        }`}
-                      >
-                        {skill.executor.toUpperCase()}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      {skill.executor === "action" && skill.action_config?.type ? (
+          <>
+            <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Skill Name
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Description
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Executor
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Action Type
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Source
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {paginatedSkills.map((skill) => (
+                    <tr key={skill.name} className="hover:bg-gray-50">
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="text-sm font-medium text-gray-900">
+                          {skill.name}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="text-sm text-gray-600 max-w-md truncate">
+                          {skill.description}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
                         <span
                           className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                            skill.action_config.type === "data_query"
-                              ? "bg-cyan-100 text-cyan-800"
-                              : skill.action_config.type === "data_pipeline"
-                              ? "bg-indigo-100 text-indigo-800"
-                              : "bg-teal-100 text-teal-800"
+                            skill.executor === "llm"
+                              ? "bg-purple-100 text-purple-800"
+                              : skill.executor === "rest"
+                              ? "bg-orange-100 text-orange-800"
+                              : "bg-pink-100 text-pink-800"
                           }`}
                         >
-                          {skill.action_config.type === "data_query"
-                            ? "Data Query"
-                            : skill.action_config.type === "data_pipeline"
-                            ? "Pipeline"
-                            : "Python"}
+                          {skill.executor.toUpperCase()}
                         </span>
-                      ) : (
-                        <span className="text-xs text-gray-400">—</span>
-                      )}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span
-                        className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                          skill.source === "database"
-                            ? "bg-green-100 text-green-800"
-                            : "bg-blue-100 text-blue-800"
-                        }`}
-                      >
-                        {skill.source === "database" ? "Database" : "Filesystem"}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">
-                      <div className="flex items-center gap-2">
-                        <Link
-                          href={`/skills/${encodeURIComponent(skill.name)}`}
-                          className="text-blue-600 hover:text-blue-800"
-                        >
-                          View
-                        </Link>
-                        {skill.source === "database" && (
-                          <>
-                            <span className="text-gray-300">|</span>
-                            <Link
-                              href={`/skills/${encodeURIComponent(
-                                skill.name
-                              )}/edit`}
-                              className="text-blue-600 hover:text-blue-800"
-                            >
-                              Edit
-                            </Link>
-                            <span className="text-gray-300">|</span>
-                            <button
-                              onClick={() => handleDelete(skill.name)}
-                              disabled={deletingSkill === skill.name}
-                              className="text-red-600 hover:text-red-800 disabled:opacity-50"
-                            >
-                              {deletingSkill === skill.name
-                                ? "Deleting..."
-                                : "Delete"}
-                            </button>
-                          </>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        {skill.executor === "action" && skill.action_config?.type ? (
+                          <span
+                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                              skill.action_config.type === "data_query"
+                                ? "bg-cyan-100 text-cyan-800"
+                                : skill.action_config.type === "data_pipeline"
+                                ? "bg-indigo-100 text-indigo-800"
+                                : "bg-teal-100 text-teal-800"
+                            }`}
+                          >
+                            {skill.action_config.type === "data_query"
+                              ? "Data Query"
+                              : skill.action_config.type === "data_pipeline"
+                              ? "Pipeline"
+                              : "Python"}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-gray-400">—</span>
                         )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span
+                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                            skill.source === "database"
+                              ? "bg-green-100 text-green-800"
+                              : "bg-blue-100 text-blue-800"
+                          }`}
+                        >
+                          {skill.source === "database" ? "Database" : "Filesystem"}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm">
+                        <div className="flex items-center gap-2">
+                          <Link
+                            href={`/skills/${encodeURIComponent(skill.name)}`}
+                            className="text-blue-600 hover:text-blue-800"
+                          >
+                            View
+                          </Link>
+                          {skill.source === "database" && (
+                            <>
+                              <span className="text-gray-300">|</span>
+                              <Link
+                                href={`/skills/${encodeURIComponent(
+                                  skill.name
+                                )}/edit`}
+                                className="text-blue-600 hover:text-blue-800"
+                              >
+                                Edit
+                              </Link>
+                              <span className="text-gray-300">|</span>
+                              <button
+                                onClick={() => handleDelete(skill.name)}
+                                disabled={deletingSkill === skill.name}
+                                className="text-red-600 hover:text-red-800 disabled:opacity-50"
+                              >
+                                {deletingSkill === skill.name
+                                  ? "Deleting..."
+                                  : "Delete"}
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Pagination Controls */}
+            {totalPages > 1 && (
+              <div className="mt-4 flex items-center justify-between bg-white rounded-lg border border-gray-200 px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-gray-700">
+                    Showing <span className="font-medium">{startIndex + 1}</span> to{" "}
+                    <span className="font-medium">
+                      {Math.min(endIndex, filteredSkills.length)}
+                    </span>{" "}
+                    of <span className="font-medium">{filteredSkills.length}</span> results
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                    disabled={currentPage === 1}
+                    className="px-3 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Previous
+                  </button>
+                  
+                  <div className="flex items-center gap-1">
+                    {Array.from({ length: totalPages }, (_, i) => i + 1)
+                      .filter((page) => {
+                        // Show first page, last page, current page, and 2 pages around current
+                        return (
+                          page === 1 ||
+                          page === totalPages ||
+                          Math.abs(page - currentPage) <= 1
+                        );
+                      })
+                      .map((page, idx, arr) => (
+                        <div key={page} className="flex items-center">
+                          {idx > 0 && arr[idx - 1] !== page - 1 && (
+                            <span className="px-2 text-gray-400">...</span>
+                          )}
+                          <button
+                            onClick={() => setCurrentPage(page)}
+                            className={`px-3 py-2 border rounded-lg text-sm font-medium ${
+                              currentPage === page
+                                ? "bg-blue-600 text-white border-blue-600"
+                                : "border-gray-300 text-gray-700 hover:bg-gray-50"
+                            }`}
+                          >
+                            {page}
+                          </button>
+                        </div>
+                      ))}
+                  </div>
+
+                  <button
+                    onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                    disabled={currentPage === totalPages}
+                    className="px-3 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
     </DashboardLayout>
