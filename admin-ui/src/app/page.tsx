@@ -172,6 +172,10 @@ export default function RunsPage() {
   const [error, setError] = useState<string | null>(null);
   const [rerunningThreadId, setRerunningThreadId] = useState<string | null>(null);
   const [openMenuThreadId, setOpenMenuThreadId] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(10);
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [searchTerm, setSearchTerm] = useState("");
 
   const handleRerunAsIs = async (threadId: string, e: React.MouseEvent) => {
     e.preventDefault();
@@ -299,6 +303,30 @@ export default function RunsPage() {
     [runs]
   );
 
+  // Filter runs
+  const filteredRuns = useMemo(() => {
+    return orderedRuns.filter((run) => {
+      const matchesStatus = statusFilter === "all" || run.status === statusFilter;
+      const matchesSearch = !searchTerm || 
+        run.thread_id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (run.run_name && run.run_name.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        (run.active_skill && run.active_skill.toLowerCase().includes(searchTerm.toLowerCase()));
+      
+      return matchesStatus && matchesSearch;
+    });
+  }, [orderedRuns, statusFilter, searchTerm]);
+
+  // Pagination calculations
+  const totalPages = Math.ceil(filteredRuns.length / itemsPerPage);
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const endIndex = startIndex + itemsPerPage;
+  const paginatedRuns = filteredRuns.slice(startIndex, endIndex);
+
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [statusFilter, searchTerm]);
+
   return (
     <DashboardLayout>
       <div className="p-8">
@@ -327,44 +355,84 @@ export default function RunsPage() {
             <div className="flex items-center gap-6 bg-white rounded-lg border border-gray-200 px-6 py-3">
               <div className="flex items-center gap-2">
                 <span className="text-xs font-medium text-gray-600">Total</span>
-                <span className="text-lg font-bold text-gray-900">{orderedRuns.length}</span>
+                <span className="text-lg font-bold text-gray-900">{filteredRuns.length}</span>
               </div>
               <div className="w-px h-8 bg-gray-200"></div>
               <div className="flex items-center gap-2">
                 <span className="text-xs font-medium text-gray-600">Running</span>
                 <span className="text-lg font-bold text-blue-600">
-                  {orderedRuns.filter((r) => r.status === "running").length}
+                  {filteredRuns.filter((r) => r.status === "running").length}
                 </span>
               </div>
               <div className="w-px h-8 bg-gray-200"></div>
               <div className="flex items-center gap-2">
                 <span className="text-xs font-medium text-gray-600">Paused</span>
                 <span className="text-lg font-bold text-amber-600">
-                  {orderedRuns.filter((r) => r.status === "paused").length}
+                  {filteredRuns.filter((r) => r.status === "paused").length}
                 </span>
               </div>
               <div className="w-px h-8 bg-gray-200"></div>
               <div className="flex items-center gap-2">
                 <span className="text-xs font-medium text-gray-600">Completed</span>
                 <span className="text-lg font-bold text-emerald-600">
-                  {orderedRuns.filter((r) => r.status === "completed").length}
+                  {filteredRuns.filter((r) => r.status === "completed").length}
                 </span>
               </div>
               <div className="w-px h-8 bg-gray-200"></div>
               <div className="flex items-center gap-2">
                 <span className="text-xs font-medium text-gray-600">Error</span>
                 <span className="text-lg font-bold text-red-600">
-                  {orderedRuns.filter((r) => r.status === "error").length}
+                  {filteredRuns.filter((r) => r.status === "error").length}
                 </span>
               </div>
               <div className="w-px h-8 bg-gray-200"></div>
               <div className="flex items-center gap-2">
                 <span className="text-xs font-medium text-gray-600">Pending</span>
                 <span className="text-lg font-bold text-gray-600">
-                  {orderedRuns.filter((r) => r.status === "pending").length}
+                  {filteredRuns.filter((r) => r.status === "pending").length}
                 </span>
               </div>
             </div>
+          </div>
+        </div>
+
+        {/* Filters */}
+        <div className="mb-6 bg-white rounded-lg border border-gray-200 p-4">
+          <div className="flex items-center gap-4 flex-wrap">
+            <div className="flex-1 min-w-[250px]">
+              <input
+                type="text"
+                placeholder="Search by thread ID, run name, or skill..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="all">All Status</option>
+              <option value="running">Running</option>
+              <option value="paused">Paused</option>
+              <option value="completed">Completed</option>
+              <option value="error">Error</option>
+              <option value="pending">Pending</option>
+            </select>
+            <select
+              value={itemsPerPage}
+              onChange={(e) => {
+                setItemsPerPage(Number(e.target.value));
+                setCurrentPage(1);
+              }}
+              className="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="10">10 per page</option>
+              <option value="25">25 per page</option>
+              <option value="50">50 per page</option>
+              <option value="100">100 per page</option>
+            </select>
           </div>
         </div>
 
@@ -401,7 +469,7 @@ export default function RunsPage() {
               <p className="text-sm text-gray-600">Loading runs...</p>
             </div>
           </div>
-        ) : orderedRuns.length === 0 ? (
+        ) : filteredRuns.length === 0 ? (
           <div className="bg-white rounded-lg border border-gray-200 p-12 text-center">
             <svg
               className="mx-auto h-12 w-12 text-gray-400"
@@ -417,15 +485,18 @@ export default function RunsPage() {
               />
             </svg>
             <h3 className="mt-4 text-base font-semibold text-gray-900">
-              No runs yet
+              {searchTerm || statusFilter !== "all" ? "No runs match your filters" : "No runs yet"}
             </h3>
             <p className="mt-1 text-sm text-gray-600">
-              Start a workflow execution to see it here
+              {searchTerm || statusFilter !== "all" 
+                ? "Try adjusting your filters"
+                : "Start a workflow execution to see it here"}
             </p>
           </div>
         ) : (
-          <div className="space-y-3">
-            {orderedRuns.map((run) => (
+          <>
+            <div className="space-y-3">
+              {paginatedRuns.map((run) => (
               <div
                 key={run.thread_id}
                 className="bg-white rounded-lg border border-gray-200 hover:border-gray-300 hover:shadow-lg transition-all duration-150"
@@ -627,6 +698,68 @@ export default function RunsPage() {
               </div>
             ))}
           </div>
+
+          {/* Pagination Controls */}
+          {totalPages > 1 && (
+            <div className="mt-6 flex items-center justify-between bg-white rounded-lg border border-gray-200 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-gray-700">
+                  Showing <span className="font-medium">{startIndex + 1}</span> to{" "}
+                  <span className="font-medium">
+                    {Math.min(endIndex, filteredRuns.length)}
+                  </span>{" "}
+                  of <span className="font-medium">{filteredRuns.length}</span> results
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Previous
+                </button>
+                
+                <div className="flex items-center gap-1">
+                  {Array.from({ length: totalPages }, (_, i) => i + 1)
+                    .filter((page) => {
+                      // Show first page, last page, current page, and 2 pages around current
+                      return (
+                        page === 1 ||
+                        page === totalPages ||
+                        Math.abs(page - currentPage) <= 1
+                      );
+                    })
+                    .map((page, idx, arr) => (
+                      <div key={page} className="flex items-center">
+                        {idx > 0 && arr[idx - 1] !== page - 1 && (
+                          <span className="px-2 text-gray-400">...</span>
+                        )}
+                        <button
+                          onClick={() => setCurrentPage(page)}
+                          className={`px-3 py-2 border rounded-lg text-sm font-medium ${
+                            currentPage === page
+                              ? "bg-blue-600 text-white border-blue-600"
+                              : "border-gray-300 text-gray-700 hover:bg-gray-50"
+                          }`}
+                        >
+                          {page}
+                        </button>
+                      </div>
+                    ))}
+                </div>
+
+                <button
+                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
+        </>
         )}
       </div>
     </DashboardLayout>
