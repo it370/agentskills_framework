@@ -126,7 +126,7 @@ export default function EditSkillPage() {
         updates.action_config = {
           type: actionType,
         };
-        
+
         if (actionType === "data_query") {
           if (!actionSource.trim()) {
             setError("Data source is required for data_query actions");
@@ -136,11 +136,22 @@ export default function EditSkillPage() {
           updates.action_config.source = actionSource;
           updates.action_config.query = actionCodeOrQuery;
         }
-        
+
+        // For data_pipeline, save the pipeline steps
+        if (actionType === "data_pipeline") {
+          if (!actionCodeOrQuery.trim()) {
+            setError("Pipeline steps are required for data_pipeline actions");
+            setLoading(false);
+            return;
+          }
+          // Store the pipeline YAML/text in action_code for database storage
+          updates.action_code = actionCodeOrQuery;
+        }
+
         if (credentialRef.trim()) {
           updates.action_config.credential_ref = credentialRef.trim();
         }
-        
+
         if (actionType === "python_function" && actionCodeOrQuery.trim()) {
           updates.action_code = actionCodeOrQuery;
         }
@@ -510,13 +521,109 @@ export default function EditSkillPage() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-900 mb-2">
-                    {actionType === "data_query" 
-                      ? "SQL Query" 
-                      : actionType === "data_pipeline" 
-                      ? "Action Pipeline" 
-                      : "Python Code"}
-                  </label>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-sm font-medium text-gray-900">
+                      {actionType === "data_query" 
+                        ? "SQL Query" 
+                        : actionType === "data_pipeline" 
+                        ? "Action Pipeline" 
+                        : "Python Code"}
+                    </label>
+                    
+                    {/* Pipeline Step Type Buttons */}
+                    {actionType === "data_pipeline" && (
+                      <div className="flex gap-2 flex-wrap">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const template = `\n  - type: query
+    name: my_query
+    source: postgres
+    credential_ref: postgres_aiven_cloud_db
+    query: "SELECT * FROM table WHERE id = {param}"
+    output: query_result\n`;
+                            setActionCodeOrQuery(actionCodeOrQuery + template);
+                          }}
+                          className="px-3 py-1.5 text-xs font-medium bg-blue-100 hover:bg-blue-200 text-blue-700 border border-blue-300 rounded-md transition-colors shadow-sm"
+                          title="Insert Query step"
+                        >
+                          + Query
+                        </button>
+                        
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const template = `\n  - type: transform
+    name: my_transform
+    function: my_function_name
+    inputs: [input_data]
+    output: transformed_result\n`;
+                            setActionCodeOrQuery(actionCodeOrQuery + template);
+                          }}
+                          className="px-3 py-1.5 text-xs font-medium bg-green-100 hover:bg-green-200 text-green-700 border border-green-300 rounded-md transition-colors shadow-sm"
+                          title="Insert Transform step"
+                        >
+                          + Transform
+                        </button>
+                        
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const template = `\n  - type: skill
+    name: my_skill_invocation
+    skill: MySkillName
+    inputs: [input1, input2]\n`;
+                            setActionCodeOrQuery(actionCodeOrQuery + template);
+                          }}
+                          className="px-3 py-1.5 text-xs font-medium bg-purple-100 hover:bg-purple-200 text-purple-700 border border-purple-300 rounded-md transition-colors shadow-sm"
+                          title="Insert Skill step"
+                        >
+                          + Skill
+                        </button>
+                        
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const template = `\n  - type: merge
+    name: combine_data
+    inputs: [data1, data2, data3]
+    output: merged_data\n`;
+                            setActionCodeOrQuery(actionCodeOrQuery + template);
+                          }}
+                          className="px-3 py-1.5 text-xs font-medium bg-orange-100 hover:bg-orange-200 text-orange-700 border border-orange-300 rounded-md transition-colors shadow-sm"
+                          title="Insert Merge step"
+                        >
+                          + Merge
+                        </button>
+                        
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const template = `\n  - type: parallel
+    name: run_in_parallel
+    steps:
+      - type: query
+        name: query1
+        source: postgres
+        query: "SELECT ..."
+        output: result1
+      
+      - type: query
+        name: query2
+        source: postgres
+        query: "SELECT ..."
+        output: result2\n`;
+                            setActionCodeOrQuery(actionCodeOrQuery + template);
+                          }}
+                          className="px-3 py-1.5 text-xs font-medium bg-pink-100 hover:bg-pink-200 text-pink-700 border border-pink-300 rounded-md transition-colors shadow-sm"
+                          title="Insert Parallel step block"
+                        >
+                          + Parallel
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  
                   <textarea
                     value={actionCodeOrQuery}
                     onChange={(e) => setActionCodeOrQuery(e.target.value)}
@@ -525,39 +632,42 @@ export default function EditSkillPage() {
                         ? "SELECT * FROM users WHERE id = {user_id}"
                         : actionType === "data_pipeline"
                         ? `steps:
-  - type: query
-    name: fetch_sales
-    source: postgres
-    query: "SELECT * FROM sales WHERE date >= {start_date}"
-    outputs: [sales_data]
+  # Parallel execution - both queries run simultaneously!
+  - type: parallel
+    name: fetch_all_financial_data
+    steps:
+      - type: query
+        name: fetch_sales
+        source: postgres
+        credential_ref: postgres_aiven_cloud_db
+        query: "SELECT * FROM sales WHERE date >= {start_date}"
+        output: sales_data
+      
+      - type: query
+        name: fetch_expenses
+        source: postgres
+        credential_ref: postgres_aiven_cloud_db
+        query: "SELECT * FROM expenses WHERE date >= {start_date}"
+        output: expense_data
   
-  - type: query
-    name: fetch_expenses
-    source: postgres
-    query: "SELECT * FROM expenses WHERE date >= {start_date}"
-    outputs: [expense_data]
-  
-  - type: merge
-    name: combine_data
-    inputs: [sales_data, expense_data]
-    output: raw_financial_data
+  # Outputs are auto-merged! Both sales_data and expense_data available
   
   - type: skill
     name: llm_analysis
     skill: FinancialAnalyzer
-    inputs: [raw_financial_data]
+    inputs: [sales_data, expense_data]
   
   - type: transform
     name: compute_metrics
     function: compute_financial_metrics
-    inputs: [raw_financial_data]
-    outputs: [computed_metrics]
+    inputs: [sales_data, expense_data]
+    output: computed_metrics
   
   - type: transform
     name: format_report
     function: format_financial_report
     inputs: [computed_metrics]
-    outputs: [final_report]`
+    output: final_report`
                         : "def my_function(data_store, **kwargs):\n    # Your code here\n    return {'result': 'value'}"
                     }
                     className="w-full h-48 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm bg-gray-900 text-gray-100"
@@ -575,7 +685,7 @@ export default function EditSkillPage() {
                     )}
                     {actionType === "data_pipeline" && (
                       <>
-                        Define multi-step pipeline with <code className="bg-gray-100 px-1 rounded">query</code>, <code className="bg-gray-100 px-1 rounded">transform</code>, <code className="bg-gray-100 px-1 rounded">skill</code>, and <code className="bg-gray-100 px-1 rounded">merge</code> steps. Edit in database after creation for complex pipelines.
+                        Define multi-step pipeline with <code className="bg-gray-100 px-1 rounded">query</code>, <code className="bg-gray-100 px-1 rounded">transform</code>, <code className="bg-gray-100 px-1 rounded">skill</code>, <code className="bg-gray-100 px-1 rounded">merge</code>, and <code className="bg-gray-100 px-1 rounded">parallel</code> steps. Use parallel to run independent steps concurrently for better performance.
                       </>
                     )}
                   </p>
