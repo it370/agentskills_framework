@@ -212,8 +212,26 @@ export async function createSkill(skill: Skill): Promise<any> {
     body: JSON.stringify(skill),
   });
   if (!res.ok) {
-    const error = await res.text();
-    throw new Error(`Failed to create skill: ${error}`);
+    let errorMessage = `Failed to create skill (${res.status})`;
+    try {
+      const errorData = await res.json();
+      if (errorData.detail) {
+        // If detail is an object (validation error), format it nicely
+        if (typeof errorData.detail === 'object') {
+          const err = errorData.detail;
+          errorMessage = `${err.error || 'Validation Error'}: ${err.message || ''}`;
+          if (err.field) errorMessage += ` (in ${err.field})`;
+          if (err.line) errorMessage += ` at line ${err.line}`;
+          if (err.text) errorMessage += `\n  → ${err.text}`;
+          if (err.hint) errorMessage += `\n\n${err.hint}`;
+        } else {
+          errorMessage = errorData.detail;
+        }
+      }
+    } catch {
+      errorMessage += `: ${await res.text()}`;
+    }
+    throw new Error(errorMessage);
   }
   return await res.json();
 }
@@ -225,8 +243,26 @@ export async function updateSkill(name: string, updates: Partial<Skill>): Promis
     body: JSON.stringify(updates),
   });
   if (!res.ok) {
-    const error = await res.text();
-    throw new Error(`Failed to update skill: ${error}`);
+    let errorMessage = `Failed to update skill (${res.status})`;
+    try {
+      const errorData = await res.json();
+      if (errorData.detail) {
+        // If detail is an object (validation error), format it nicely
+        if (typeof errorData.detail === 'object') {
+          const err = errorData.detail;
+          errorMessage = `${err.error || 'Validation Error'}: ${err.message || ''}`;
+          if (err.field) errorMessage += ` (in ${err.field})`;
+          if (err.line) errorMessage += ` at line ${err.line}`;
+          if (err.text) errorMessage += `\n  → ${err.text}`;
+          if (err.hint) errorMessage += `\n\n${err.hint}`;
+        } else {
+          errorMessage = errorData.detail;
+        }
+      }
+    } catch {
+      errorMessage += `: ${await res.text()}`;
+    }
+    throw new Error(errorMessage);
   }
   return await res.json();
 }

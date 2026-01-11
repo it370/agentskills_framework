@@ -7,9 +7,45 @@ These endpoints allow CRUD operations on skills and hot-reload functionality.
 from fastapi import HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
+import ast
 
 # Get the API instance from main
 from api.main import api
+
+
+def validate_python_code(code: str, field_name: str = "code") -> None:
+    """
+    Validate Python code syntax by attempting to compile it.
+    Raises HTTPException with clear error message if validation fails.
+    """
+    if not code or not code.strip():
+        return  # Empty code is allowed
+    
+    try:
+        ast.parse(code)
+    except SyntaxError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "Python syntax error",
+                "field": field_name,
+                "message": str(e.msg),
+                "line": e.lineno,
+                "offset": e.offset,
+                "text": e.text.strip() if e.text else None,
+                "hint": "Please fix the syntax error before saving. Common issues: missing colons, incorrect indentation, typos in keywords like 'def'"
+            }
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "Code validation failed",
+                "field": field_name,
+                "message": str(e),
+                "hint": "Please ensure the code is valid Python"
+            }
+        )
 
 # --- SKILL MANAGEMENT ENDPOINTS ---
 
@@ -26,6 +62,7 @@ class SkillCreateRequest(BaseModel):
     rest_config: Optional[Dict[str, Any]] = None
     action_config: Optional[Dict[str, Any]] = None
     action_code: Optional[str] = None
+    action_functions: Optional[str] = None
 
 
 class SkillUpdateRequest(BaseModel):
@@ -40,6 +77,7 @@ class SkillUpdateRequest(BaseModel):
     rest_config: Optional[Dict[str, Any]] = None
     action_config: Optional[Dict[str, Any]] = None
     action_code: Optional[str] = None
+    action_functions: Optional[str] = None
 
 
 @api.get("/admin/skills")
@@ -71,7 +109,7 @@ async def get_skill(skill_name: str):
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT source, enabled, created_at, updated_at, action_code
+                    SELECT source, enabled, created_at, updated_at, action_code, action_functions
                     FROM dynamic_skills
                     WHERE name = %s
                 """, (skill_name,))
@@ -83,6 +121,7 @@ async def get_skill(skill_name: str):
                         "created_at": row[2].isoformat() if row[2] else None,
                         "updated_at": row[3].isoformat() if row[3] else None,
                         "action_code": row[4],
+                        "action_functions": row[5],
                     }
     except Exception as e:
         print(f"[SKILLS_API] Warning: Failed to check database for skill source: {e}")
@@ -137,6 +176,19 @@ async def create_skill(skill: SkillCreateRequest):
     from skill_manager import save_skill_to_database, reload_skill_registry
     
     try:
+        # Validate action_code if it's Python code (for action executor)
+        if skill.action_code and skill.executor == "action":
+            action_config = skill.action_config or {}
+            action_type = action_config.get("type", "")
+            
+            # Validate inline Python code (not data_pipeline YAML)
+            if action_type == "python":
+                validate_python_code(skill.action_code, "action_code")
+        
+        # Validate action_functions (transform functions for data pipelines)
+        if skill.action_functions:
+            validate_python_code(skill.action_functions, "action_functions")
+        
         skill_data = skill.dict()
         skill_id = save_skill_to_database(skill_data)
         
@@ -150,6 +202,8 @@ async def create_skill(skill: SkillCreateRequest):
             "total_skills": count,
             "message": f"Skill '{skill.name}' created and loaded successfully"
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create skill: {str(e)}")
 
@@ -176,6 +230,19 @@ async def update_skill(skill_name: str, updates: SkillUpdateRequest):
             detail=f"Cannot update filesystem skill '{skill_name}'. Only database skills can be updated via API."
         )
     
+    # Validate action_code if provided
+    if updates.action_code is not None and updates.executor == "action":
+        action_config = updates.action_config or {}
+        action_type = action_config.get("type", "")
+        
+        # Validate inline Python code (not data_pipeline YAML)
+        if action_type == "python":
+            validate_python_code(updates.action_code, "action_code")
+    
+    # Validate action_functions if provided
+    if updates.action_functions is not None:
+        validate_python_code(updates.action_functions, "action_functions")
+    
     # Load current skill data from database
     load_env_once(Path(__file__).resolve().parents[1])
     db_uri = os.getenv("DATABASE_URL")
@@ -186,7 +253,7 @@ async def update_skill(skill_name: str, updates: SkillUpdateRequest):
                 cur.execute("""
                     SELECT name, description, requires, produces, optional_produces,
                            executor, hitl_enabled, prompt, system_prompt,
-                           rest_config, action_config, action_code
+                           rest_config, action_config, action_code, action_functions
                     FROM dynamic_skills
                     WHERE name = %s
                 """, (skill_name,))
@@ -209,11 +276,22 @@ async def update_skill(skill_name: str, updates: SkillUpdateRequest):
                     "rest_config": row[9],
                     "action_config": row[10],
                     "action_code": row[11],
+                    "action_functions": row[12],
                 }
                 
                 # Apply updates
                 update_dict = updates.dict(exclude_unset=True)
                 current_data.update(update_dict)
+                
+                # Validate the final merged action_code and action_functions
+                if current_data.get("action_code") and current_data.get("executor") == "action":
+                    action_config = current_data.get("action_config") or {}
+                    action_type = action_config.get("type", "")
+                    if action_type == "python":
+                        validate_python_code(current_data["action_code"], "action_code")
+                
+                if current_data.get("action_functions"):
+                    validate_python_code(current_data["action_functions"], "action_functions")
                 
                 # Save back to database
                 save_skill_to_database(current_data)
@@ -227,6 +305,8 @@ async def update_skill(skill_name: str, updates: SkillUpdateRequest):
                     "total_skills": count,
                     "message": f"Skill '{skill_name}' updated and reloaded successfully"
                 }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update skill: {str(e)}")
 

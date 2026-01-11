@@ -28,6 +28,7 @@ export default function NewSkillPage() {
   const [actionSource, setActionSource] = useState(""); // For data_query: postgres, mysql, etc.
   const [credentialRef, setCredentialRef] = useState("");
   const [actionCodeOrQuery, setActionCodeOrQuery] = useState("");
+  const [pipelineFunctions, setPipelineFunctions] = useState(""); // For data_pipeline transform functions
   
   // REST executor fields
   const [restUrl, setRestUrl] = useState("");
@@ -103,6 +104,11 @@ export default function NewSkillPage() {
         }
         // Store the pipeline YAML/text in action_code for database storage
         skillData.action_code = actionCodeOrQuery;
+        
+        // Store pipeline functions separately (will be saved to action_functions field)
+        if (pipelineFunctions.trim()) {
+          (skillData as any).action_functions = pipelineFunctions;
+        }
       }
       
       if (credentialRef.trim()) {
@@ -601,6 +607,54 @@ export default function NewSkillPage() {
                       )}
                     </p>
                   </div>
+                  
+                  {/* Pipeline Functions Editor (only for data_pipeline) */}
+                  {actionType === "data_pipeline" && (
+                    <div className="mt-4">
+                      <label className="block text-sm font-medium text-gray-900 mb-2">
+                        Pipeline Functions (Python)
+                        <span className="ml-2 text-xs text-gray-500 font-normal">
+                          Optional - Define functions used in transform steps
+                        </span>
+                      </label>
+                      <textarea
+                        value={pipelineFunctions}
+                        onChange={(e) => setPipelineFunctions(e.target.value)}
+                        placeholder={`# Define functions called by transform steps
+# Example:
+
+def compute_financial_metrics(sales_data, expense_data):
+    """Calculate financial metrics from raw data."""
+    total_revenue = sum(row['total_revenue'] for row in sales_data['query_result'])
+    total_expenses = sum(row['total_expense'] for row in expense_data['query_result'])
+    
+    return {
+        'total_revenue': total_revenue,
+        'total_expenses': total_expenses,
+        'gross_profit': total_revenue - total_expenses,
+        'profit_margin': (total_revenue - total_expenses) / total_revenue if total_revenue > 0 else 0
+    }
+
+
+def format_financial_report(computed_metrics):
+    """Format metrics into a readable report."""
+    return {
+        'report_type': 'Financial Analysis',
+        'metrics': {
+            'revenue': f"$\\{computed_metrics['total_revenue']:,.2f}",
+            'expenses': f"$\\{computed_metrics['total_expenses']:,.2f}",
+            'profit': f"$\\{computed_metrics['gross_profit']:,.2f}",
+            'margin': f"{computed_metrics['profit_margin']*100:.1f}%"
+        }
+    }`}
+                        className="w-full h-64 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm bg-gray-900 text-gray-100"
+                      />
+                      <p className="text-xs text-gray-600 mt-2">
+                        Write Python functions that will be called by <code className="bg-gray-100 px-1 rounded">type: transform</code> steps. 
+                        Function names must match the <code className="bg-gray-100 px-1 rounded">function:</code> field in your pipeline steps.
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
