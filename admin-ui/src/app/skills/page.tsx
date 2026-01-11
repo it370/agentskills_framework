@@ -13,6 +13,7 @@ export default function SkillsPage() {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | "filesystem" | "database">("all");
   const [executorFilter, setExecutorFilter] = useState<string>("all");
+  const [actionTypeFilter, setActionTypeFilter] = useState<string>("all");
   const [searchTerm, setSearchTerm] = useState("");
   const [reloading, setReloading] = useState(false);
   const [deletingSkill, setDeletingSkill] = useState<string | null>(null);
@@ -72,12 +73,17 @@ export default function SkillsPage() {
     const matchesExecutor =
       executorFilter === "all" || skill.executor === executorFilter;
 
+    const matchesActionType =
+      actionTypeFilter === "all" ||
+      (skill.executor === "action" && 
+       skill.action_config?.type === actionTypeFilter);
+
     const matchesSearch =
       !searchTerm ||
       skill.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       skill.description.toLowerCase().includes(searchTerm.toLowerCase());
 
-    return matchesSource && matchesExecutor && matchesSearch;
+    return matchesSource && matchesExecutor && matchesActionType && matchesSearch;
   });
 
   const stats = {
@@ -87,6 +93,10 @@ export default function SkillsPage() {
     llm: skills.filter((s) => s.executor === "llm").length,
     rest: skills.filter((s) => s.executor === "rest").length,
     action: skills.filter((s) => s.executor === "action").length,
+    // Action type stats
+    data_query: skills.filter((s) => s.executor === "action" && s.action_config?.type === "data_query").length,
+    data_pipeline: skills.filter((s) => s.executor === "action" && s.action_config?.type === "data_pipeline").length,
+    python_function: skills.filter((s) => s.executor === "action" && s.action_config?.type === "python_function").length,
   };
 
   return (
@@ -197,8 +207,8 @@ export default function SkillsPage() {
 
         {/* Filters */}
         <div className="mb-6 bg-white rounded-lg border border-gray-200 p-4">
-          <div className="flex items-center gap-4">
-            <div className="flex-1">
+          <div className="flex items-center gap-4 flex-wrap">
+            <div className="flex-1 min-w-[250px]">
               <input
                 type="text"
                 placeholder="Search skills..."
@@ -228,6 +238,18 @@ export default function SkillsPage() {
               <option value="rest">REST</option>
               <option value="action">Action</option>
             </select>
+            {executorFilter === "action" && (
+              <select
+                value={actionTypeFilter}
+                onChange={(e) => setActionTypeFilter(e.target.value)}
+                className="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 animate-fadeIn"
+              >
+                <option value="all">All Action Types</option>
+                <option value="data_query">Data Query</option>
+                <option value="data_pipeline">Data Pipeline</option>
+                <option value="python_function">Python Function</option>
+              </select>
+            )}
           </div>
         </div>
 
@@ -246,7 +268,7 @@ export default function SkillsPage() {
         ) : filteredSkills.length === 0 ? (
           <div className="bg-white rounded-lg border border-gray-200 p-12 text-center">
             <p className="text-gray-600">
-              {searchTerm || filter !== "all" || executorFilter !== "all"
+              {searchTerm || filter !== "all" || executorFilter !== "all" || actionTypeFilter !== "all"
                 ? "No skills match your filters"
                 : "No skills found. Create your first skill!"}
             </p>
@@ -264,6 +286,9 @@ export default function SkillsPage() {
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Executor
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Action Type
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Source
@@ -298,6 +323,27 @@ export default function SkillsPage() {
                       >
                         {skill.executor.toUpperCase()}
                       </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      {skill.executor === "action" && skill.action_config?.type ? (
+                        <span
+                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                            skill.action_config.type === "data_query"
+                              ? "bg-cyan-100 text-cyan-800"
+                              : skill.action_config.type === "data_pipeline"
+                              ? "bg-indigo-100 text-indigo-800"
+                              : "bg-teal-100 text-teal-800"
+                          }`}
+                        >
+                          {skill.action_config.type === "data_query"
+                            ? "Data Query"
+                            : skill.action_config.type === "data_pipeline"
+                            ? "Pipeline"
+                            : "Python"}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-gray-400">—</span>
+                      )}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <span

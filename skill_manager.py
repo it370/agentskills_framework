@@ -304,7 +304,7 @@ def get_all_skills_metadata() -> List[Dict[str, Any]]:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT name, description, executor, enabled, created_at, updated_at, source
+                    SELECT name, description, executor, enabled, created_at, updated_at, source, action_config
                     FROM dynamic_skills
                     ORDER BY name
                 """)
@@ -317,6 +317,7 @@ def get_all_skills_metadata() -> List[Dict[str, Any]]:
                         "created_at": row[4].isoformat() if row[4] else None,
                         "updated_at": row[5].isoformat() if row[5] else None,
                         "source": row[6],
+                        "action_config": row[7],  # Add action_config
                     })
     except Exception as e:
         print(f"[SKILL_DB] Warning: Failed to get database skills: {e}")
@@ -339,14 +340,18 @@ def get_all_skills_metadata() -> List[Dict[str, Any]]:
                                     if len(parts) >= 2:
                                         import yaml
                                         meta = yaml.safe_load(parts[1])
-                                        skills.append({
+                                        skill_data = {
                                             "name": meta.get("name", entry.name),
                                             "description": meta.get("description", ""),
                                             "executor": meta.get("executor", "llm"),
                                             "enabled": True,
                                             "source": "filesystem",
                                             "path": str(skill_md),
-                                        })
+                                        }
+                                        # Add action_config if present
+                                        if meta.get("action"):
+                                            skill_data["action_config"] = meta["action"]
+                                        skills.append(skill_data)
                         except Exception as e:
                             print(f"[SKILL_DB] Warning: Failed to parse {skill_md}: {e}")
     except Exception as e:
