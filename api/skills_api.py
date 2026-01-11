@@ -57,6 +57,7 @@ class SkillCreateRequest(BaseModel):
     optional_produces: List[str] = []
     executor: str = "llm"  # llm, rest, action
     hitl_enabled: bool = False
+    enabled: bool = True
     prompt: Optional[str] = None
     system_prompt: Optional[str] = None
     rest_config: Optional[Dict[str, Any]] = None
@@ -72,6 +73,7 @@ class SkillUpdateRequest(BaseModel):
     optional_produces: Optional[List[str]] = None
     executor: Optional[str] = None
     hitl_enabled: Optional[bool] = None
+    enabled: Optional[bool] = None
     prompt: Optional[str] = None
     system_prompt: Optional[str] = None
     rest_config: Optional[Dict[str, Any]] = None
@@ -98,11 +100,56 @@ async def get_skill(skill_name: str):
     from engine import SKILL_REGISTRY
     from skill_manager import get_db_connection
     
+    # First check if skill is in the registry (enabled skills)
     skill = next((s for s in SKILL_REGISTRY if s.name == skill_name), None)
-    if not skill:
-        raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found")
     
-    # Check if skill exists in database to determine source
+    # If not in registry, check database directly (could be disabled)
+    if not skill:
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT name, description, requires, produces, optional_produces,
+                               executor, hitl_enabled, prompt, system_prompt,
+                               rest_config, action_config, action_code, action_functions,
+                               source, enabled, created_at, updated_at
+                        FROM dynamic_skills
+                        WHERE name = %s
+                    """, (skill_name,))
+                    row = cur.fetchone()
+                    
+                    if not row:
+                        raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found")
+                    
+                    # Build skill dict from database row
+                    skill_dict = {
+                        "name": row[0],
+                        "description": row[1],
+                        "requires": row[2] or [],
+                        "produces": row[3] or [],
+                        "optional_produces": row[4] or [],
+                        "executor": row[5],
+                        "hitl_enabled": row[6],
+                        "prompt": row[7],
+                        "system_prompt": row[8],
+                        "rest_config": row[9],
+                        "action_config": row[10],
+                        "action_code": row[11],
+                        "action_functions": row[12],
+                        "source": row[13] or "database",
+                        "enabled": row[14],
+                        "created_at": row[15].isoformat() if row[15] else None,
+                        "updated_at": row[16].isoformat() if row[16] else None,
+                    }
+                    
+                    return skill_dict
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"[SKILLS_API] Error fetching skill from database: {e}")
+            raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found")
+    
+    # Skill found in registry - get additional metadata from database
     source = "filesystem"
     db_metadata = {}
     try:

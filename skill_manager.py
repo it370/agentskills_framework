@@ -237,11 +237,11 @@ def save_skill_to_database(skill_data: Dict[str, Any]) -> int:
                 INSERT INTO dynamic_skills (
                     name, description, requires, produces, optional_produces,
                     executor, hitl_enabled, prompt, system_prompt,
-                    rest_config, action_config, action_code, action_functions, source
+                    rest_config, action_config, action_code, action_functions, source, enabled
                 ) VALUES (
                     %(name)s, %(description)s, %(requires)s, %(produces)s, %(optional_produces)s,
                     %(executor)s, %(hitl_enabled)s, %(prompt)s, %(system_prompt)s,
-                    %(rest_config)s, %(action_config)s, %(action_code)s, %(action_functions)s, 'database'
+                    %(rest_config)s, %(action_config)s, %(action_code)s, %(action_functions)s, 'database', %(enabled)s
                 )
                 ON CONFLICT (name) DO UPDATE SET
                     description = EXCLUDED.description,
@@ -255,7 +255,8 @@ def save_skill_to_database(skill_data: Dict[str, Any]) -> int:
                     rest_config = EXCLUDED.rest_config,
                     action_config = EXCLUDED.action_config,
                     action_code = EXCLUDED.action_code,
-                    action_functions = EXCLUDED.action_functions
+                    action_functions = EXCLUDED.action_functions,
+                    enabled = EXCLUDED.enabled
                 RETURNING id
             """, {
                 "name": skill_data["name"],
@@ -271,6 +272,7 @@ def save_skill_to_database(skill_data: Dict[str, Any]) -> int:
                 "action_config": json.dumps(skill_data.get("action_config")) if skill_data.get("action_config") else None,
                 "action_code": skill_data.get("action_code"),
                 "action_functions": skill_data.get("action_functions"),
+                "enabled": skill_data.get("enabled", True),
             })
             
             skill_id = cur.fetchone()[0]
