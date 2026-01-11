@@ -25,6 +25,9 @@ from log_stream import publish_log, emit_log, set_db_pool
 # Import pub/sub client
 from services.pubsub import get_default_client as get_pubsub_client
 
+# Import ACTION_REGISTRY for inline Python functions
+from actions import ACTION_REGISTRY
+
 class RestConfig(BaseModel):
     url: str
     method: str = "POST"
@@ -742,15 +745,18 @@ async def _execute_python_function(cfg: ActionConfig, inputs: Dict[str, Any], st
     
     func_key = f"{cfg.module}.{cfg.function}"
     
-    # Try to get from registry first
-    if func_key in _ACTION_FUNCTION_REGISTRY:
+    # Try ACTION_REGISTRY first (for inline database skills)
+    if func_key in ACTION_REGISTRY:
+        func = ACTION_REGISTRY[func_key]
+    # Then try _ACTION_FUNCTION_REGISTRY (for pipeline transforms)
+    elif func_key in _ACTION_FUNCTION_REGISTRY:
         func = _ACTION_FUNCTION_REGISTRY[func_key]
     else:
-        # Dynamic import if not registered
+        # Dynamic import if not registered (for filesystem skills)
         try:
             module = importlib.import_module(cfg.module)
             func = getattr(module, cfg.function)
-            _ACTION_FUNCTION_REGISTRY[func_key] = func
+            ACTION_REGISTRY[func_key] = func
             emit_log(f"[ACTIONS] Dynamically loaded: {func_key}")
         except ImportError as e:
             raise RuntimeError(f"Cannot import module '{cfg.module}': {e}") from e

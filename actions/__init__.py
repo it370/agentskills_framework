@@ -31,6 +31,10 @@ from functools import wraps
 import inspect
 
 
+# Global registry for action functions (used by inline database skills)
+ACTION_REGISTRY: Dict[str, Callable] = {}
+
+
 def action(
     name: Optional[str] = None,
     requires: Optional[Set[str]] = None,

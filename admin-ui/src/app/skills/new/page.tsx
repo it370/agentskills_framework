@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { createSkill, Skill } from "../../../lib/api";
 import DashboardLayout from "../../../components/DashboardLayout";
+import PythonEditor from "../../../components/PythonEditor";
 
 export default function NewSkillPage() {
   const router = useRouter();
@@ -22,14 +23,19 @@ export default function NewSkillPage() {
   // String versions for input fields
   const [requiresStr, setRequiresStr] = useState("");
   const [producesStr, setProducesStr] = useState("");
-  
+
   // Action executor fields
   const [actionType, setActionType] = useState("python_function");
   const [actionSource, setActionSource] = useState(""); // For data_query: postgres, mysql, etc.
   const [credentialRef, setCredentialRef] = useState("");
   const [actionCodeOrQuery, setActionCodeOrQuery] = useState("");
   const [pipelineFunctions, setPipelineFunctions] = useState(""); // For data_pipeline transform functions
-  
+  const [functionName, setFunctionName] = useState(""); // Entry function name for python_function
+
+  // Validation states
+  const [pythonCodeValid, setPythonCodeValid] = useState(true);
+  const [pipelineFunctionsValid, setPipelineFunctionsValid] = useState(true);
+
   // REST executor fields
   const [restUrl, setRestUrl] = useState("");
   const [restMethod, setRestMethod] = useState("GET");
@@ -38,6 +44,19 @@ export default function NewSkillPage() {
   const handleSubmit = async () => {
     setError(null);
     setLoading(true);
+    
+    // Validate Python code before submission
+    if (actionType === "python_function" && actionCodeOrQuery.trim() && !pythonCodeValid) {
+      setError("Please fix Python syntax errors before saving");
+      setLoading(false);
+      return;
+    }
+    
+    if (actionType === "data_pipeline" && pipelineFunctions.trim() && !pipelineFunctionsValid) {
+      setError("Please fix Python syntax errors in pipeline functions before saving");
+      setLoading(false);
+      return;
+    }
 
     // Validate
     if (!formData.name?.trim()) {
@@ -116,6 +135,14 @@ export default function NewSkillPage() {
       }
       
       if (actionType === "python_function" && actionCodeOrQuery.trim()) {
+        if (!functionName.trim()) {
+          setError("Entry function name is required for python_function actions");
+          setLoading(false);
+          return;
+        }
+        skillData.action_config.function = functionName.trim();
+        // Set module name for inline Python functions
+        skillData.action_config.module = `dynamic_skills.${name}`;
         skillData.action_code = actionCodeOrQuery;
       }
     }
@@ -419,6 +446,24 @@ export default function NewSkillPage() {
                         </div>
                       )}
                       
+                      {actionType === "python_function" && (
+                        <div>
+                          <label className="block text-xs font-medium text-gray-900 mb-1">
+                            Entry Function Name * <span className="text-xs text-gray-500">(Which function to call)</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={functionName}
+                            onChange={(e) => setFunctionName(e.target.value)}
+                            placeholder="my_function, process_data, calculate"
+                            className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                          <p className="text-xs text-gray-600 mt-1">
+                            Name of the function to call from your Python code
+                          </p>
+                        </div>
+                      )}
+                      
                       <div>
                         <label className="block text-xs font-medium text-gray-900 mb-1">
                           Credential Reference {actionType === "data_query" ? "*" : "(optional)"}
@@ -541,14 +586,22 @@ export default function NewSkillPage() {
                       )}
                     </div>
                     
-                    <textarea
-                      value={actionCodeOrQuery}
-                      onChange={(e) => setActionCodeOrQuery(e.target.value)}
-                      placeholder={
-                        actionType === "data_query"
-                          ? "SELECT * FROM users WHERE id = {user_id}"
-                          : actionType === "data_pipeline"
-                          ? `steps:
+                    {actionType === "python_function" ? (
+                      <PythonEditor
+                        value={actionCodeOrQuery}
+                        onChange={setActionCodeOrQuery}
+                        placeholder="def my_function(data_store, **kwargs):\n    # Your code here\n    return {'result': 'value'}"
+                        minHeight="250px"
+                        onValidation={(isValid) => setPythonCodeValid(isValid)}
+                      />
+                    ) : (
+                      <textarea
+                        value={actionCodeOrQuery}
+                        onChange={(e) => setActionCodeOrQuery(e.target.value)}
+                        placeholder={
+                          actionType === "data_query"
+                            ? "SELECT * FROM users WHERE id = {user_id}"
+                            : `steps:
   # Parallel execution - both queries run simultaneously!
   - type: parallel
     name: fetch_all_financial_data
@@ -585,10 +638,10 @@ export default function NewSkillPage() {
     function: format_financial_report
     inputs: [computed_metrics]
     output: final_report`
-                          : "def my_function(data_store, **kwargs):\n    # Your code here\n    return {'result': 'value'}"
-                      }
-                      className="w-full h-48 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm bg-gray-900 text-gray-100"
-                    />
+                        }
+                        className="w-full h-48 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm bg-gray-900 text-gray-100"
+                      />
+                    )}
                     <p className="text-xs text-gray-600 mt-2">
                       {actionType === "python_function" && (
                         <>
@@ -617,9 +670,9 @@ export default function NewSkillPage() {
                           Optional - Define functions used in transform steps
                         </span>
                       </label>
-                      <textarea
+                      <PythonEditor
                         value={pipelineFunctions}
-                        onChange={(e) => setPipelineFunctions(e.target.value)}
+                        onChange={setPipelineFunctions}
                         placeholder={`# Define functions called by transform steps
 # Example:
 
@@ -647,7 +700,8 @@ def format_financial_report(computed_metrics):
             'margin': f"{computed_metrics['profit_margin']*100:.1f}%"
         }
     }`}
-                        className="w-full h-64 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm bg-gray-900 text-gray-100"
+                        minHeight="400px"
+                        onValidation={(isValid) => setPipelineFunctionsValid(isValid)}
                       />
                       <p className="text-xs text-gray-600 mt-2">
                         Write Python functions that will be called by <code className="bg-gray-100 px-1 rounded">type: transform</code> steps. 

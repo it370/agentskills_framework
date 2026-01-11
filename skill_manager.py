@@ -86,24 +86,30 @@ def load_skills_from_database() -> List[Dict[str, Any]]:
                                     print(f"[SKILL_DB] Warning: Failed to parse pipeline YAML for {name}: {e}")
                                     # Continue without pipeline steps - skill will fail at runtime but won't crash loading
                                 
-                                # Register pipeline functions if provided
+                                # Register pipeline functions if provided (but don't fail skill loading)
                                 if action_functions:
                                     try:
                                         _register_pipeline_functions(name, action_functions)
                                     except (SyntaxError, RuntimeError) as e:
-                                        print(f"[SKILL_DB] ERROR: Skipping skill '{name}' due to invalid pipeline functions: {e}")
-                                        # Skip this skill entirely - bad Python code should not be registered
-                                        continue
+                                        print(f"[SKILL_DB] WARNING: Failed to register pipeline functions for '{name}': {e}")
+                                        print(f"[SKILL_DB] Skill '{name}' will still load but pipeline may fail at runtime")
+                                        # Don't skip the skill - allow it to load so it can be edited
                             
                             skill_dict["action"] = ActionConfig(**action_config)
 
-                            # If python_function with inline code, save to temp file and register
+                            # If python_function with inline code, try to register (but don't fail skill loading)
                             if action_config.get("type") == "python_function" and action_code:
                                 try:
-                                    _register_inline_action(name, action_config["function"], action_code)
+                                    # Check if function name is specified
+                                    function_name = action_config.get("function")
+                                    if not function_name:
+                                        raise ValueError("action_config must include 'function' field specifying the function name to call")
+                                    
+                                    _register_inline_action(name, function_name, action_code)
                                 except Exception as e:
-                                    print(f"[SKILL_DB] ERROR: Skipping skill '{name}' due to invalid action code: {e}")
-                                    continue
+                                    print(f"[SKILL_DB] WARNING: Failed to register action code for '{name}': {e}")
+                                    print(f"[SKILL_DB] Skill '{name}' will still load but may fail at runtime")
+                                    # Don't skip the skill - allow it to load so it can be edited
                         
                         skills.append(skill_dict)
                         
