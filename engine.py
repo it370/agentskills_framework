@@ -1104,8 +1104,153 @@ async def _execute_redis_query(cfg: ActionConfig, inputs: Dict[str, Any]) -> Dic
     raise NotImplementedError("Redis data source not yet implemented")
 
 
+async def _execute_pipeline_step(step: Dict[str, Any], context: Dict[str, Any], step_idx: int) -> Dict[str, Any]:
+    """
+    Execute a single pipeline step and return the outputs to be merged into context.
+    Returns dict with output_key -> value mappings.
+    """
+    step_type = step.get("type")
+    step_name = step.get("name", f"step_{step_idx}")
+    
+    if step_type == "query":
+        # Execute a data query step
+        source = step.get("source")
+        if not source:
+            raise ValueError(f"Pipeline step {step_idx} ({step_name}): 'query' type requires 'source'")
+        
+        # Create temporary ActionConfig for the query
+        query_cfg = ActionConfig(
+            type=ActionType.DATA_QUERY,
+            source=source,
+            query=step.get("query"),
+            collection=step.get("collection"),
+            filter=step.get("filter")
+        )
+        result = await _execute_data_query(query_cfg, context)
+        
+        # Store result in context
+        output_key = step.get("output", "result")
+        await publish_log(f"[ACTIONS] Pipeline step {step_idx} ({step_name}): query completed")
+        return {output_key: result.get("query_result", result)}
+        
+    elif step_type == "transform":
+        # Apply transformation function
+        func_name = step.get("function")
+        if not func_name:
+            raise ValueError(f"Pipeline step {step_idx} ({step_name}): 'transform' type requires 'function'")
+        
+        # Load transformation function
+        if func_name in _ACTION_FUNCTION_REGISTRY:
+            transform_func = _ACTION_FUNCTION_REGISTRY[func_name]
+        else:
+            raise ValueError(f"Transform function '{func_name}' not found in registry")
+        
+        # Get inputs for transform
+        input_keys = step.get("inputs", [])
+        transform_inputs = {key: context.get(key) for key in input_keys}
+        
+        # Execute transform
+        if asyncio.iscoroutinefunction(transform_func):
+            transform_result = await transform_func(**transform_inputs)
+        else:
+            transform_result = await asyncio.to_thread(transform_func, **transform_inputs)
+        
+        # Store result
+        output_key = step.get("output", "result")
+        await publish_log(f"[ACTIONS] Pipeline step {step_idx} ({step_name}): transform completed")
+        return {output_key: transform_result}
+        
+    elif step_type == "merge":
+        # Merge multiple inputs
+        input_keys = step.get("inputs", [])
+        if len(input_keys) < 2:
+            raise ValueError(f"Pipeline step {step_idx} ({step_name}): 'merge' requires at least 2 inputs")
+        
+        merged = {}
+        for key in input_keys:
+            if key in context:
+                merged[key] = context[key]
+        
+        output_key = step.get("output", "merged")
+        await publish_log(f"[ACTIONS] Pipeline step {step_idx} ({step_name}): merge completed")
+        return {output_key: merged}
+        
+    elif step_type == "skill":
+        # Invoke another skill (typically LLM) with current context
+        skill_name = step.get("skill")
+        if not skill_name:
+            raise ValueError(f"Pipeline step {step_idx} ({step_name}): 'skill' type requires 'skill' field")
+        
+        # Find the skill in registry
+        skill = next((s for s in SKILL_REGISTRY if s.name == skill_name), None)
+        if not skill:
+            raise ValueError(f"Skill '{skill_name}' not found in registry")
+        
+        # Get inputs for the skill
+        input_keys = step.get("inputs", [])
+        skill_inputs = {}
+        for key in input_keys:
+            if key in context:
+                skill_inputs[key] = context[key]
+            else:
+                await publish_log(f"[ACTIONS] Warning: Input '{key}' not found in context for skill '{skill_name}'")
+        
+        await publish_log(f"[ACTIONS] Pipeline step {step_idx} ({step_name}): invoking skill '{skill_name}'")
+        
+        # Execute the skill using the core executor (reuses all existing execution logic!)
+        # Create a minimal state for the skill execution
+        minimal_state = {
+            "data_store": context,
+            "history": [],
+            "active_skill": skill_name,
+            "layman_sop": "Pipeline execution"
+        }
+        skill_result = await _execute_skill_core(skill, skill_inputs, minimal_state)
+        
+        await publish_log(f"[ACTIONS] Pipeline step {step_idx} ({step_name}): skill '{skill_name}' completed, produced: {list(skill_result.keys())}")
+        # Skill results are already properly keyed, return as-is
+        return skill_result
+    
+    elif step_type == "parallel":
+        # Execute multiple steps in parallel
+        parallel_steps = step.get("steps", [])
+        if not parallel_steps:
+            raise ValueError(f"Pipeline step {step_idx} ({step_name}): 'parallel' requires 'steps' list")
+        
+        await publish_log(f"[ACTIONS] Pipeline step {step_idx} ({step_name}): executing {len(parallel_steps)} steps in parallel")
+        
+        # Track start time for performance logging
+        import time
+        start_time = time.time()
+        
+        # Execute all parallel steps concurrently
+        parallel_tasks = [
+            _execute_pipeline_step(substep, context, f"{step_idx}.{sub_idx}")
+            for sub_idx, substep in enumerate(parallel_steps)
+        ]
+        
+        # Wait for all to complete
+        parallel_results = await asyncio.gather(*parallel_tasks)
+        
+        # Merge all outputs into a single dict (auto-merge at top level)
+        merged_outputs = {}
+        for result_dict in parallel_results:
+            merged_outputs.update(result_dict)
+        
+        elapsed = time.time() - start_time
+        await publish_log(
+            f"[ACTIONS] Pipeline step {step_idx} ({step_name}): parallel execution completed in {elapsed:.2f}s, "
+            f"produced: {list(merged_outputs.keys())}"
+        )
+        
+        return merged_outputs
+        
+    else:
+        raise ValueError(f"Pipeline step {step_idx} ({step_name}): unknown type '{step_type}'")
+
+
 async def _execute_data_pipeline(cfg: ActionConfig, inputs: Dict[str, Any]) -> Dict[str, Any]:
-    """Execute multi-step data pipeline"""
+    """Execute multi-step data pipeline with support for parallel execution"""
     if not cfg.steps:
         raise ValueError("data_pipeline action requires 'steps' field")
     
@@ -1113,112 +1258,11 @@ async def _execute_data_pipeline(cfg: ActionConfig, inputs: Dict[str, Any]) -> D
     await publish_log(f"[ACTIONS] Starting data pipeline with {len(cfg.steps)} steps")
     
     for step_idx, step in enumerate(cfg.steps):
-        step_type = step.get("type")
+        # Execute step and get outputs
+        step_outputs = await _execute_pipeline_step(step, context, step_idx)
         
-        if step_type == "query":
-            # Execute a data query step
-            source = step.get("source")
-            if not source:
-                raise ValueError(f"Pipeline step {step_idx}: 'query' type requires 'source'")
-            
-            # Create temporary ActionConfig for the query
-            query_cfg = ActionConfig(
-                type=ActionType.DATA_QUERY,
-                source=source,
-                query=step.get("query"),
-                collection=step.get("collection"),
-                filter=step.get("filter")
-            )
-            result = await _execute_data_query(query_cfg, context)
-            
-            # Store result in context
-            output_key = step.get("output", "result")
-            context[output_key] = result.get("query_result", result)
-            await publish_log(f"[ACTIONS] Pipeline step {step_idx}: query completed")
-            
-        elif step_type == "transform":
-            # Apply transformation function
-            func_name = step.get("function")
-            if not func_name:
-                raise ValueError(f"Pipeline step {step_idx}: 'transform' type requires 'function'")
-            
-            # Load transformation function
-            if func_name in _ACTION_FUNCTION_REGISTRY:
-                transform_func = _ACTION_FUNCTION_REGISTRY[func_name]
-            else:
-                raise ValueError(f"Transform function '{func_name}' not found in registry")
-            
-            # Get inputs for transform
-            input_keys = step.get("inputs", [])
-            transform_inputs = {key: context.get(key) for key in input_keys}
-            
-            # Execute transform
-            if asyncio.iscoroutinefunction(transform_func):
-                transform_result = await transform_func(**transform_inputs)
-            else:
-                transform_result = await asyncio.to_thread(transform_func, **transform_inputs)
-            
-            # Store result
-            output_key = step.get("output", "result")
-            context[output_key] = transform_result
-            await publish_log(f"[ACTIONS] Pipeline step {step_idx}: transform completed")
-            
-        elif step_type == "merge":
-            # Merge multiple inputs
-            input_keys = step.get("inputs", [])
-            if len(input_keys) < 2:
-                raise ValueError(f"Pipeline step {step_idx}: 'merge' requires at least 2 inputs")
-            
-            merged = {}
-            for key in input_keys:
-                if key in context:
-                    merged[key] = context[key]
-            
-            output_key = step.get("output", "merged")
-            context[output_key] = merged
-            await publish_log(f"[ACTIONS] Pipeline step {step_idx}: merge completed")
-            
-        elif step_type == "skill":
-            # Invoke another skill (typically LLM) with current context
-            skill_name = step.get("skill")
-            if not skill_name:
-                raise ValueError(f"Pipeline step {step_idx}: 'skill' type requires 'skill' field")
-            
-            # Find the skill in registry
-            skill = next((s for s in SKILL_REGISTRY if s.name == skill_name), None)
-            if not skill:
-                raise ValueError(f"Skill '{skill_name}' not found in registry")
-            
-            # Get inputs for the skill
-            input_keys = step.get("inputs", [])
-            skill_inputs = {}
-            for key in input_keys:
-                if key in context:
-                    skill_inputs[key] = context[key]
-                else:
-                    await publish_log(f"[ACTIONS] Warning: Input '{key}' not found in context for skill '{skill_name}'")
-            
-            await publish_log(f"[ACTIONS] Pipeline step {step_idx}: invoking skill '{skill_name}'")
-            
-            # Execute the skill using the core executor (reuses all existing execution logic!)
-            # Create a minimal state for the skill execution
-            minimal_state = {
-                "data_store": context,
-                "history": [],
-                "active_skill": skill_name,
-                "layman_sop": "Pipeline execution"
-            }
-            skill_result = await _execute_skill_core(skill, skill_inputs, minimal_state)
-            
-            # Merge skill results into context
-            # All outputs from the skill are added to pipeline context
-            for key, value in skill_result.items():
-                context[key] = value
-            
-            await publish_log(f"[ACTIONS] Pipeline step {step_idx}: skill '{skill_name}' completed, produced: {list(skill_result.keys())}")
-            
-        else:
-            raise ValueError(f"Pipeline step {step_idx}: unknown type '{step_type}'")
+        # Merge outputs into context (auto-merge at top level)
+        context.update(step_outputs)
     
     # Return only the outputs, not the entire context
     # Filter to only new keys added during pipeline

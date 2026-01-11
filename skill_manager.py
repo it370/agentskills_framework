@@ -64,12 +64,26 @@ def load_skills_from_database() -> List[Dict[str, Any]]:
                     
                     # Add executor-specific config
                     if executor == "rest" and rest_config:
-                        from engine import RestConfig
+                        from engine import ActionConfig
                         skill_dict["rest"] = RestConfig(**rest_config)
                     elif executor == "action" and action_config:
                         from engine import ActionConfig
-                        skill_dict["action"] = ActionConfig(**action_config)
+                        import yaml
                         
+                        # For data_pipeline, parse steps from action_code YAML
+                        if action_config.get("type") == "data_pipeline" and action_code:
+                            try:
+                                # Parse YAML from action_code
+                                pipeline_data = yaml.safe_load(action_code)
+                                if pipeline_data and "steps" in pipeline_data:
+                                    action_config["steps"] = pipeline_data["steps"]
+                                else:
+                                    print(f"[SKILL_DB] Warning: No 'steps' found in pipeline YAML for {name}")
+                            except Exception as e:
+                                print(f"[SKILL_DB] Warning: Failed to parse pipeline YAML for {name}: {e}")
+                        
+                        skill_dict["action"] = ActionConfig(**action_config)
+
                         # If python_function with inline code, save to temp file and register
                         if action_config.get("type") == "python_function" and action_code:
                             _register_inline_action(name, action_config["function"], action_code)
