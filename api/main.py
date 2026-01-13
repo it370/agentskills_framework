@@ -6,9 +6,8 @@ from typing import Any, Dict, Optional
 from pathlib import Path
 
 import httpx
-from fastapi import Body, FastAPI, HTTPException, WebSocket
+from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.websockets import WebSocketDisconnect
 from pydantic import BaseModel
 from psycopg import Connection as SyncConnection
 
@@ -17,8 +16,7 @@ import log_stream
 from log_stream import publish_log, emit_log, set_log_context, get_thread_logs
 from .mock_api import router as mock_router
 from env_loader import load_env_once
-from admin_events import broadcast_run_event, register_admin, unregister_admin
-from services.pubsub import create_pubsub_client
+from admin_events import broadcast_run_event
 from services.connection_pool import get_pool_stats, health_check as check_pool_health
 
 ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
@@ -47,91 +45,6 @@ else:
 
 # Mock endpoints for hardcoded data (sandbox/testing)
 api.include_router(mock_router)
-
-broadcast_task = None
-run_event_listener_thread = None
-_listener_stop_flag = threading.Event()
-_pubsub_client = None
-
-def _pubsub_event_listener():
-    """Listen for pub/sub events and forward to WebSocket clients."""
-    global _pubsub_client
-    
-    try:
-        # Create pub/sub client
-        load_env_once(Path(__file__).resolve().parents[1])
-        _pubsub_client = create_pubsub_client()
-        
-        emit_log(f"[ADMIN] Starting pub/sub event listener")
-        
-        # Callback for incoming messages
-        def on_message(payload: Dict[str, Any]):
-            # Forward to async broadcast from thread
-            asyncio.run_coroutine_threadsafe(
-                broadcast_run_event(payload), 
-                asyncio.get_event_loop()
-            )
-        
-        # Listen (blocking call)
-        _pubsub_client.listen('run_events', on_message, _listener_stop_flag)
-        
-    except Exception as exc:
-        emit_log(f"[ADMIN] Pub/sub event listener error: {exc}")
-    finally:
-        if _pubsub_client:
-            _pubsub_client.close()
-
-
-async def _maybe_start_pubsub_listener():
-    """Start the pub/sub event listener thread if not already running."""
-    global run_event_listener_thread
-    if run_event_listener_thread and run_event_listener_thread.is_alive():
-        return
-    
-    _listener_stop_flag.clear()
-    run_event_listener_thread = threading.Thread(
-        target=_pubsub_event_listener, 
-        daemon=True
-    )
-    run_event_listener_thread.start()
-
-
-async def _stop_pubsub_listener():
-    """Stop the pub/sub event listener thread."""
-    global run_event_listener_thread, _pubsub_client
-    
-    emit_log("[ADMIN] Stopping pub/sub event listener...")
-    
-    # Signal the thread to stop
-    _listener_stop_flag.set()
-    
-    # Close the client to interrupt blocking operations
-    if _pubsub_client:
-        try:
-            _pubsub_client.close()
-        except Exception as e:
-            emit_log(f"[ADMIN] Error closing pubsub client: {e}")
-    
-    # Wait briefly for thread to finish
-    if run_event_listener_thread and run_event_listener_thread.is_alive():
-        run_event_listener_thread.join(timeout=0.5)  # Reduced from 2 seconds
-        if run_event_listener_thread.is_alive():
-            emit_log("[ADMIN] Pub/sub listener thread still running (will be terminated by daemon flag)")
-
-
-@api.on_event("startup")
-async def _start_broadcast():
-    # Start pub/sub listener for admin events
-    emit_log("[API] Starting background services...")
-    await _maybe_start_pubsub_listener()
-
-
-@api.on_event("shutdown")
-async def _stop_broadcast():
-    # Stop pub/sub listener
-    emit_log("[API] Shutting down background services...")
-    await _stop_pubsub_listener()
-    emit_log("[API] Shutdown complete")
 
 class StartRequest(BaseModel):
     thread_id: str
@@ -693,30 +606,6 @@ async def demo_rest_task(req: DemoRestRequest):
 
     asyncio.create_task(_delayed_callback())
     return {"status": "accepted", "will_callback_in": "10s"}
-
-
-@api.websocket("/ws/logs")
-async def websocket_logs(websocket: WebSocket):
-    await websocket.accept()
-    await log_stream.register(websocket)
-    try:
-        while True:
-            # Keep the connection open; clients need not send data.
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        await log_stream.unregister(websocket)
-
-
-@api.websocket("/ws/admin")
-async def websocket_admin(websocket: WebSocket):
-    await websocket.accept()
-    await register_admin(websocket)
-    try:
-        while True:
-            # Keep the connection open; clients need not send data.
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        await unregister_admin(websocket)
 
 
 @api.get("/health")

@@ -10,3 +10,4 @@ pymongo
 cryptography
 langgraph-checkpoint-postgres
 psycopg[binary,pool]
+python-socketio[asyncio_server]

@@ -1,16 +1,10 @@
 import asyncio
-import json
-from typing import Set, Optional
+from typing import Optional
 from contextvars import ContextVar
 from datetime import datetime
 
-try:
-    from starlette.websockets import WebSocket
-except Exception:  # pragma: no cover - typing fallback
-    WebSocket = None  # type: ignore
-
-_subscribers: Set["WebSocket"] = set()
-_lock = asyncio.Lock()
+# External Socket.IO server integration
+_external_socketio_broadcast = None  # Will be set to services.websocket.broadcast_log
 
 # Context variable to store current thread_id for log correlation
 _current_thread_id: ContextVar[Optional[str]] = ContextVar("thread_id", default=None)
@@ -23,6 +17,21 @@ def set_db_pool(pool):
     """Set the database connection pool for log persistence."""
     global _db_pool
     _db_pool = pool
+
+
+def set_socketio_broadcast(broadcast_func):
+    """
+    Set Socket.IO broadcast function.
+    
+    This allows log_stream to send logs to the Socket.IO server
+    running on port 7000.
+    
+    Args:
+        broadcast_func: Async function that takes a dict and broadcasts it
+    """
+    global _external_socketio_broadcast
+    _external_socketio_broadcast = broadcast_func
+    print("[LOG_STREAM] Socket.IO broadcast configured")
 
 
 def set_log_context(thread_id: Optional[str]):
@@ -65,7 +74,7 @@ async def _persist_log(message: str, thread_id: Optional[str], level: str = "INF
 
 
 async def publish_log(message: str, thread_id: Optional[str] = None, level: str = "INFO"):
-    """Broadcast a log line to all connected websocket subscribers and persist to DB.
+    """Broadcast a log line to Socket.IO subscribers and persist to DB.
     
     Args:
         message: The log message text
@@ -81,24 +90,20 @@ async def publish_log(message: str, thread_id: Optional[str] = None, level: str 
     if _db_pool:
         asyncio.create_task(_persist_log(message, tid, level))
     
-    # Send structured JSON message to WebSocket subscribers
+    # Send structured message to Socket.IO server
     log_data = {
         "text": message,
         "thread_id": tid,
         "level": level,
-        "timestamp": None  # Will be set on client side
+        "timestamp": datetime.utcnow().isoformat()
     }
-    log_json = json.dumps(log_data)
     
-    async with _lock:
-        dead = []
-        for ws in list(_subscribers):
-            try:
-                await ws.send_text(log_json)
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            _subscribers.discard(ws)
+    # Broadcast to Socket.IO server (if configured)
+    if _external_socketio_broadcast:
+        try:
+            await _external_socketio_broadcast(log_data)
+        except Exception as e:
+            print(f"[LOG_STREAM] Error broadcasting to Socket.IO: {e}")
 
 
 def emit_log(message: str, thread_id: Optional[str] = None, level: str = "INFO"):
@@ -116,16 +121,6 @@ def emit_log(message: str, thread_id: Optional[str] = None, level: str = "INFO")
     except RuntimeError:
         # No running loop (e.g., import time); fallback is console only.
         pass
-
-
-async def register(ws: "WebSocket"):
-    async with _lock:
-        _subscribers.add(ws)
-
-
-async def unregister(ws: "WebSocket"):
-    async with _lock:
-        _subscribers.discard(ws)
 
 
 def _get_thread_logs_sync(thread_id: str, limit: int = 1000):
@@ -176,6 +171,3 @@ async def get_thread_logs(thread_id: str, limit: int = 1000):
         List of log dictionaries with keys: id, thread_id, message, created_at, level
     """
     return await asyncio.to_thread(_get_thread_logs_sync, thread_id, limit)
-
-
-
