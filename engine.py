@@ -25,6 +25,9 @@ from log_stream import publish_log, emit_log, set_db_pool
 # Import pub/sub client
 from services.pubsub import get_default_client as get_pubsub_client
 
+# Import centralized connection pool
+from services.connection_pool import get_postgres_pool, initialize_pools as init_connection_pools
+
 # Import ACTION_REGISTRY for inline Python functions
 from actions import ACTION_REGISTRY
 
@@ -1024,7 +1027,7 @@ async def _resolve_secure_credential_from_file(
 
 async def _execute_postgres_query(cfg: ActionConfig, inputs: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Execute a PostgreSQL query.
+    Execute a PostgreSQL query using the shared connection pool.
     
     Supports both global DATABASE_URL and skill-local secure credentials.
     """
@@ -1036,35 +1039,69 @@ async def _execute_postgres_query(cfg: ActionConfig, inputs: Dict[str, Any]) -> 
     # Format query with input context
     query = _format_with_ctx(cfg.query, inputs)
     
-    # Get database URI (with support for secure credentials)
-    db_uri = await _resolve_database_uri(cfg, inputs, "postgres")
+    # Check if we should use custom credentials or shared pool
+    use_custom_credentials = cfg.credential_ref or cfg.db_config_file
     
-    # Execute query in thread to avoid blocking
-    def _execute_sync():
-        with psycopg.connect(db_uri) as conn:
-            with conn.cursor() as cur:
-                cur.execute(query)
-                
-                # Check if query returns results
-                if cur.description:
-                    columns = [desc[0] for desc in cur.description]
-                    rows = cur.fetchall()
-                    return {
-                        "query_result": [dict(zip(columns, row)) for row in rows],
-                        "row_count": len(rows)
-                    }
-                else:
-                    # INSERT/UPDATE/DELETE
-                    return {
-                        "affected_rows": cur.rowcount
-                    }
-    
-    try:
-        result = await asyncio.to_thread(_execute_sync)
-        await publish_log(f"[ACTIONS] Postgres query executed successfully")
-        return result
-    except Exception as e:
-        raise RuntimeError(f"Postgres query failed: {e}") from e
+    if use_custom_credentials:
+        # Use skill-specific credentials (creates temporary connection)
+        db_uri = await _resolve_database_uri(cfg, inputs, "postgres")
+        
+        # Execute query in thread to avoid blocking
+        def _execute_sync():
+            with psycopg.connect(db_uri) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query)
+                    
+                    # Check if query returns results
+                    if cur.description:
+                        columns = [desc[0] for desc in cur.description]
+                        rows = cur.fetchall()
+                        return {
+                            "query_result": [dict(zip(columns, row)) for row in rows],
+                            "row_count": len(rows)
+                        }
+                    else:
+                        # INSERT/UPDATE/DELETE
+                        return {
+                            "affected_rows": cur.rowcount
+                        }
+        
+        try:
+            result = await asyncio.to_thread(_execute_sync)
+            await publish_log(f"[ACTIONS] Postgres query executed with custom credentials")
+            return result
+        except Exception as e:
+            raise RuntimeError(f"Postgres query failed: {e}") from e
+    else:
+        # Use shared connection pool (preferred for performance)
+        try:
+            pool = get_postgres_pool()
+            
+            # Execute query in thread to avoid blocking
+            def _execute_sync_pooled():
+                with pool.connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(query)
+                        
+                        # Check if query returns results
+                        if cur.description:
+                            columns = [desc[0] for desc in cur.description]
+                            rows = cur.fetchall()
+                            return {
+                                "query_result": [dict(zip(columns, row)) for row in rows],
+                                "row_count": len(rows)
+                            }
+                        else:
+                            # INSERT/UPDATE/DELETE
+                            return {
+                                "affected_rows": cur.rowcount
+                            }
+            
+            result = await asyncio.to_thread(_execute_sync_pooled)
+            await publish_log(f"[ACTIONS] Postgres query executed with shared pool")
+            return result
+        except Exception as e:
+            raise RuntimeError(f"Postgres query failed: {e}") from e
 
 
 async def _execute_mongodb_query(cfg: ActionConfig, inputs: Dict[str, Any]) -> Dict[str, Any]:
@@ -1818,7 +1855,7 @@ def _use_postgres_checkpointer() -> bool:
 
 def _build_checkpointer():
     """
-    Create the checkpointer with a safe fallback to in-memory storage.
+    Create the checkpointer using the centralized connection pool.
     Postgres Saver is sync-only; we adapt it for async usage to avoid event loop blocking.
     """
     if not _use_postgres_checkpointer():
@@ -1830,20 +1867,20 @@ def _build_checkpointer():
     DB_URI = _get_env_value("DATABASE_URL", "")
     if not DB_URI:
         raise ValueError("DB_URI is not set")
-    connection_kwargs = {
-        "autocommit": True,
-        "prepare_threshold": 0,
-    }
-
 
     try:
-        pool = ConnectionPool(conninfo=DB_URI, max_size=20, kwargs=connection_kwargs)
+        # Initialize centralized connection pools
+        init_connection_pools()
+        
+        # Get shared Postgres pool
+        pool = get_postgres_pool()
+        
         checkpointer = _AsyncPostgresSaver(pool)
         checkpointer.setup()
-        emit_log("[CHECKPOINTER] Postgres checkpointer initialized.")
+        emit_log("[CHECKPOINTER] Postgres checkpointer initialized with shared pool.")
         
-        # Initialize log persistence with async pool
-        _init_log_persistence(DB_URI)
+        # Initialize log persistence with shared pool
+        _init_log_persistence_from_pool(pool)
         
         return checkpointer
     except Exception as exc:
@@ -1851,18 +1888,12 @@ def _build_checkpointer():
         return MemorySaver()
 
 
-def _init_log_persistence(db_uri: str):
-    """Initialize sync database pool for log persistence (Windows compatible)."""
+def _init_log_persistence_from_pool(pool: ConnectionPool):
+    """Initialize log persistence using the shared connection pool (Windows compatible)."""
     try:
-        # Create sync pool for log persistence (accessed via asyncio.to_thread)
-        log_pool = ConnectionPool(
-            conninfo=db_uri,
-            min_size=1,
-            max_size=10,
-            kwargs={"autocommit": True, "prepare_threshold": 0}
-        )
-        set_db_pool(log_pool)
-        emit_log("[LOG_PERSIST] Log persistence initialized with sync pool.")
+        # Use the same shared pool for log persistence
+        set_db_pool(pool)
+        emit_log("[LOG_PERSIST] Log persistence initialized with shared pool.")
     except Exception as exc:
         emit_log(f"[LOG_PERSIST] Failed to initialize log persistence: {exc}")
 

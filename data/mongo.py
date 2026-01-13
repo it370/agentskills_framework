@@ -46,10 +46,28 @@ def _get_env_value(key: str, default: str) -> str:
 
 @lru_cache(maxsize=1)
 def _get_client() -> MongoClient[Any]:
-    """Return a singleton MongoDB client configured from env settings."""
-
-    settings = _get_settings()
-    return MongoClient(settings.uri)
+    """
+    Return a singleton MongoDB client configured from env settings.
+    
+    DEPRECATED: Use services.connection_pool.get_mongo_client() instead.
+    This function is kept for backward compatibility but will use the
+    centralized connection pool if available.
+    """
+    # Try to use centralized connection pool first
+    try:
+        from services.connection_pool import get_mongo_client
+        return get_mongo_client()
+    except (ImportError, RuntimeError):
+        # Fallback to legacy direct connection
+        settings = _get_settings()
+        # Use connection pooling settings for legacy mode
+        return MongoClient(
+            settings.uri,
+            maxPoolSize=20,
+            minPoolSize=5,
+            maxIdleTimeMS=300000,
+            waitQueueTimeoutMS=30000,
+        )
 
 
 def get_client() -> MongoClient[Any]:

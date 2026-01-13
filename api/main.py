@@ -19,6 +19,7 @@ from .mock_api import router as mock_router
 from env_loader import load_env_once
 from admin_events import broadcast_run_event, register_admin, unregister_admin
 from services.pubsub import create_pubsub_client
+from services.connection_pool import get_pool_stats, health_check as check_pool_health
 
 ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 
@@ -716,6 +717,103 @@ async def websocket_admin(websocket: WebSocket):
             await websocket.receive_text()
     except WebSocketDisconnect:
         await unregister_admin(websocket)
+
+
+@api.get("/health")
+async def health_check():
+    """
+    Health check endpoint for monitoring and load balancers.
+    
+    Returns:
+        - status: "healthy" or "degraded"
+        - checks: Individual health checks for services
+    """
+    try:
+        # Check connection pools
+        pools_healthy = check_pool_health()
+        
+        # Get pool statistics
+        pool_stats = get_pool_stats()
+        
+        # Determine overall status
+        status = "healthy" if pools_healthy else "degraded"
+        
+        return {
+            "status": status,
+            "timestamp": None,  # Will be set on client
+            "checks": {
+                "postgres": pool_stats.get("postgres_healthy", False),
+                "mongodb": pool_stats.get("mongo_healthy", False),
+                "websockets": True,  # If we can respond, websockets work
+            },
+            "details": pool_stats
+        }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Health check failed: {str(e)}")
+
+
+@api.get("/admin/pool-stats")
+async def pool_statistics():
+    """
+    Get detailed connection pool statistics for monitoring.
+    
+    Returns connection pool usage and health metrics.
+    """
+    try:
+        stats = get_pool_stats()
+        
+        # Add computed metrics
+        if "postgres_size" in stats and "postgres_available" in stats:
+            stats["postgres_in_use"] = stats["postgres_size"] - stats["postgres_available"]
+            if stats["postgres_size"] > 0:
+                stats["postgres_utilization"] = (stats["postgres_in_use"] / stats["postgres_size"]) * 100
+        
+        return {
+            "status": "success",
+            "pool_stats": stats,
+            "recommendations": _get_pool_recommendations(stats)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get pool stats: {str(e)}")
+
+
+def _get_pool_recommendations(stats: Dict[str, Any]) -> list[str]:
+    """Generate recommendations based on pool statistics."""
+    recommendations = []
+    
+    # Check Postgres pool utilization
+    if "postgres_utilization" in stats:
+        utilization = stats["postgres_utilization"]
+        if utilization > 90:
+            recommendations.append(
+                "CRITICAL: Postgres pool utilization above 90%. "
+                "Consider increasing POSTGRES_POOL_MAX_SIZE environment variable."
+            )
+        elif utilization > 75:
+            recommendations.append(
+                "WARNING: Postgres pool utilization above 75%. "
+                "Monitor for potential connection exhaustion."
+            )
+    
+    # Check waiting clients
+    if stats.get("postgres_waiting", 0) > 0:
+        recommendations.append(
+            f"WARNING: {stats['postgres_waiting']} clients waiting for Postgres connections. "
+            "This may cause performance issues."
+        )
+    
+    # Check health
+    if not stats.get("postgres_healthy", False):
+        recommendations.append("CRITICAL: Postgres connection pool is unhealthy.")
+    
+    if not stats.get("mongo_healthy", False):
+        recommendations.append("WARNING: MongoDB connection is unhealthy.")
+    
+    if not recommendations:
+        recommendations.append("All systems operating normally.")
+    
+    return recommendations
+
 
 # Import skill management endpoints
 from api.skills_api import *
