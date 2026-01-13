@@ -101,54 +101,112 @@ export async function getRunMetadata(
 
 
 export function connectAdminEvents(onEvent: (event: RunEvent) => void) {
-  const ws = new WebSocket(`${WS_BASE}/ws/admin`);
+  let ws: WebSocket;
+  let shouldReconnect = true;
+  
+  const connect = () => {
+    ws = new WebSocket(`${WS_BASE}/ws/admin`);
 
-  ws.onmessage = (evt) => {
-    try {
-      const parsed = JSON.parse(evt.data);
-      if (parsed?.type === "run_event") {
-        onEvent(parsed.data as RunEvent);
+    ws.onopen = () => {
+      console.log("[API] Admin websocket connected");
+    };
+
+    ws.onmessage = (evt) => {
+      try {
+        const parsed = JSON.parse(evt.data);
+        if (parsed?.type === "run_event") {
+          onEvent(parsed.data as RunEvent);
+        }
+      } catch (e) {
+        console.warn("Failed to parse admin event", e);
       }
-    } catch (e) {
-      console.warn("Failed to parse admin event", e);
+    };
+
+    ws.onerror = (err) => {
+      console.error("[API] Admin websocket error:", err);
+    };
+
+    ws.onclose = (event) => {
+      console.log("[API] Admin websocket closed", event.code, event.reason);
+      
+      // Try to reconnect after 2 seconds
+      if (shouldReconnect) {
+        console.log("[API] Reconnecting admin in 2 seconds...");
+        setTimeout(() => {
+          if (shouldReconnect) {
+            console.log("[API] Attempting reconnection...");
+            connect();
+          }
+        }, 2000);
+      }
+    };
+  };
+  
+  connect();
+
+  return {
+    close: () => {
+      shouldReconnect = false;
+      ws?.close();
     }
   };
-
-  return ws;
 }
 
 export function connectLogs(onLog: (line: string, threadId?: string) => void) {
-  const ws = new WebSocket(`${WS_BASE}/ws/logs`);
+  let ws: WebSocket;
+  let shouldReconnect = true;
   
-  ws.onopen = () => {
-    console.log("[API] Logs websocket connected");
-  };
-  
-  ws.onmessage = (evt) => {
-    console.log("[API] Log received:", evt.data);
-    try {
-      // Try to parse as JSON first (new structured format)
-      const parsed = JSON.parse(evt.data);
-      if (parsed.text !== undefined) {
-        onLog(parsed.text, parsed.thread_id);
-        return;
+  const connect = () => {
+    ws = new WebSocket(`${WS_BASE}/ws/logs`);
+    
+    ws.onopen = () => {
+      console.log("[API] Logs websocket connected");
+    };
+    
+    ws.onmessage = (evt) => {
+      console.log("[API] Log received:", evt.data);
+      try {
+        // Try to parse as JSON first (new structured format)
+        const parsed = JSON.parse(evt.data);
+        if (parsed.text !== undefined) {
+          onLog(parsed.text, parsed.thread_id);
+          return;
+        }
+      } catch {
+        // Fall back to plain text for backward compatibility
       }
-    } catch {
-      // Fall back to plain text for backward compatibility
+      // Plain text format
+      onLog(evt.data as string);
+    };
+    
+    ws.onerror = (err) => {
+      console.error("[API] Logs websocket error:", err);
+    };
+    
+    ws.onclose = (event) => {
+      console.log("[API] Logs websocket closed", event.code, event.reason);
+      
+      // Try to reconnect after 2 seconds if not intentionally closed
+      if (shouldReconnect) {
+        console.log("[API] Reconnecting in 2 seconds...");
+        setTimeout(() => {
+          if (shouldReconnect) {
+            console.log("[API] Attempting reconnection...");
+            connect();
+          }
+        }, 2000);
+      }
+    };
+  };
+  
+  connect();
+  
+  return {
+    close: () => {
+      shouldReconnect = false;
+      ws?.close();
     }
-    // Plain text format
-    onLog(evt.data as string);
   };
-  
-  ws.onerror = (err) => {
-    console.error("[API] Logs websocket error:", err);
-  };
-  
-  ws.onclose = () => {
-    console.log("[API] Logs websocket closed");
-  };
-  
-  return ws;
 }
 
 // --- SKILL MANAGEMENT API ---

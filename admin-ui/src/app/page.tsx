@@ -246,7 +246,7 @@ export default function RunsPage() {
   }, []);
 
   useEffect(() => {
-    const ws = connectAdminEvents((evt: RunEvent) => {
+    const connection = connectAdminEvents((evt: RunEvent) => {
       if (!evt.thread_id) return;
       const threadId = evt.thread_id;
       
@@ -292,7 +292,7 @@ export default function RunsPage() {
         }));
       });
     });
-    return () => ws.close();
+    return () => connection.close();
   }, []);
 
   const orderedRuns = useMemo(

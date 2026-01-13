@@ -83,12 +83,12 @@ export default function RunDetailPage() {
     load();
     
     // Set up WebSocket for real-time updates
-    const ws = connectAdminEvents((evt: RunEvent) => {
+    const connection = connectAdminEvents((evt: RunEvent) => {
       if (evt.thread_id === threadId) {
         load(); // Reload on any checkpoint update
       }
     });
-    return () => ws.close();
+    return () => connection.close();
   }, [threadId]);
 
   // Load historical logs from database on mount

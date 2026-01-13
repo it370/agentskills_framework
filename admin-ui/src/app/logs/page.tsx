@@ -15,10 +15,10 @@ export default function LogsPage() {
     // Set the WebSocket URL on client side
     setWsUrl(getWsBase());
     
-    const ws = connectLogs((line) =>
+    const connection = connectLogs((line) =>
       setLines((prev) => [...prev.slice(-1000), line])
     );
-    return () => ws.close();
+    return () => connection.close();
   }, []);
 
   useEffect(() => {
