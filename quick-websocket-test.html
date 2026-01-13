@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Quick Test</title>
+    <style>
+        body { font-family: Arial; margin: 50px; }
+        button { padding: 10px 20px; margin: 5px; font-size: 16px; }
+        .success { color: green; }
+        .error { color: red; }
+        #log { 
+            margin-top: 20px; 
+            padding: 15px; 
+            background: #f5f5f5; 
+            border: 1px solid #ccc;
+            min-height: 200px;
+            max-height: 400px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+        }
+    </style>
+</head>
+<body>
+    <h1>Quick WebSocket Test</h1>
+    <p>Host: <input id="host" value="localhost:8000" size="30"></p>
+    <button onclick="connect()">Connect</button>
+    <button onclick="send()">Send Message</button>
+    <button onclick="disconnect()">Disconnect</button>
+    <div id="log"></div>
+
+    <script>
+        let ws = null;
+        
+        function log(msg, isError = false) {
+            const div = document.getElementById('log');
+            const time = new Date().toLocaleTimeString();
+            const color = isError ? 'red' : 'green';
+            div.innerHTML += `<div style="color: ${color}">[${time}] ${msg}</div>`;
+            div.scrollTop = div.scrollHeight;
+        }
+        
+        function connect() {
+            const host = document.getElementById('host').value;
+            const url = `ws://${host}/`;
+            
+            log('Connecting to ' + url + '...');
+            
+            try {
+                ws = new WebSocket(url);
+                
+                ws.onopen = () => {
+                    log('✅ Connected!');
+                };
+                
+                ws.onmessage = (event) => {
+                    log('📩 Received: ' + event.data);
+                };
+                
+                ws.onerror = (error) => {
+                    log('❌ Error: ' + error, true);
+                };
+                
+                ws.onclose = () => {
+                    log('🔌 Disconnected');
+                };
+            } catch (error) {
+                log('❌ Failed: ' + error, true);
+            }
+        }
+        
+        function send() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const msg = 'Test message ' + Date.now();
+                ws.send(msg);
+                log('📤 Sent: ' + msg);
+            } else {
+                log('❌ Not connected!', true);
+            }
+        }
+        
+        function disconnect() {
+            if (ws) {
+                ws.close();
+            }
+        }
+    </script>
+</body>
+</html>
