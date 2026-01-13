@@ -3,13 +3,18 @@
 import { useEffect, useState } from "react";
 import { connectLogs } from "../../lib/api";
 import DashboardLayout from "../../components/DashboardLayout";
+import { getWsBase } from "../../lib/config";
 
 export default function LogsPage() {
   const [lines, setLines] = useState<string[]>([]);
   const [filter, setFilter] = useState("");
   const [autoscroll, setAutoscroll] = useState(true);
+  const [wsUrl, setWsUrl] = useState("");
 
   useEffect(() => {
+    // Set the WebSocket URL on client side
+    setWsUrl(getWsBase());
+    
     const ws = connectLogs((line) =>
       setLines((prev) => [...prev.slice(-1000), line])
     );
@@ -81,7 +86,7 @@ export default function LogsPage() {
                 <div className="w-3 h-3 rounded-full bg-green-500"></div>
               </div>
               <span className="text-xs text-gray-400 ml-2">
-                Streaming from ws://localhost:8000/ws/logs
+                Streaming from {wsUrl || 'connecting...'}/ws/logs
               </span>
             </div>
             <div className="flex items-center gap-1">

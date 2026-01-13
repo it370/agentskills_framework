@@ -1,9 +1,8 @@
 import { CheckpointTuple, RunEvent, RunListResponse, RunSummary } from "./types";
+import { getApiBase, getWsBase } from "./config";
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") || "http://localhost:8000";
-const WS_BASE =
-  process.env.NEXT_PUBLIC_WS_BASE?.replace(/\/$/, "") || "ws://localhost:8000";
+const API_BASE = getApiBase();
+const WS_BASE = getWsBase();
 
 export async function fetchRuns(limit = 50): Promise<(CheckpointTuple | RunSummary)[]> {
   const res = await fetch(`${API_BASE}/admin/runs?limit=${limit}`, {
