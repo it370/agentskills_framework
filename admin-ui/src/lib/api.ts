@@ -1,9 +1,10 @@
 import { CheckpointTuple, RunEvent, RunListResponse, RunSummary } from "./types";
+import { io, Socket } from "socket.io-client";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") || "http://localhost:8000";
-const WS_BASE =
-  process.env.NEXT_PUBLIC_WS_BASE?.replace(/\/$/, "") || "ws://localhost:8000";
+export const SOCKETIO_BASE =
+  process.env.NEXT_PUBLIC_SOCKETIO_BASE?.replace(/\/$/, "") || "http://localhost:7000";
 
 export async function fetchRuns(limit = 50): Promise<(CheckpointTuple | RunSummary)[]> {
   const res = await fetch(`${API_BASE}/admin/runs?limit=${limit}`, {
@@ -101,55 +102,67 @@ export async function getRunMetadata(
 }
 
 
-export function connectAdminEvents(onEvent: (event: RunEvent) => void) {
-  const ws = new WebSocket(`${WS_BASE}/ws/admin`);
+export function connectAdminEvents(onEvent: (event: RunEvent) => void): Socket {
+  // Connect directly to the /admin namespace
+  const socket = io(`${SOCKETIO_BASE}/admin`, {
+    path: "/socket.io/",
+    transports: ["websocket", "polling"],
+    reconnection: true,
+  });
+  
+  socket.on("connect", () => {
+    console.log("[SOCKETIO] Admin events connected");
+  });
 
-  ws.onmessage = (evt) => {
+  socket.on("admin_event", (data: any) => {
     try {
-      const parsed = JSON.parse(evt.data);
-      if (parsed?.type === "run_event") {
-        onEvent(parsed.data as RunEvent);
+      if (data?.type === "run_event" && data.data) {
+        onEvent(data.data as RunEvent);
       }
     } catch (e) {
       console.warn("Failed to parse admin event", e);
     }
-  };
+  });
 
-  return ws;
+  socket.on("disconnect", () => {
+    console.log("[SOCKETIO] Admin events disconnected");
+  });
+
+  return socket;
 }
 
-export function connectLogs(onLog: (line: string, threadId?: string) => void) {
-  const ws = new WebSocket(`${WS_BASE}/ws/logs`);
+export function connectLogs(onLog: (line: string, threadId?: string) => void): Socket {
+  // Connect directly to the /logs namespace
+  const socket = io(`${SOCKETIO_BASE}/logs`, {
+    path: "/socket.io/",
+    transports: ["websocket", "polling"],
+    reconnection: true,
+  });
   
-  ws.onopen = () => {
-    console.log("[API] Logs websocket connected");
-  };
+  socket.on("connect", () => {
+    console.log("[SOCKETIO] Logs connected");
+  });
   
-  ws.onmessage = (evt) => {
-    console.log("[API] Log received:", evt.data);
+  socket.on("log", (data: any) => {
+    console.log("[SOCKETIO] Log received:", data);
     try {
-      // Try to parse as JSON first (new structured format)
-      const parsed = JSON.parse(evt.data);
-      if (parsed.text !== undefined) {
-        onLog(parsed.text, parsed.thread_id);
-        return;
+      if (data.text !== undefined) {
+        onLog(data.text, data.thread_id);
       }
-    } catch {
-      // Fall back to plain text for backward compatibility
+    } catch (e) {
+      console.error("[SOCKETIO] Error processing log:", e);
     }
-    // Plain text format
-    onLog(evt.data as string);
-  };
+  });
   
-  ws.onerror = (err) => {
-    console.error("[API] Logs websocket error:", err);
-  };
+  socket.on("error", (err: any) => {
+    console.error("[SOCKETIO] Logs error:", err);
+  });
   
-  ws.onclose = () => {
-    console.log("[API] Logs websocket closed");
-  };
+  socket.on("disconnect", () => {
+    console.log("[SOCKETIO] Logs disconnected");
+  });
   
-  return ws;
+  return socket;
 }
 
 // --- SKILL MANAGEMENT API ---

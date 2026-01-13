@@ -82,13 +82,15 @@ export default function RunDetailPage() {
     // Load initial data
     load();
     
-    // Set up WebSocket for real-time updates
-    const ws = connectAdminEvents((evt: RunEvent) => {
+    // Set up Socket.IO for real-time updates
+    const socket = connectAdminEvents((evt: RunEvent) => {
       if (evt.thread_id === threadId) {
         load(); // Reload on any checkpoint update
       }
     });
-    return () => ws.close();
+    return () => { 
+      socket.disconnect(); 
+    };
   }, [threadId]);
 
   // Load historical logs from database on mount
@@ -115,10 +117,10 @@ export default function RunDetailPage() {
       });
   }, [threadId, historicalLogsLoaded]);
 
-  // Live logs WebSocket connection
+  // Live logs Socket.IO connection
   useEffect(() => {
     console.log("[RunDetail] Setting up logs connection for thread:", threadId);
-    const ws = connectLogs((line, logThreadId) => {
+    const socket = connectLogs((line, logThreadId) => {
       console.log("[RunDetail] Log line received:", line, "thread_id:", logThreadId);
       setLogs((prev) => {
         const newLog = { 
@@ -133,7 +135,7 @@ export default function RunDetailPage() {
     });
     return () => {
       console.log("[RunDetail] Closing logs connection");
-      ws.close();
+      socket.disconnect();
     };
   }, []);
 

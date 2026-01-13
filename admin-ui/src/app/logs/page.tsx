@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { connectLogs } from "../../lib/api";
+import { connectLogs, SOCKETIO_BASE } from "../../lib/api";
 import DashboardLayout from "../../components/DashboardLayout";
 
 export default function LogsPage() {
@@ -10,10 +10,12 @@ export default function LogsPage() {
   const [autoscroll, setAutoscroll] = useState(true);
 
   useEffect(() => {
-    const ws = connectLogs((line) =>
+    const socket = connectLogs((line) =>
       setLines((prev) => [...prev.slice(-1000), line])
     );
-    return () => ws.close();
+    return () => { 
+      socket.disconnect(); 
+    };
   }, []);
 
   useEffect(() => {
@@ -81,7 +83,7 @@ export default function LogsPage() {
                 <div className="w-3 h-3 rounded-full bg-green-500"></div>
               </div>
               <span className="text-xs text-gray-400 ml-2">
-                Streaming from ws://localhost:8000/ws/logs
+                Streaming from Socket.IO server at {SOCKETIO_BASE}/logs
               </span>
             </div>
             <div className="flex items-center gap-1">
