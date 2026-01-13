@@ -12,6 +12,9 @@ except Exception:  # pragma: no cover - typing fallback
 _subscribers: Set["WebSocket"] = set()
 _lock = asyncio.Lock()
 
+# SSE clients (queues for Server-Sent Events)
+sse_clients = []
+
 # Context variable to store current thread_id for log correlation
 _current_thread_id: ContextVar[Optional[str]] = ContextVar("thread_id", default=None)
 
@@ -90,6 +93,7 @@ async def publish_log(message: str, thread_id: Optional[str] = None, level: str 
     }
     log_json = json.dumps(log_data)
     
+    # Send to WebSocket clients
     async with _lock:
         dead = []
         for ws in list(_subscribers):
@@ -99,6 +103,18 @@ async def publish_log(message: str, thread_id: Optional[str] = None, level: str 
                 dead.append(ws)
         for ws in dead:
             _subscribers.discard(ws)
+    
+    # Send to SSE clients (non-blocking)
+    for client_queue in list(sse_clients):
+        try:
+            client_queue.put_nowait(log_data)
+        except asyncio.QueueFull:
+            # Client queue is full, skip this message
+            pass
+        except Exception:
+            # Client may have disconnected
+            if client_queue in sse_clients:
+                sse_clients.remove(client_queue)
 
 
 def emit_log(message: str, thread_id: Optional[str] = None, level: str = "INFO"):

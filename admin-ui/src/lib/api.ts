@@ -1,8 +1,15 @@
 import { CheckpointTuple, RunEvent, RunListResponse, RunSummary } from "./types";
 import { getApiBase, getWsBase } from "./config";
+import { connectAdminEventsSSE, connectLogsSSE } from "./realtime";
 
 const API_BASE = getApiBase();
 const WS_BASE = getWsBase();
+
+// Check connection method from environment
+const useSSE = () => {
+  const method = process.env.NEXT_PUBLIC_CONNECTION_METHOD?.toLowerCase();
+  return method === 'sse';
+};
 
 export async function fetchRuns(limit = 50): Promise<(CheckpointTuple | RunSummary)[]> {
   const res = await fetch(`${API_BASE}/admin/runs?limit=${limit}`, {
@@ -101,6 +108,13 @@ export async function getRunMetadata(
 
 
 export function connectAdminEvents(onEvent: (event: RunEvent) => void) {
+  // Use SSE or WebSocket based on environment configuration
+  if (useSSE()) {
+    console.log("[API] Using SSE for admin events");
+    return connectAdminEventsSSE(onEvent);
+  }
+  
+  console.log("[API] Using WebSocket for admin events");
   let ws: WebSocket;
   let shouldReconnect = true;
   
@@ -153,6 +167,13 @@ export function connectAdminEvents(onEvent: (event: RunEvent) => void) {
 }
 
 export function connectLogs(onLog: (line: string, threadId?: string) => void) {
+  // Use SSE or WebSocket based on environment configuration
+  if (useSSE()) {
+    console.log("[API] Using SSE for logs");
+    return connectLogsSSE(onLog);
+  }
+  
+  console.log("[API] Using WebSocket for logs");
   let ws: WebSocket;
   let shouldReconnect = true;
   

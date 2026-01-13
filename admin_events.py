@@ -10,10 +10,16 @@ except Exception:  # pragma: no cover - typing fallback
 _subscribers: Set["WebSocket"] = set()
 _lock = asyncio.Lock()
 
+# SSE clients (queues for Server-Sent Events)
+sse_clients = []
+
 
 async def broadcast_run_event(payload: Dict[str, Any]):
     """Broadcast a run event payload to all connected admin websocket clients."""
-    message = json.dumps({"type": "run_event", "data": payload})
+    message_data = {"type": "run_event", "data": payload}
+    message = json.dumps(message_data)
+    
+    # Send to WebSocket clients
     async with _lock:
         dead = []
         for ws in list(_subscribers):
@@ -23,6 +29,18 @@ async def broadcast_run_event(payload: Dict[str, Any]):
                 dead.append(ws)
         for ws in dead:
             _subscribers.discard(ws)
+    
+    # Send to SSE clients (non-blocking)
+    for client_queue in list(sse_clients):
+        try:
+            client_queue.put_nowait(message_data)
+        except asyncio.QueueFull:
+            # Client queue is full, skip this message
+            pass
+        except Exception:
+            # Client may have disconnected
+            if client_queue in sse_clients:
+                sse_clients.remove(client_queue)
 
 
 async def register_admin(ws: "WebSocket"):

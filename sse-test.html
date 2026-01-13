@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SSE Test</title>
+    <style>
+        body { font-family: monospace; padding: 20px; background: #1a1a1a; color: #00ff00; }
+        .box { background: #000; padding: 15px; margin: 10px 0; border: 1px solid #333; }
+        .connected { border-color: #00ff00; }
+        .disconnected { border-color: #ff0000; }
+        #messages { max-height: 400px; overflow-y: auto; }
+        .msg { padding: 5px 0; border-bottom: 1px solid #222; }
+    </style>
+</head>
+<body>
+    <h1>SSE Connection Test</h1>
+    
+    <div class="box disconnected" id="logsBox">
+        <h3>Logs SSE (/sse/logs)</h3>
+        <div>Status: <span id="logsStatus">Disconnected</span></div>
+        <div>Messages: <span id="logsCount">0</span></div>
+        <button onclick="connectLogs()">Connect</button>
+        <button onclick="disconnectLogs()">Disconnect</button>
+    </div>
+    
+    <div class="box disconnected" id="adminBox">
+        <h3>Admin SSE (/sse/admin)</h3>
+        <div>Status: <span id="adminStatus">Disconnected</span></div>
+        <div>Messages: <span id="adminCount">0</span></div>
+        <button onclick="connectAdmin()">Connect</button>
+        <button onclick="disconnectAdmin()">Disconnect</button>
+    </div>
+    
+    <div class="box">
+        <h3>Messages</h3>
+        <button onclick="clearMessages()">Clear</button>
+        <div id="messages"></div>
+    </div>
+    
+    <script>
+        let logsES = null;
+        let adminES = null;
+        let logsCount = 0;
+        let adminCount = 0;
+        
+        function log(source, message) {
+            const msg = document.createElement('div');
+            msg.className = 'msg';
+            msg.textContent = `[${new Date().toLocaleTimeString()}] [${source}] ${message}`;
+            document.getElementById('messages').prepend(msg);
+        }
+        
+        function connectLogs() {
+            if (logsES) logsES.close();
+            
+            logsCount = 0;
+            document.getElementById('logsCount').textContent = '0';
+            document.getElementById('logsStatus').textContent = 'Connecting...';
+            
+            logsES = new EventSource('http://localhost:8000/sse/logs');
+            
+            logsES.onopen = () => {
+                document.getElementById('logsStatus').textContent = 'Connected ✅';
+                document.getElementById('logsBox').className = 'box connected';
+                log('LOGS', 'SSE connection opened');
+            };
+            
+            logsES.onmessage = (evt) => {
+                logsCount++;
+                document.getElementById('logsCount').textContent = logsCount;
+                log('LOGS', evt.data);
+            };
+            
+            logsES.onerror = (err) => {
+                document.getElementById('logsStatus').textContent = 'Error ❌';
+                document.getElementById('logsBox').className = 'box disconnected';
+                log('LOGS', 'ERROR: ' + JSON.stringify(err));
+            };
+        }
+        
+        function disconnectLogs() {
+            if (logsES) {
+                logsES.close();
+                logsES = null;
+                document.getElementById('logsStatus').textContent = 'Disconnected';
+                document.getElementById('logsBox').className = 'box disconnected';
+                log('LOGS', 'Disconnected by user');
+            }
+        }
+        
+        function connectAdmin() {
+            if (adminES) adminES.close();
+            
+            adminCount = 0;
+            document.getElementById('adminCount').textContent = '0';
+            document.getElementById('adminStatus').textContent = 'Connecting...';
+            
+            adminES = new EventSource('http://localhost:8000/sse/admin');
+            
+            adminES.onopen = () => {
+                document.getElementById('adminStatus').textContent = 'Connected ✅';
+                document.getElementById('adminBox').className = 'box connected';
+                log('ADMIN', 'SSE connection opened');
+            };
+            
+            adminES.onmessage = (evt) => {
+                adminCount++;
+                document.getElementById('adminCount').textContent = adminCount;
+                log('ADMIN', evt.data);
+            };
+            
+            adminES.onerror = (err) => {
+                document.getElementById('adminStatus').textContent = 'Error ❌';
+                document.getElementById('adminBox').className = 'box disconnected';
+                log('ADMIN', 'ERROR: ' + JSON.stringify(err));
+            };
+        }
+        
+        function disconnectAdmin() {
+            if (adminES) {
+                adminES.close();
+                adminES = null;
+                document.getElementById('adminStatus').textContent = 'Disconnected';
+                document.getElementById('adminBox').className = 'box disconnected';
+                log('ADMIN', 'Disconnected by user');
+            }
+        }
+        
+        function clearMessages() {
+            document.getElementById('messages').innerHTML = '';
+        }
+    </script>
+</body>
+</html>

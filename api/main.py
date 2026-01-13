@@ -717,6 +717,120 @@ async def websocket_admin(websocket: WebSocket):
     except WebSocketDisconnect:
         await unregister_admin(websocket)
 
+
+# ===== Server-Sent Events (SSE) Endpoints =====
+# Alternative to WebSocket - better for reverse proxies like IIS
+
+from fastapi.responses import StreamingResponse
+
+@api.get("/sse/logs")
+async def sse_logs():
+    """Stream logs using Server-Sent Events"""
+    async def event_generator():
+        # Create a queue for this client
+        client_queue = asyncio.Queue()
+        
+        # Register this client to receive logs
+        log_stream.sse_clients.append(client_queue)
+        
+        # Send initial connection message
+        yield f"data: {json.dumps({'text': '[SSE] Connected to log stream', 'level': 'INFO'})}\n\n"
+        
+        try:
+            # Send keepalive every 15 seconds
+            last_keepalive = asyncio.get_event_loop().time()
+            
+            while True:
+                try:
+                    # Wait for next log with timeout
+                    log_data = await asyncio.wait_for(client_queue.get(), timeout=15.0)
+                    
+                    # Format as SSE
+                    yield f"data: {json.dumps(log_data)}\n\n"
+                    last_keepalive = asyncio.get_event_loop().time()
+                    
+                except asyncio.TimeoutError:
+                    # Send keepalive comment to prevent timeout
+                    yield ": keepalive\n\n"
+                    last_keepalive = asyncio.get_event_loop().time()
+                
+        except asyncio.CancelledError:
+            # Client disconnected
+            if client_queue in log_stream.sse_clients:
+                log_stream.sse_clients.remove(client_queue)
+            raise
+        finally:
+            # Cleanup
+            if client_queue in log_stream.sse_clients:
+                log_stream.sse_clients.remove(client_queue)
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        }
+    )
+
+
+@api.get("/sse/admin")
+async def sse_admin():
+    """Stream admin events using Server-Sent Events"""
+    async def event_generator():
+        # Create a queue for this client
+        client_queue = asyncio.Queue()
+        
+        # Import admin_events to access sse_clients
+        import admin_events
+        if not hasattr(admin_events, 'sse_clients'):
+            admin_events.sse_clients = []
+        
+        admin_events.sse_clients.append(client_queue)
+        
+        # Send initial connection message
+        yield f"data: {json.dumps({'type': 'connected', 'message': 'SSE admin stream connected'})}\n\n"
+        
+        try:
+            # Send keepalive every 15 seconds
+            last_keepalive = asyncio.get_event_loop().time()
+            
+            while True:
+                try:
+                    # Wait for next admin event with timeout
+                    event_data = await asyncio.wait_for(client_queue.get(), timeout=15.0)
+                    
+                    # Format as SSE
+                    yield f"data: {json.dumps(event_data)}\n\n"
+                    last_keepalive = asyncio.get_event_loop().time()
+                    
+                except asyncio.TimeoutError:
+                    # Send keepalive comment
+                    yield ": keepalive\n\n"
+                    last_keepalive = asyncio.get_event_loop().time()
+                
+        except asyncio.CancelledError:
+            # Client disconnected
+            if client_queue in admin_events.sse_clients:
+                admin_events.sse_clients.remove(client_queue)
+            raise
+        finally:
+            # Cleanup
+            if client_queue in admin_events.sse_clients:
+                admin_events.sse_clients.remove(client_queue)
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
 # Import skill management endpoints
 from api.skills_api import *
 
