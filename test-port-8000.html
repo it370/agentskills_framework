@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Port 8000 Connection Test</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      max-width: 800px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .container {
+      background: white;
+      padding: 30px;
+      border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: #333;
+      border-bottom: 3px solid #4CAF50;
+      padding-bottom: 10px;
+    }
+    .test-section {
+      margin: 30px 0;
+      padding: 20px;
+      background: #f9f9f9;
+      border-radius: 5px;
+      border-left: 4px solid #2196F3;
+    }
+    button {
+      background: #4CAF50;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      font-size: 16px;
+      border-radius: 5px;
+      cursor: pointer;
+      margin: 5px;
+    }
+    button:hover {
+      background: #45a049;
+    }
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    .result {
+      margin-top: 15px;
+      padding: 15px;
+      border-radius: 5px;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+    }
+    .success {
+      background: #d4edda;
+      border: 1px solid #c3e6cb;
+      color: #155724;
+    }
+    .error {
+      background: #f8d7da;
+      border: 1px solid #f5c6cb;
+      color: #721c24;
+    }
+    .info {
+      background: #d1ecf1;
+      border: 1px solid #bee5eb;
+      color: #0c5460;
+    }
+    input {
+      padding: 8px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      width: 300px;
+      font-size: 14px;
+    }
+    .status {
+      display: inline-block;
+      padding: 5px 10px;
+      border-radius: 3px;
+      font-weight: bold;
+      margin-left: 10px;
+    }
+    .connected {
+      background: #4CAF50;
+      color: white;
+    }
+    .disconnected {
+      background: #f44336;
+      color: white;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔌 Port 8000 Connection Test</h1>
+    <p>Use this page to test if port 8000 is accessible on your VM</p>
+
+    <!-- Configuration -->
+    <div class="test-section">
+      <h2>Configuration</h2>
+      <label>
+        Your VM IP/Domain:
+        <input type="text" id="hostInput" placeholder="e.g., 18.223.174.209" value="localhost">
+      </label>
+      <p style="font-size: 12px; color: #666; margin-top: 10px;">
+        💡 Change "localhost" to your VM's public IP or domain name
+      </p>
+    </div>
+
+    <!-- REST API Test -->
+    <div class="test-section">
+      <h2>1. REST API Test (HTTP)</h2>
+      <p>Tests: <code>http://[host]:8000/</code></p>
+      <button onclick="testRestAPI()">Test REST API</button>
+      <div id="restResult"></div>
+    </div>
+
+    <!-- WebSocket Test -->
+    <div class="test-section">
+      <h2>2. WebSocket Test (WS)</h2>
+      <p>Tests: <code>ws://[host]:8000/</code></p>
+      <button onclick="connectWebSocket()" id="wsConnectBtn">Connect WebSocket</button>
+      <button onclick="sendWebSocketMessage()" id="wsSendBtn" disabled>Send Test Message</button>
+      <button onclick="disconnectWebSocket()" id="wsDisconnectBtn" disabled>Disconnect</button>
+      <span class="status disconnected" id="wsStatus">Disconnected</span>
+      <div id="wsResult"></div>
+    </div>
+
+    <!-- Instructions -->
+    <div class="test-section" style="border-left-color: #FF9800;">
+      <h2>📋 Testing Instructions</h2>
+      <ol>
+        <li>Run the REST server: <code>python test_rest_server.py</code></li>
+        <li>Click "Test REST API" button above</li>
+        <li>Stop the REST server (Ctrl+C)</li>
+        <li>Run the WebSocket server: <code>python test_websocket_server.py</code></li>
+        <li>Click "Connect WebSocket" button above</li>
+        <li>If both work locally, change "localhost" to your VM's public IP and test again</li>
+      </ol>
+      <p style="margin-top: 15px; padding: 10px; background: #fff3cd; border-left: 4px solid #ffc107;">
+        <strong>⚠️ If local works but external doesn't:</strong><br>
+        Your cloud security group is blocking port 8000!
+      </p>
+    </div>
+  </div>
+
+  <script>
+    let ws = null;
+
+    function getHost() {
+      return document.getElementById('hostInput').value.trim() || 'localhost';
+    }
+
+    async function testRestAPI() {
+      const host = getHost();
+      const url = `http://${host}:8000/test`;
+      const resultDiv = document.getElementById('restResult');
+      
+      resultDiv.innerHTML = '<div class="result info">Testing REST API...</div>';
+      
+      try {
+        const response = await fetch(url);
+        const data = await response.json();
+        
+        resultDiv.innerHTML = `
+          <div class="result success">
+            ✅ <strong>REST API is accessible!</strong><br><br>
+            <pre>${JSON.stringify(data, null, 2)}</pre>
+          </div>
+        `;
+      } catch (error) {
+        resultDiv.innerHTML = `
+          <div class="result error">
+            ❌ <strong>REST API failed!</strong><br><br>
+            Error: ${error.message}<br><br>
+            <strong>Possible causes:</strong><br>
+            • Server is not running (run: python test_rest_server.py)<br>
+            • Port 8000 is blocked by firewall<br>
+            • Cloud security group is not configured<br>
+            • Host IP/domain is incorrect
+          </div>
+        `;
+      }
+    }
+
+    function connectWebSocket() {
+      const host = getHost();
+      const url = `ws://${host}:8000/`;
+      const resultDiv = document.getElementById('wsResult');
+      
+      resultDiv.innerHTML = '<div class="result info">Connecting to WebSocket...</div>';
+      
+      try {
+        ws = new WebSocket(url);
+        
+        ws.onopen = () => {
+          resultDiv.innerHTML = '<div class="result success">✅ <strong>WebSocket connected!</strong></div>';
+          document.getElementById('wsStatus').textContent = 'Connected';
+          document.getElementById('wsStatus').className = 'status connected';
+          document.getElementById('wsConnectBtn').disabled = true;
+          document.getElementById('wsSendBtn').disabled = false;
+          document.getElementById('wsDisconnectBtn').disabled = false;
+        };
+        
+        ws.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+          const msgDiv = document.createElement('div');
+          msgDiv.className = 'result success';
+          msgDiv.style.marginTop = '10px';
+          msgDiv.innerHTML = `
+            📩 <strong>Received:</strong><br>
+            <pre>${JSON.stringify(data, null, 2)}</pre>
+          `;
+          resultDiv.appendChild(msgDiv);
+        };
+        
+        ws.onerror = (error) => {
+          resultDiv.innerHTML = `
+            <div class="result error">
+              ❌ <strong>WebSocket error!</strong><br><br>
+              <strong>Possible causes:</strong><br>
+              • Server is not running (run: python test_websocket_server.py)<br>
+              • Port 8000 is blocked by firewall<br>
+              • Cloud security group is not configured<br>
+              • Host IP/domain is incorrect
+            </div>
+          `;
+          resetWebSocketButtons();
+        };
+        
+        ws.onclose = () => {
+          const closeDiv = document.createElement('div');
+          closeDiv.className = 'result info';
+          closeDiv.textContent = '🔌 WebSocket disconnected';
+          resultDiv.appendChild(closeDiv);
+          resetWebSocketButtons();
+        };
+      } catch (error) {
+        resultDiv.innerHTML = `<div class="result error">❌ Error: ${error.message}</div>`;
+        resetWebSocketButtons();
+      }
+    }
+
+    function sendWebSocketMessage() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        const message = `Test message at ${new Date().toLocaleTimeString()}`;
+        ws.send(message);
+        
+        const sentDiv = document.createElement('div');
+        sentDiv.className = 'result info';
+        sentDiv.style.marginTop = '10px';
+        sentDiv.innerHTML = `📤 <strong>Sent:</strong> ${message}`;
+        document.getElementById('wsResult').appendChild(sentDiv);
+      }
+    }
+
+    function disconnectWebSocket() {
+      if (ws) {
+        ws.close();
+      }
+    }
+
+    function resetWebSocketButtons() {
+      document.getElementById('wsStatus').textContent = 'Disconnected';
+      document.getElementById('wsStatus').className = 'status disconnected';
+      document.getElementById('wsConnectBtn').disabled = false;
+      document.getElementById('wsSendBtn').disabled = true;
+      document.getElementById('wsDisconnectBtn').disabled = true;
+    }
+  </script>
+</body>
+</html>
