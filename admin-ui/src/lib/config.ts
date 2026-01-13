@@ -26,13 +26,18 @@ function buildUrl(port: string, protocol: 'http' | 'ws', configuredHost?: string
     // Host doesn't include protocol, determine protocol based on host type
     const isLocal = isLocalhost(configuredHost);
     const finalProtocol = isLocal ? protocol : (protocol === 'http' ? 'https' : 'wss');
+    
+    // Don't add port if it's empty (useful for reverse proxy scenarios)
+    if (!port) {
+      return `${finalProtocol}://${configuredHost}`;
+    }
     return `${finalProtocol}://${configuredHost}:${port}`;
   }
 
   // Dynamic mode: detect from current page URL
   // Server-side rendering fallback
   if (typeof window === 'undefined') {
-    return `${protocol}://localhost:${port}`;
+    return port ? `${protocol}://localhost:${port}` : `${protocol}://localhost`;
   }
 
   const hostname = window.location.hostname;
@@ -41,7 +46,10 @@ function buildUrl(port: string, protocol: 'http' | 'ws', configuredHost?: string
   // Determine protocol
   const finalProtocol = isLocal ? protocol : (protocol === 'http' ? 'https' : 'wss');
   
-  // Use current hostname
+  // Use current hostname with port (if specified)
+  if (!port) {
+    return `${finalProtocol}://${hostname}`;
+  }
   return `${finalProtocol}://${hostname}:${port}`;
 }
 
