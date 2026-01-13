@@ -8,4 +8,5 @@ pyyaml
 httpx
 pymongo
 cryptography
-
+langgraph-checkpoint-postgres
+psycopg[binary,pool]
