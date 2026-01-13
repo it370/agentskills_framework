@@ -29,3 +29,7 @@ NOTE: This configuration will work only from outside. For local dev and internal
 Ignore all other .env configuration guide as those are obsolete and this is updated working configuration.
 
 ```
+
+# Setting up IIS
+Use the **.zip** file, helps a lot, instead of manual navigation.
+This is expected to work, in case it did not work on the new VM depends on the environment and server config, but atleast use this for reference if the script has error in between.
