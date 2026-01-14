@@ -3,6 +3,7 @@ import subprocess
 import sys
 import asyncio
 import logging
+import signal
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -26,6 +27,31 @@ if sys.platform == 'win32':
     logging.getLogger("asyncio").addFilter(SuppressConnectionErrors())
 
 
+# Global reference to subprocess for signal handlers
+socketio_process = None
+
+
+def shutdown_handler(signum, frame):
+    """Handle shutdown signals (Ctrl+C, SIGTERM)"""
+    global socketio_process
+    print("\n[MAIN] Shutdown signal received, cleaning up...")
+    
+    # Kill Socket.IO server immediately
+    if socketio_process and socketio_process.poll() is None:
+        print("[MAIN] Terminating Socket.IO server...")
+        socketio_process.terminate()
+        try:
+            socketio_process.wait(timeout=2)
+            print("[MAIN] Socket.IO server stopped")
+        except subprocess.TimeoutExpired:
+            print("[MAIN] Force killing Socket.IO server...")
+            socketio_process.kill()
+            socketio_process.wait()
+    
+    print("[MAIN] Shutdown complete")
+    sys.exit(0)
+
+
 def run():
     """
     Entrypoint to launch both REST API and Socket.IO servers.
@@ -40,7 +66,13 @@ def run():
     - SSL_KEYFILE: path to SSL key file (optional, enables HTTPS)
     - SSL_CERTFILE: path to SSL certificate file (optional, enables HTTPS)
     """
+    global socketio_process
+    
     load_dotenv()  # pick up .env before reading config
+    
+    # Register signal handlers for clean shutdown
+    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
     
     # Initialize global auth context for credential access
     try:
@@ -101,7 +133,10 @@ def run():
     socketio_process = subprocess.Popen(
         socketio_cmd,
         cwd=str(project_root),
-        env=os.environ.copy()
+        env=os.environ.copy(),
+        # Redirect output to suppress noise during shutdown
+        stdout=subprocess.PIPE if not reload else None,
+        stderr=subprocess.PIPE if not reload else None
     )
     
     # Start REST API server (foreground)
@@ -112,7 +147,8 @@ def run():
             "app": "api:api",
             "host": rest_host,
             "port": rest_port,
-            "reload": reload
+            "reload": reload,
+            "timeout_graceful_shutdown": 2,  # Shorter timeout for graceful shutdown
         }
         if use_ssl:
             uvicorn_config["ssl_keyfile"] = ssl_keyfile
@@ -120,13 +156,21 @@ def run():
         
         uvicorn.run(**uvicorn_config)
     except KeyboardInterrupt:
-        print("\n[MAIN] Shutting down...")
+        # Signal handler will take care of cleanup
+        pass
+    except Exception as e:
+        print(f"[MAIN] Error: {e}")
     finally:
-        # Cleanup Socket.IO server
-        print("[MAIN] Stopping Socket.IO server...")
-        socketio_process.terminate()
-        socketio_process.wait(timeout=5)
-        print("[MAIN] Shutdown complete")
+        # Cleanup Socket.IO server (in case signal handler didn't run)
+        if socketio_process and socketio_process.poll() is None:
+            print("[MAIN] Stopping Socket.IO server...")
+            socketio_process.terminate()
+            try:
+                socketio_process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                socketio_process.kill()
+                socketio_process.wait()
+            print("[MAIN] Shutdown complete")
 
 
 if __name__ == "__main__":

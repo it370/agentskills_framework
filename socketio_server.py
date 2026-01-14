@@ -46,6 +46,23 @@ if sys.platform == 'win32':
     
     logging.getLogger("asyncio").addFilter(SuppressConnectionErrors())
 
+# Suppress WebSocket connection errors during shutdown (all platforms)
+class SuppressWebSocketShutdownErrors(logging.Filter):
+    def filter(self, record):
+        msg = record.getMessage()
+        # Suppress common shutdown-related errors
+        if "ConnectionClosedError" in msg:
+            return False
+        if "service restart" in msg:
+            return False
+        if "connection closed" in msg.lower() and "exception" in msg.lower():
+            return False
+        return True
+
+# Apply to websockets logger
+logging.getLogger("websockets").addFilter(SuppressWebSocketShutdownErrors())
+logging.getLogger("websockets.protocol").addFilter(SuppressWebSocketShutdownErrors())
+
 # Load environment
 load_env_once(Path(__file__).resolve().parent)
 
@@ -91,6 +108,15 @@ async def startup():
 async def shutdown():
     """Cleanup on server shutdown."""
     print("[SOCKETIO_SERVER] Shutting down Socket.IO server...")
+    
+    # Disconnect all Socket.IO clients gracefully
+    try:
+        await sio.disconnect()
+        print("[SOCKETIO_SERVER] All Socket.IO clients disconnected")
+    except Exception as e:
+        print(f"[SOCKETIO_SERVER] Error disconnecting clients: {e}")
+    
+    # Shutdown event listeners
     shutdown_event_listeners()
     print("[SOCKETIO_SERVER] Shutdown complete")
 
@@ -194,12 +220,21 @@ HTTP Endpoints:
 Press Ctrl+C to stop
 """)
     
-    uvicorn.run(
+    # Configure uvicorn with shorter timeouts for faster shutdown
+    config = uvicorn.Config(
         socket_app,
         host=SOCKETIO_HOST,
         port=SOCKETIO_PORT,
         log_level="info",
+        timeout_graceful_shutdown=2,  # Shorter graceful shutdown
     )
+    server = uvicorn.Server(config)
+    
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        print("\n[SOCKETIO] Shutting down gracefully...")
+        # Server cleanup is handled by uvicorn
 
 
 if __name__ == "__main__":
