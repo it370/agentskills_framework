@@ -17,6 +17,8 @@ def run():
     - SOCKETIO_PORT: bind port for Socket.IO (default 7000)
     - RELOAD: enable auto-reload (set to "true" to enable; default off)
     - DEFAULT_USER_ID: default user for credential access (default "system")
+    - SSL_KEYFILE: path to SSL key file (optional, enables HTTPS)
+    - SSL_CERTFILE: path to SSL certificate file (optional, enables HTTPS)
     """
     load_dotenv()  # pick up .env before reading config
     
@@ -47,23 +49,37 @@ def run():
     socketio_port = int(os.getenv("SOCKETIO_PORT", "7000"))
     reload = os.getenv("RELOAD", "false").lower() == "true"
     
+    # SSL configuration
+    ssl_keyfile = os.getenv("SSL_KEYFILE")
+    ssl_certfile = os.getenv("SSL_CERTFILE")
+    use_ssl = bool(ssl_keyfile and ssl_certfile)
+    protocol = "https" if use_ssl else "http"
+    
     print(f"""
 ╔══════════════════════════════════════════════════════════════╗
 ║           AgentSkills Framework - Starting Services         ║
 ╠══════════════════════════════════════════════════════════════╣
-║  REST API Server:    http://{rest_host}:{rest_port:<35}║
-║  Socket.IO Server:   http://{socketio_host}:{socketio_port:<35}║
+║  REST API Server:    {protocol}://{rest_host}:{rest_port:<35}║
+║  Socket.IO Server:   {protocol}://{socketio_host}:{socketio_port:<35}║
+║  SSL/TLS:            {'Enabled' if use_ssl else 'Disabled':<45}║
 ╚══════════════════════════════════════════════════════════════╝
 """)
     
     # Get the project root
     project_root = Path(__file__).resolve().parent
     
+    # Build Socket.IO server command
+    socketio_cmd = [
+        sys.executable, "-m", "uvicorn", "socketio_server:socket_app",
+        "--host", socketio_host, "--port", str(socketio_port)
+    ]
+    if use_ssl:
+        socketio_cmd.extend(["--ssl-keyfile", ssl_keyfile, "--ssl-certfile", ssl_certfile])
+    
     # Start Socket.IO server in background
     print("[MAIN] Starting Socket.IO server...")
     socketio_process = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "socketio_server:socket_app", 
-         "--host", socketio_host, "--port", str(socketio_port)],
+        socketio_cmd,
         cwd=str(project_root),
         env=os.environ.copy()
     )
@@ -72,7 +88,17 @@ def run():
     print("[MAIN] Starting REST API server...")
     try:
         import uvicorn
-        uvicorn.run("api:api", host=rest_host, port=rest_port, reload=reload)
+        uvicorn_config = {
+            "app": "api:api",
+            "host": rest_host,
+            "port": rest_port,
+            "reload": reload
+        }
+        if use_ssl:
+            uvicorn_config["ssl_keyfile"] = ssl_keyfile
+            uvicorn_config["ssl_certfile"] = ssl_certfile
+        
+        uvicorn.run(**uvicorn_config)
     except KeyboardInterrupt:
         print("\n[MAIN] Shutting down...")
     finally:

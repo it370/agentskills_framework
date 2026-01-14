@@ -11,7 +11,10 @@ from typing import Dict, Any, Optional
 
 
 # Socket.IO server configuration
-SOCKETIO_BASE = f"http://{os.getenv('SOCKETIO_HOST', 'localhost')}:{os.getenv('SOCKETIO_PORT', '7000')}"
+SOCKETIO_PROTOCOL = "https" if os.getenv("SSL_KEYFILE") and os.getenv("SSL_CERTFILE") else "http"
+SOCKETIO_HOST = os.getenv('SOCKETIO_HOST', 'localhost')
+SOCKETIO_PORT = os.getenv('SOCKETIO_PORT', '7000')
+SOCKETIO_BASE = f"{SOCKETIO_PROTOCOL}://{SOCKETIO_HOST}:{SOCKETIO_PORT}"
 
 
 async def broadcast_log(log_data: Dict[str, Any]):
@@ -22,7 +25,9 @@ async def broadcast_log(log_data: Dict[str, Any]):
         log_data: Dict with keys: text, thread_id, level, timestamp
     """
     try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        # Disable SSL verification for self-signed certificates in development
+        verify_ssl = SOCKETIO_PROTOCOL == "http"
+        async with httpx.AsyncClient(timeout=2.0, verify=verify_ssl) as client:
             await client.post(
                 f"{SOCKETIO_BASE}/internal/broadcast/log",
                 json=log_data
@@ -40,7 +45,9 @@ async def broadcast_admin_event(payload: Dict[str, Any]):
         payload: Event payload (run updates, checkpoint notifications, etc.)
     """
     try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        # Disable SSL verification for self-signed certificates in development
+        verify_ssl = SOCKETIO_PROTOCOL == "http"
+        async with httpx.AsyncClient(timeout=2.0, verify=verify_ssl) as client:
             await client.post(
                 f"{SOCKETIO_BASE}/internal/broadcast/admin",
                 json=payload
