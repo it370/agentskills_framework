@@ -27,32 +27,50 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Initialize auth state from localStorage
   useEffect(() => {
-    const storedToken = getAuthToken();
-    const storedUser = getStoredUser();
-    
-    if (storedToken && storedUser) {
-      setToken(storedToken);
-      setUser(storedUser);
-      // Verify token is still valid
-      verifyToken(storedToken).catch(() => {
-        clearAuth();
-        setToken(null);
-        setUser(null);
-      });
+    async function initAuth() {
+      const storedToken = getAuthToken();
+      const storedUser = getStoredUser();
+      
+      if (storedToken && storedUser) {
+        setToken(storedToken);
+        setUser(storedUser);
+        
+        // Verify token is still valid
+        try {
+          await verifyToken(storedToken);
+          // Token is valid, keep the user logged in
+        } catch (error) {
+          // Token is invalid, clear auth
+          console.log("Token verification failed, clearing auth");
+          clearAuth();
+          setToken(null);
+          setUser(null);
+        }
+      }
+      
+      setLoading(false);
     }
     
-    setLoading(false);
+    initAuth();
   }, []);
 
   async function verifyToken(token: string): Promise<void> {
-    const res = await fetch(`${API_BASE}/auth/verify-token`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
-    
-    if (!res.ok) {
-      throw new Error("Token verification failed");
+    try {
+      const res = await fetch(`${API_BASE}/auth/verify-token`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error("Token verification failed:", res.status, errorText);
+        throw new Error("Token verification failed");
+      }
+    } catch (error) {
+      console.error("Token verification error:", error);
+      throw error;
     }
   }
 
