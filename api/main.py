@@ -11,11 +11,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from psycopg import Connection as SyncConnection
 
+from env_loader import load_env_once
+
+# Load environment variables before importing other modules
+load_env_once(Path(__file__).resolve().parent.parent)
+
 from engine import AgentState, app, _deep_merge_dict, checkpointer, _safe_serialize, _get_env_value, _AsyncPostgresSaver
 import log_stream
 from log_stream import publish_log, emit_log, set_log_context, get_thread_logs
 from .mock_api import router as mock_router
-from env_loader import load_env_once
 from admin_events import broadcast_run_event
 from services.connection_pool import get_pool_stats, health_check as check_pool_health
 
