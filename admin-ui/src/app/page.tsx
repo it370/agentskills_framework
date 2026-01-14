@@ -213,14 +213,15 @@ export default function RunsPage() {
       // Fetch the run metadata
       const metadata = await getRunMetadata(threadId);
       
-      // Navigate to new run page with pre-populated data
-      const params = new URLSearchParams({
+      // Store data in sessionStorage to avoid URL length issues
+      sessionStorage.setItem('rerun_config', JSON.stringify({
         runName: metadata.run_name || '',
         sop: metadata.sop,
-        initialData: JSON.stringify(metadata.initial_data, null, 2)
-      });
+        initialData: metadata.initial_data
+      }));
       
-      router.push(`/runs/new?${params.toString()}`);
+      // Navigate to new run page with just a flag
+      router.push('/runs/new?from=rerun');
     } catch (err: any) {
       console.error("[EditRerun] Error:", err);
       alert(`Failed to load run data: ${err.message}`);

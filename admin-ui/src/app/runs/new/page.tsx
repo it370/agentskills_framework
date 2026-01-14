@@ -23,8 +23,27 @@ export default function NewRunPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Pre-populate from query params (for Edit and Rerun)
+  // Pre-populate from sessionStorage (for Edit and Rerun) or query params (legacy)
   useEffect(() => {
+    // Check sessionStorage first
+    const storedConfig = sessionStorage.getItem('rerun_config');
+    if (storedConfig) {
+      try {
+        const config = JSON.parse(storedConfig);
+        if (config.runName) setRunName(config.runName);
+        if (config.sop) setSop(config.sop);
+        if (config.initialData) {
+          setInitialData(JSON.stringify(config.initialData, null, 2));
+        }
+        // Clear after reading
+        sessionStorage.removeItem('rerun_config');
+        return;
+      } catch (err) {
+        console.error("Failed to parse stored rerun config:", err);
+      }
+    }
+    
+    // Fallback to URL params (legacy support)
     const paramRunName = searchParams.get('runName');
     const paramSop = searchParams.get('sop');
     const paramInitialData = searchParams.get('initialData');
@@ -90,8 +109,8 @@ export default function NewRunPage() {
       const result = await response.json();
       console.log("[NewRun] Start result:", result);
 
-      // Use window.location for immediate redirect
-      const redirectUrl = `/admin/${threadId}?tab=config&sop=${encodeURIComponent(sop)}&initialData=${encodeURIComponent(initialData)}`;
+      // Redirect to admin page (data will be loaded from database)
+      const redirectUrl = `/admin/${threadId}`;
       console.log("[NewRun] Redirecting to:", redirectUrl);
       
       // Force navigation
@@ -128,10 +147,10 @@ export default function NewRunPage() {
             Back to Runs
           </Link>
           <h1 className="text-3xl font-bold text-gray-900">
-            {searchParams.get('sop') ? 'Edit and Rerun' : 'Start New Run'}
+            {searchParams.get('from') === 'rerun' ? 'Edit and Rerun' : 'Start New Run'}
           </h1>
           <p className="mt-2 text-sm text-gray-600">
-            {searchParams.get('sop') 
+            {searchParams.get('from') === 'rerun'
               ? 'Modify the configuration below and start a new run'
               : 'Configure and launch a new workflow execution'}
           </p>
