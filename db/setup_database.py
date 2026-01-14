@@ -66,6 +66,8 @@ def main():
         (db_dir / "run_metadata_schema.sql", "Run metadata schema (for reruns)"),
         (db_dir / "add_status_columns_migration.sql", "Status tracking columns (migration)"),
         (db_dir / "dynamic_skills_schema.sql", "Dynamic skills schema (UI skill builder)"),
+        (db_dir / "users_schema.sql", "User management schema (authentication)"),
+        (db_dir / "add_user_tracking_migration.sql", "User tracking migration (user_id columns)"),
         (db_dir / "run_list_view.sql", "Run list view with computed status"),
     ]
     
@@ -110,6 +112,12 @@ def main():
                 views = [row[0] for row in cur.fetchall()]
                 print(f"[OK] Views: {', '.join(views) if views else '(none)'}")
                 
+                # Check users count
+                if 'users' in tables:
+                    cur.execute("SELECT COUNT(*) FROM users")
+                    user_count = cur.fetchone()[0]
+                    print(f"[OK] users: {user_count} registered users")
+                
                 # Check thread_logs count
                 if 'thread_logs' in tables:
                     cur.execute("SELECT COUNT(*) FROM thread_logs")
@@ -125,6 +133,17 @@ def main():
             print(f"\n{'='*60}")
             print("[OK] Database setup complete!")
             print(f"{'='*60}\n")
+            
+            # Check if we should create default system user
+            if 'users' in tables:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT COUNT(*) FROM users WHERE username = 'system'")
+                    system_user_exists = cur.fetchone()[0] > 0
+                    
+                    if not system_user_exists:
+                        print("NOTE: User management schema applied but no system user created.")
+                        print("      Run 'python db/apply_user_schema.py' to create default system user")
+                        print("      with a generated password, or register users via /auth/register\n")
             
             if success_count < total_count:
                 print(f"WARNING: Some schemas failed to apply")

@@ -11,3 +11,6 @@ cryptography
 langgraph-checkpoint-postgres
 psycopg[binary,pool]
 python-socketio[asyncio_server]
+bcrypt
+pyjwt[crypto]
+pydantic[email]

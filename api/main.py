@@ -20,8 +20,10 @@ from engine import AgentState, app, _deep_merge_dict, checkpointer, _safe_serial
 import log_stream
 from log_stream import publish_log, emit_log, set_log_context, get_thread_logs
 from .mock_api import router as mock_router
+from .auth_api import router as auth_router
 from admin_events import broadcast_run_event
 from services.connection_pool import get_pool_stats, health_check as check_pool_health
+from services.auth_middleware import AuthenticatedUser, OptionalUser, AdminUser
 
 ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 
@@ -47,6 +49,9 @@ else:
         expose_headers=["*"],
     )
 
+# Authentication endpoints
+api.include_router(auth_router)
+
 # Mock endpoints for hardcoded data (sandbox/testing)
 api.include_router(mock_router)
 
@@ -57,7 +62,7 @@ class StartRequest(BaseModel):
     run_name: Optional[str] = None  # Human-friendly name (optional)
 
 @api.post("/start")
-async def start_process(req: StartRequest):
+async def start_process(req: StartRequest, current_user: AuthenticatedUser):
     config = {"configurable": {"thread_id": req.thread_id}}
     initial_state = {
         "layman_sop": req.sop,
@@ -65,13 +70,13 @@ async def start_process(req: StartRequest):
         "history": ["Process Started"],
         "thread_id": req.thread_id,
     }
-    await publish_log(f"[API] Start requested for thread={req.thread_id}", req.thread_id)
+    await publish_log(f"[API] Start requested for thread={req.thread_id} by user={current_user.username}", req.thread_id)
     
     # Use run_name if provided, otherwise default to thread_id
     run_name = req.run_name if req.run_name and req.run_name.strip() else req.thread_id
     
     # Save run metadata to database for rerun functionality
-    await _save_run_metadata(req.thread_id, req.sop, req.initial_data, run_name=run_name)
+    await _save_run_metadata(req.thread_id, req.sop, req.initial_data, run_name=run_name, user_id=current_user.id)
     
     # Run the workflow in the background to avoid blocking the response
     asyncio.create_task(_run_workflow(initial_state, config))
@@ -79,7 +84,7 @@ async def start_process(req: StartRequest):
     return {"status": "started", "thread_id": req.thread_id, "run_name": run_name}
 
 
-async def _save_run_metadata(thread_id: str, sop: str, initial_data: Dict[str, Any], parent_thread_id: Optional[str] = None, run_name: Optional[str] = None):
+async def _save_run_metadata(thread_id: str, sop: str, initial_data: Dict[str, Any], parent_thread_id: Optional[str] = None, run_name: Optional[str] = None, user_id: Optional[int] = None):
     """Save run metadata to database for rerun functionality."""
     db_uri = _get_env_value("DATABASE_URL", "")
     if not db_uri:
@@ -107,24 +112,90 @@ async def _save_run_metadata(thread_id: str, sop: str, initial_data: Dict[str, A
                 
                 # Insert run metadata
                 cur.execute("""
-                    INSERT INTO run_metadata (thread_id, run_name, sop, initial_data, parent_thread_id, rerun_count, status)
-                    VALUES (%s, %s, %s, %s, %s, %s, 'running')
+                    INSERT INTO run_metadata (thread_id, run_name, sop, initial_data, parent_thread_id, rerun_count, status, user_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'running', %s)
                     ON CONFLICT (thread_id) DO UPDATE
                     SET run_name = EXCLUDED.run_name,
                         sop = EXCLUDED.sop,
                         initial_data = EXCLUDED.initial_data,
                         parent_thread_id = EXCLUDED.parent_thread_id,
-                        rerun_count = EXCLUDED.rerun_count
-                """, (thread_id, run_name, sop, json.dumps(initial_data), parent_thread_id, rerun_count))
+                        rerun_count = EXCLUDED.rerun_count,
+                        user_id = EXCLUDED.user_id
+                """, (thread_id, run_name, sop, json.dumps(initial_data), parent_thread_id, rerun_count, user_id))
     
     try:
         await asyncio.to_thread(_save_sync)
-        await publish_log(f"[API] Saved run metadata for thread={thread_id}, name={run_name}", thread_id)
+        await publish_log(f"[API] Saved run metadata for thread={thread_id}, name={run_name}, user_id={user_id}", thread_id)
     except Exception as e:
         emit_log(f"[API] Failed to save run metadata: {e}")
 
 
+async def _check_run_ownership(thread_id: str, user_id: int):
+    """
+    Check if user owns a run
+    
+    Raises HTTPException if not owner or run not found
+    """
+    db_uri = _get_env_value("DATABASE_URL", "")
+    if not db_uri:
+        return  # Skip check if DB not configured
+    
+    def _check_sync():
+        import psycopg
+        with psycopg.connect(db_uri) as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT user_id FROM run_metadata WHERE thread_id = %s
+                """, (thread_id,))
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return row[0]
+    
+    try:
+        owner_id = await asyncio.to_thread(_check_sync)
+        if owner_id is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        if owner_id != user_id:
+            raise HTTPException(status_code=403, detail="Not authorized to access this run")
+    except HTTPException:
+        raise
+    except Exception as e:
+        emit_log(f"[API] Failed to check run ownership: {e}")
+
+
 async def _update_run_status(thread_id: str, status: str, error_message: Optional[str] = None, failed_skill: Optional[str] = None):
+    """Update the run status in run_metadata table."""
+    db_uri = _get_env_value("DATABASE_URL", "")
+    if not db_uri:
+        return
+    
+    def _update_sync():
+        import psycopg
+        from datetime import datetime
+        with psycopg.connect(db_uri, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE run_metadata
+                    SET status = %s,
+                        error_message = %s,
+                        failed_skill = %s,
+                        completed_at = %s
+                    WHERE thread_id = %s
+                """, (status, error_message, failed_skill, datetime.utcnow(), thread_id))
+    
+    try:
+        await asyncio.to_thread(_update_sync)
+        emit_log(f"[API] Updated run status to '{status}' for thread={thread_id}")
+        
+        # Broadcast admin event to trigger UI refresh
+        await broadcast_run_event({
+            "thread_id": thread_id,
+            "status": status,
+            "event": "status_updated"
+        })
+    except Exception as e:
+        emit_log(f"[API] Failed to update run status: {e}")
     """Update the run status in run_metadata table."""
     db_uri = _get_env_value("DATABASE_URL", "")
     if not db_uri:
@@ -262,8 +333,12 @@ async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any]):
             emit_log(f"[API] Failed to update workflow state after error: {update_exc}")
 
 @api.get("/status/{thread_id}")
-async def get_status(thread_id: str):
+async def get_status(thread_id: str, current_user: AuthenticatedUser):
     config = {"configurable": {"thread_id": thread_id}}
+    
+    # Check if user owns this run
+    await _check_run_ownership(thread_id, current_user.id)
+    
     state = await app.aget_state(config)
     next_nodes = state.next or []
     is_human_review = "human_review" in next_nodes
@@ -290,9 +365,12 @@ async def get_status(thread_id: str):
 
 @api.post("/approve/{thread_id}")
 async def approve_step(
-    thread_id: str, updated_data: Optional[Dict[str, Any]] = Body(None)
+    thread_id: str, current_user: AuthenticatedUser, updated_data: Optional[Dict[str, Any]] = Body(None)
 ):
     config = {"configurable": {"thread_id": thread_id}}
+    
+    # Check if user owns this run
+    await _check_run_ownership(thread_id, current_user.id)
     
     # Update status to 'running' when resuming from HITL pause
     await _update_run_status(thread_id, "running")
@@ -300,9 +378,9 @@ async def approve_step(
     # If the human edited data, update the state first
     if updated_data:
         await app.aupdate_state(config, {"data_store": updated_data})
-        await publish_log(f"[API] Human updated data for thread={thread_id}", thread_id)
+        await publish_log(f"[API] Human updated data for thread={thread_id} by user={current_user.username}", thread_id)
     
-    await publish_log(f"[API] Human approval received; resuming thread={thread_id}", thread_id)
+    await publish_log(f"[API] Human approval received; resuming thread={thread_id} by user={current_user.username}", thread_id)
     
     # Resume the graph
     await app.ainvoke(None, config)
@@ -355,7 +433,7 @@ def _serialize_checkpoint_tuple(cp_tuple):
 
 
 @api.get("/admin/runs")
-async def list_runs(limit: int = 50):
+async def list_runs(current_user: AuthenticatedUser, limit: int = 50):
     """List workflow runs with computed status from database view."""
     # Try to use the database view for better performance
     db_uri = _get_env_value("DATABASE_URL", "")
@@ -368,24 +446,48 @@ async def list_runs(limit: int = 50):
             def _fetch_from_view():
                 with psycopg.connect(db_uri, autocommit=True) as conn:
                     with conn.cursor() as cur:
-                        cur.execute("""
-                            SELECT 
-                                thread_id,
-                                checkpoint_id,
-                                checkpoint_ns,
-                                run_name,
-                                active_skill,
-                                history_count,
-                                status,
-                                sop_preview,
-                                created_at,
-                                updated_at,
-                                checkpoint,
-                                metadata
-                            FROM run_list_view
-                            ORDER BY updated_at DESC NULLS LAST
-                            LIMIT %s
-                        """, (limit,))
+                        # Filter by user_id unless admin
+                        if current_user.is_admin:
+                            cur.execute("""
+                                SELECT 
+                                    thread_id,
+                                    checkpoint_id,
+                                    checkpoint_ns,
+                                    run_name,
+                                    active_skill,
+                                    history_count,
+                                    status,
+                                    sop_preview,
+                                    created_at,
+                                    updated_at,
+                                    checkpoint,
+                                    metadata
+                                FROM run_list_view
+                                ORDER BY updated_at DESC NULLS LAST
+                                LIMIT %s
+                            """, (limit,))
+                        else:
+                            cur.execute("""
+                                SELECT 
+                                    r.thread_id,
+                                    r.checkpoint_id,
+                                    r.checkpoint_ns,
+                                    r.run_name,
+                                    r.active_skill,
+                                    r.history_count,
+                                    r.status,
+                                    r.sop_preview,
+                                    r.created_at,
+                                    r.updated_at,
+                                    r.checkpoint,
+                                    r.metadata
+                                FROM run_list_view r
+                                JOIN run_metadata m ON r.thread_id = m.thread_id
+                                WHERE m.user_id = %s
+                                ORDER BY r.updated_at DESC NULLS LAST
+                                LIMIT %s
+                            """, (current_user.id, limit))
+                        
                         rows = cur.fetchall()
                         
                         return [
@@ -429,7 +531,10 @@ async def list_runs(limit: int = 50):
 
 
 @api.get("/admin/runs/{thread_id}")
-async def run_detail(thread_id: str):
+async def run_detail(thread_id: str, current_user: AuthenticatedUser):
+    # Check ownership
+    await _check_run_ownership(thread_id, current_user.id)
+    
     cp = checkpointer
     config = {"configurable": {"thread_id": thread_id}}
     cp_tuple = None
@@ -446,15 +551,21 @@ async def run_detail(thread_id: str):
 
 
 @api.get("/admin/runs/{thread_id}/logs")
-async def get_logs(thread_id: str, limit: int = 1000):
+async def get_logs(thread_id: str, current_user: AuthenticatedUser, limit: int = 1000):
     """Retrieve historical logs for a specific thread."""
+    # Check ownership
+    await _check_run_ownership(thread_id, current_user.id)
+    
     logs = await get_thread_logs(thread_id, limit)
     return {"logs": logs, "count": len(logs)}
 
 
 @api.get("/admin/runs/{thread_id}/metadata")
-async def get_run_metadata_endpoint(thread_id: str):
+async def get_run_metadata_endpoint(thread_id: str, current_user: AuthenticatedUser):
     """Get run metadata for a specific thread."""
+    # Check ownership
+    await _check_run_ownership(thread_id, current_user.id)
+    
     metadata = await _get_run_metadata(thread_id)
     if not metadata:
         raise HTTPException(status_code=404, detail="Run metadata not found")
@@ -462,13 +573,16 @@ async def get_run_metadata_endpoint(thread_id: str):
 
 
 @api.post("/rerun/{thread_id}")
-async def rerun_workflow(thread_id: str):
+async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser):
     """
     Rerun a workflow with the same inputs as a previous run.
     Creates a new thread with the same SOP and initial data.
     """
     import uuid
     import re
+    
+    # Check ownership
+    await _check_run_ownership(thread_id, current_user.id)
     
     # Get the original run metadata
     metadata = await _get_run_metadata(thread_id)
@@ -487,7 +601,7 @@ async def rerun_workflow(thread_id: str):
     # Add the new rerun suffix
     new_run_name = f"{base_run_name} (Rerun #{metadata['rerun_count'] + 1})"
     
-    await publish_log(f"[API] Rerun requested from thread={thread_id} -> new thread={new_thread_id}")
+    await publish_log(f"[API] Rerun requested from thread={thread_id} -> new thread={new_thread_id} by user={current_user.username}")
     
     # Create new run with same inputs
     config = {"configurable": {"thread_id": new_thread_id}}
@@ -504,7 +618,8 @@ async def rerun_workflow(thread_id: str):
         metadata["sop"], 
         metadata["initial_data"], 
         parent_thread_id=thread_id,
-        run_name=new_run_name
+        run_name=new_run_name,
+        user_id=current_user.id
     )
     
     # Start the workflow
