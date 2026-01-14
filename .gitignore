@@ -9,6 +9,7 @@ develop-eggs/
 dist/
 downloads/
 eggs/
+cert/
 .eggs/
 lib64/
 parts/
