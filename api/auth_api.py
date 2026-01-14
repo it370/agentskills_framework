@@ -46,6 +46,84 @@ class MessageResponse(BaseModel):
     message: str
 
 
+class SystemSetupResponse(BaseModel):
+    """System setup response"""
+    message: str
+    system_exists: bool
+
+
+@router.post("/setup/check", response_model=SystemSetupResponse)
+async def check_system_setup():
+    """Check if system user exists"""
+    user_service = get_user_service()
+    
+    try:
+        await user_service.get_user_by_username("system")
+        return SystemSetupResponse(
+            message="System user already exists",
+            system_exists=True
+        )
+    except HTTPException:
+        return SystemSetupResponse(
+            message="System user not found - setup required",
+            system_exists=False
+        )
+
+
+@router.post("/setup/reset-request", response_model=MessageResponse)
+async def request_system_password_reset(reset_request: PasswordResetRequest):
+    """Request password reset for system user (only if email matches)"""
+    user_service = get_user_service()
+    email_service = get_email_service()
+    
+    if not email_service:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Email service not configured. Please contact administrator."
+        )
+    
+    # Get system user
+    try:
+        system_user = await user_service.get_user_by_username("system")
+    except HTTPException:
+        # Don't reveal if user exists or not for security
+        return MessageResponse(
+            message="If the email matches the system account, a password reset link will be sent."
+        )
+    
+    # Check if email matches
+    if system_user.email != reset_request.email:
+        # Don't reveal that email doesn't match
+        return MessageResponse(
+            message="If the email matches the system account, a password reset link will be sent."
+        )
+    
+    # Email matches, proceed with password reset
+    reset_token = await user_service.create_password_reset_token(reset_request.email)
+    
+    if reset_token:
+        # Construct reset URL
+        reset_url_base = os.getenv("APP_URL", "http://localhost:3000") + "/reset-password"
+        reset_url = f"{reset_url_base}?token={reset_token}"
+        
+        try:
+            await email_service.send_password_reset_email(
+                to_email=reset_request.email,
+                reset_url=reset_url,
+                username=system_user.username
+            )
+        except Exception as e:
+            print(f"[AUTH] Failed to send password reset email: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send password reset email. Please check email configuration."
+            )
+    
+    return MessageResponse(
+        message="If the email matches the system account, a password reset link will be sent."
+    )
+
+
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 async def register(registration: UserRegistration):
     """

@@ -452,6 +452,49 @@ class UserService:
         
         return await asyncio.to_thread(_get_sync)
     
+    async def get_user_by_username(self, username: str) -> User:
+        """
+        Get user by username
+        
+        Returns:
+            User object
+            
+        Raises:
+            HTTPException: If user not found (404)
+        """
+        from fastapi import HTTPException, status
+        
+        def _get_user_sync():
+            with psycopg.connect(self.db_uri) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT id, username, email, is_active, is_admin, created_at, last_login_at
+                        FROM users
+                        WHERE username = %s
+                    """, (username,))
+                    
+                    row = cur.fetchone()
+                    if not row:
+                        return None
+                    
+                    return User(
+                        id=row[0],
+                        username=row[1],
+                        email=row[2],
+                        is_active=row[3],
+                        is_admin=row[4],
+                        created_at=row[5],
+                        last_login_at=row[6]
+                    )
+        
+        user = await asyncio.to_thread(_get_user_sync)
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"User '{username}' not found"
+            )
+        return user
+    
     async def cleanup_expired_sessions(self):
         """Cleanup expired sessions and reset tokens"""
         def _cleanup_sync():

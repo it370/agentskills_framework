@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAuth } from "@/contexts/AuthContext";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 export default function RegisterPage() {
@@ -11,7 +12,23 @@ export default function RegisterPage() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [usernameLocked, setUsernameLocked] = useState(false);
   const { register } = useAuth();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  useEffect(() => {
+    // Check if username is provided in query params
+    const usernameParam = searchParams.get("username");
+    const lockedParam = searchParams.get("locked");
+    
+    if (usernameParam) {
+      setUsername(usernameParam);
+      if (lockedParam === "true") {
+        setUsernameLocked(true);
+      }
+    }
+  }, [searchParams]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -60,7 +77,9 @@ export default function RegisterPage() {
             </svg>
           </div>
           <h1 className="text-3xl font-bold text-white">AgentSkills</h1>
-          <p className="text-gray-400 mt-2">Create your account</p>
+          <p className="text-gray-400 mt-2">
+            {usernameLocked ? "Create system account" : "Create your account"}
+          </p>
         </div>
 
         {/* Register Form */}
@@ -82,9 +101,17 @@ export default function RegisterPage() {
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 required
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
+                disabled={usernameLocked}
+                className={`w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition ${
+                  usernameLocked ? "bg-gray-100 cursor-not-allowed" : ""
+                }`}
                 placeholder="Choose a username"
               />
+              {usernameLocked && (
+                <p className="text-xs text-gray-500 mt-1">
+                  System username is fixed and cannot be changed
+                </p>
+              )}
             </div>
 
             <div>
@@ -140,16 +167,18 @@ export default function RegisterPage() {
               disabled={loading}
               className="w-full bg-blue-600 text-white py-3 rounded-lg font-medium hover:bg-blue-700 focus:ring-4 focus:ring-blue-200 transition disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {loading ? "Creating account..." : "Create account"}
+              {loading ? "Creating account..." : usernameLocked ? "Create system account" : "Create account"}
             </button>
           </form>
 
-          <div className="mt-6 text-center text-sm text-gray-600">
-            Already have an account?{" "}
-            <Link href="/login" className="text-blue-600 hover:text-blue-700 font-medium">
-              Sign in
-            </Link>
-          </div>
+          {!usernameLocked && (
+            <div className="mt-6 text-center text-sm text-gray-600">
+              Already have an account?{" "}
+              <Link href="/login" className="text-blue-600 hover:text-blue-700 font-medium">
+                Sign in
+              </Link>
+            </div>
+          )}
         </div>
 
         <p className="text-center text-gray-500 text-sm mt-8">
