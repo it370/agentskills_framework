@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import DashboardLayout from "../../../components/DashboardLayout";
@@ -8,7 +8,7 @@ import { getAuthHeaders } from "../../../lib/auth";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 
-export default function NewRunPage() {
+function NewRunForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   
@@ -288,6 +288,20 @@ export default function NewRunPage() {
         </div>
       </div>
     </DashboardLayout>
+  );
+}
+
+export default function NewRunPage() {
+  return (
+    <Suspense fallback={
+      <DashboardLayout>
+        <div className="flex items-center justify-center h-screen">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900"></div>
+        </div>
+      </DashboardLayout>
+    }>
+      <NewRunForm />
+    </Suspense>
   );
 }
 

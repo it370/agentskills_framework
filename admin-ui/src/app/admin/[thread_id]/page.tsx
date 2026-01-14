@@ -384,7 +384,7 @@ export default function RunDetailPage() {
                 </button>
               )}
               <button
-                onClick={load}
+                onClick={() => load()}
                 disabled={loading}
                 className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
               >
