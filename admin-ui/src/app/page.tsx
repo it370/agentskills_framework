@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { connectAdminEvents, fetchRuns, rerunWorkflow, getRunMetadata } from "../lib/api";
 import { CheckpointTuple, RunEvent, RunSummary } from "../lib/types";
 import DashboardLayout from "../components/DashboardLayout";
+import ProtectedRoute from "../components/ProtectedRoute";
 
 type RunRow = {
   thread_id: string;
@@ -330,7 +331,8 @@ export default function RunsPage() {
   }, [statusFilter, searchTerm]);
 
   return (
-    <DashboardLayout>
+    <ProtectedRoute>
+      <DashboardLayout>
       <div className="p-8">
         {/* Header */}
         <div className="mb-6">
@@ -765,5 +767,6 @@ export default function RunsPage() {
         )}
       </div>
     </DashboardLayout>
+    </ProtectedRoute>
   );
 }

@@ -1,5 +1,6 @@
 import { CheckpointTuple, RunEvent, RunListResponse, RunSummary } from "./types";
 import { io, Socket } from "socket.io-client";
+import { getAuthHeaders } from "./auth";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") || "http://localhost:8000";
@@ -9,6 +10,7 @@ export const SOCKETIO_BASE =
 export async function fetchRuns(limit = 50): Promise<(CheckpointTuple | RunSummary)[]> {
   const res = await fetch(`${API_BASE}/admin/runs?limit=${limit}`, {
     cache: "no-store",
+    headers: getAuthHeaders(),
   });
   if (!res.ok) {
     throw new Error(`Failed to load runs: ${res.status}`);
@@ -22,6 +24,7 @@ export async function fetchRunDetail(
 ): Promise<CheckpointTuple> {
   const res = await fetch(`${API_BASE}/admin/runs/${threadId}`, {
     cache: "no-store",
+    headers: getAuthHeaders(),
   });
   if (!res.ok) {
     throw new Error(`Run not found: ${threadId}`);
@@ -35,6 +38,7 @@ export async function fetchThreadLogs(
 ): Promise<Array<{ id: number; thread_id: string; message: string; created_at: string; level: string }>> {
   const res = await fetch(`${API_BASE}/admin/runs/${threadId}/logs?limit=${limit}`, {
     cache: "no-store",
+    headers: getAuthHeaders(),
   });
   if (!res.ok) {
     throw new Error(`Failed to fetch logs for thread: ${threadId}`);
@@ -51,6 +55,7 @@ export async function approveStep(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      ...getAuthHeaders(),
     },
     body: updatedData ? JSON.stringify(updatedData) : null,
   });
@@ -67,6 +72,7 @@ export async function rerunWorkflow(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      ...getAuthHeaders(),
     },
   });
   if (!res.ok) {
@@ -94,6 +100,7 @@ export async function getRunMetadata(
 }> {
   const res = await fetch(`${API_BASE}/admin/runs/${threadId}/metadata`, {
     cache: "no-store",
+    headers: getAuthHeaders(),
   });
   if (!res.ok) {
     throw new Error(`Run metadata not found: ${threadId}`);
@@ -201,6 +208,7 @@ export interface Skill {
 export async function fetchSkills(): Promise<{skills: Skill[], count: number}> {
   const res = await fetch(`${API_BASE}/admin/skills`, {
     cache: "no-store",
+    headers: getAuthHeaders(),
   });
   if (!res.ok) {
     throw new Error(`Failed to fetch skills: ${res.status}`);
@@ -211,6 +219,7 @@ export async function fetchSkills(): Promise<{skills: Skill[], count: number}> {
 export async function fetchSkill(name: string): Promise<Skill> {
   const res = await fetch(`${API_BASE}/admin/skills/${encodeURIComponent(name)}`, {
     cache: "no-store",
+    headers: getAuthHeaders(),
   });
   if (!res.ok) {
     throw new Error(`Failed to fetch skill: ${res.status}`);
@@ -221,7 +230,10 @@ export async function fetchSkill(name: string): Promise<Skill> {
 export async function createSkill(skill: Skill): Promise<any> {
   const res = await fetch(`${API_BASE}/admin/skills`, {
     method: "POST",
-    headers: {"Content-Type": "application/json"},
+    headers: {
+      "Content-Type": "application/json",
+      ...getAuthHeaders(),
+    },
     body: JSON.stringify(skill),
   });
   if (!res.ok) {
@@ -252,7 +264,10 @@ export async function createSkill(skill: Skill): Promise<any> {
 export async function updateSkill(name: string, updates: Partial<Skill>): Promise<any> {
   const res = await fetch(`${API_BASE}/admin/skills/${encodeURIComponent(name)}`, {
     method: "PUT",
-    headers: {"Content-Type": "application/json"},
+    headers: {
+      "Content-Type": "application/json",
+      ...getAuthHeaders(),
+    },
     body: JSON.stringify(updates),
   });
   if (!res.ok) {
@@ -283,6 +298,7 @@ export async function updateSkill(name: string, updates: Partial<Skill>): Promis
 export async function deleteSkill(name: string): Promise<any> {
   const res = await fetch(`${API_BASE}/admin/skills/${encodeURIComponent(name)}`, {
     method: "DELETE",
+    headers: getAuthHeaders(),
   });
   if (!res.ok) {
     const error = await res.text();
@@ -294,6 +310,7 @@ export async function deleteSkill(name: string): Promise<any> {
 export async function reloadSkills(): Promise<any> {
   const res = await fetch(`${API_BASE}/admin/skills/reload`, {
     method: "POST",
+    headers: getAuthHeaders(),
   });
   if (!res.ok) {
     const error = await res.text();
