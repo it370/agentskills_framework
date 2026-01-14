@@ -1,9 +1,29 @@
 import os
 import subprocess
 import sys
+import asyncio
+import logging
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+
+# Suppress Windows ProactorEventLoop connection reset errors
+if sys.platform == 'win32':
+    # Suppress "An existing connection was forcibly closed" errors on Windows
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    
+    # Filter out noisy connection errors in asyncio
+    class SuppressConnectionErrors(logging.Filter):
+        def filter(self, record):
+            # Suppress ConnectionResetError from ProactorBasePipeTransport
+            if "ProactorBasePipeTransport" in record.getMessage():
+                return False
+            if "WinError 10054" in record.getMessage():
+                return False
+            return True
+    
+    logging.getLogger("asyncio").addFilter(SuppressConnectionErrors())
 
 
 def run():

@@ -14,6 +14,9 @@ Environment Variables:
 """
 
 import os
+import sys
+import asyncio
+import logging
 from pathlib import Path
 
 import socketio
@@ -28,6 +31,20 @@ from services.websocket import (
     shutdown_event_listeners,
     get_connection_stats,
 )
+
+# Suppress Windows ProactorEventLoop connection reset errors
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    
+    class SuppressConnectionErrors(logging.Filter):
+        def filter(self, record):
+            if "ProactorBasePipeTransport" in record.getMessage():
+                return False
+            if "WinError 10054" in record.getMessage():
+                return False
+            return True
+    
+    logging.getLogger("asyncio").addFilter(SuppressConnectionErrors())
 
 # Load environment
 load_env_once(Path(__file__).resolve().parent)
