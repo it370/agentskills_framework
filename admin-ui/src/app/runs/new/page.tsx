@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import DashboardLayout from "../../../components/DashboardLayout";
+import { getAuthHeaders } from "../../../lib/auth";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 
@@ -67,7 +68,10 @@ export default function NewRunPage() {
     try {
       const response = await fetch(`${API_BASE}/start`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          ...getAuthHeaders(),
+        },
         body: JSON.stringify({
           thread_id: threadId,
           sop: sop,

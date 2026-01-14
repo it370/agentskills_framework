@@ -47,33 +47,41 @@ export default function RunDetailPage() {
     }
   }, [sopFromUrl, initialDataFromUrl, initialConfig]);
 
-  const load = () => {
+  const load = async (retryCount = 0) => {
     setLoading(true);
     
-    // Fetch both run detail and metadata in parallel
-    Promise.all([
-      fetchRunDetail(threadId),
-      getRunMetadata(threadId)
-    ])
-      .then(([runData, metadata]) => {
-        setRun(runData);
+    try {
+      // Fetch both run detail and metadata in parallel
+      const [runData, metadata] = await Promise.all([
+        fetchRunDetail(threadId),
+        getRunMetadata(threadId)
+      ]);
+      
+      setRun(runData);
+      setRunMetadata(metadata);
+      setRunName(metadata?.run_name || threadId);
+      setError(null);
+      setLoading(false);
+    } catch (err: any) {
+      // If run not found and we haven't retried too many times, retry with backoff
+      if (err.message.includes("Run not found") && retryCount < 5) {
+        const delay = Math.min(1000 * Math.pow(2, retryCount), 5000); // Max 5 seconds
+        console.log(`[RunDetail] Run not found, retrying in ${delay}ms (attempt ${retryCount + 1}/5)...`);
+        setTimeout(() => load(retryCount + 1), delay);
+        return;
+      }
+      
+      // After max retries or other errors, try to at least get metadata
+      setError(err.message);
+      try {
+        const metadata = await getRunMetadata(threadId);
         setRunMetadata(metadata);
         setRunName(metadata?.run_name || threadId);
-        setError(null);
-      })
-      .catch((err) => {
-        setError(err.message);
-        // Try to at least get metadata on error
-        getRunMetadata(threadId)
-          .then((metadata) => {
-            setRunMetadata(metadata);
-            setRunName(metadata?.run_name || threadId);
-          })
-          .catch(() => {
-            setRunName(threadId);
-          });
-      })
-      .finally(() => setLoading(false));
+      } catch {
+        setRunName(threadId);
+      }
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
