@@ -12,9 +12,13 @@ from typing import Dict, Any, Optional
 
 # Socket.IO server configuration
 SOCKETIO_PROTOCOL = "https" if os.getenv("SSL_KEYFILE") and os.getenv("SSL_CERTFILE") else "http"
-SOCKETIO_HOST = os.getenv('SOCKETIO_HOST', 'localhost')
+# Use 127.0.0.1 instead of localhost for better compatibility in production
+SOCKETIO_HOST = os.getenv('SOCKETIO_INTERNAL_HOST') or os.getenv('SOCKETIO_HOST', '127.0.0.1')
 SOCKETIO_PORT = os.getenv('SOCKETIO_PORT', '7000')
 SOCKETIO_BASE = f"{SOCKETIO_PROTOCOL}://{SOCKETIO_HOST}:{SOCKETIO_PORT}"
+
+# Log configuration on startup
+print(f"[HTTP_BROADCASTER] Socket.IO endpoint: {SOCKETIO_BASE}")
 
 
 async def broadcast_log(log_data: Dict[str, Any]):
@@ -28,10 +32,16 @@ async def broadcast_log(log_data: Dict[str, Any]):
         # Disable SSL verification for self-signed certificates in development
         verify_ssl = SOCKETIO_PROTOCOL == "http"
         async with httpx.AsyncClient(timeout=2.0, verify=verify_ssl) as client:
-            await client.post(
+            response = await client.post(
                 f"{SOCKETIO_BASE}/internal/broadcast/log",
                 json=log_data
             )
+            response.raise_for_status()
+    except httpx.ConnectError as e:
+        # Socket.IO server is not reachable
+        print(f"[HTTP_BROADCASTER] Cannot reach Socket.IO server at {SOCKETIO_BASE}: {e}")
+    except httpx.TimeoutException:
+        print(f"[HTTP_BROADCASTER] Socket.IO server timeout at {SOCKETIO_BASE}")
     except Exception as e:
         # Fail silently - don't break workflow execution if Socket.IO is down
         print(f"[HTTP_BROADCASTER] Failed to broadcast log: {e}")
@@ -48,10 +58,16 @@ async def broadcast_admin_event(payload: Dict[str, Any]):
         # Disable SSL verification for self-signed certificates in development
         verify_ssl = SOCKETIO_PROTOCOL == "http"
         async with httpx.AsyncClient(timeout=2.0, verify=verify_ssl) as client:
-            await client.post(
+            response = await client.post(
                 f"{SOCKETIO_BASE}/internal/broadcast/admin",
                 json=payload
             )
+            response.raise_for_status()
+    except httpx.ConnectError as e:
+        # Socket.IO server is not reachable
+        print(f"[HTTP_BROADCASTER] Cannot reach Socket.IO server at {SOCKETIO_BASE}: {e}")
+    except httpx.TimeoutException:
+        print(f"[HTTP_BROADCASTER] Socket.IO server timeout at {SOCKETIO_BASE}")
     except Exception as e:
         # Fail silently - don't break workflow execution if Socket.IO is down
         print(f"[HTTP_BROADCASTER] Failed to broadcast admin event: {e}")
