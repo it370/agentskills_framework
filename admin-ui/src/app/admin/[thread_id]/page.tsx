@@ -6,6 +6,7 @@ import Link from "next/link";
 import { connectAdminEvents, connectLogs, fetchRunDetail, fetchThreadLogs, approveStep, getRunMetadata } from "../../../lib/api";
 import { CheckpointTuple, RunEvent } from "../../../lib/types";
 import DashboardLayout from "../../../components/DashboardLayout";
+import RerunContextMenu from "../../../components/RerunContextMenu";
 
 export default function RunDetailPage() {
   const params = useParams();
@@ -420,6 +421,10 @@ export default function RunDetailPage() {
                   HITL Review
                 </button>
               )}
+              <RerunContextMenu
+                threadId={threadId}
+                onError={(err) => setError(err)}
+              />
               <button
                 onClick={() => load()}
                 disabled={loading}
