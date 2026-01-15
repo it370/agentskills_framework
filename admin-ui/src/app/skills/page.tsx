@@ -307,125 +307,127 @@ export default function SkillsPage() {
           </div>
         ) : (
           <>
-            <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Skill Name
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Description
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Executor
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Action Type
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Source
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {paginatedSkills.map((skill) => (
-                    <tr key={skill.name} className="hover:bg-gray-50">
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm font-medium text-gray-900">
-                          {skill.name}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="text-sm text-gray-600 max-w-md truncate">
-                          {skill.description}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span
-                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                            skill.executor === "llm"
-                              ? "bg-purple-100 text-purple-800"
-                              : skill.executor === "rest"
-                              ? "bg-orange-100 text-orange-800"
-                              : "bg-pink-100 text-pink-800"
-                          }`}
-                        >
-                          {skill.executor.toUpperCase()}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        {skill.executor === "action" && skill.action_config?.type ? (
+            <div className="bg-white rounded-lg border border-gray-200">
+              <div className="overflow-x-auto">
+                <table className="min-w-full table-auto divide-y divide-gray-200 min-w-[1000px]">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-[100px] truncate">
+                        Skill Name
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-[320px]">
+                        Description
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Executor
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Action Type
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Source
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Actions
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {paginatedSkills.map((skill) => (
+                      <tr key={skill.name} className="hover:bg-gray-50">
+                        <td className="px-6 py-4 w-[150px]">
+                          <div className="text-sm font-medium text-gray-900 w-[220px] truncate">
+                            {skill.name}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 w-[320px]">
+                          <div className="text-xs text-gray-600 max-w-[320px] truncate">
+                            {skill.description}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
                           <span
                             className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                              skill.action_config.type === "data_query"
-                                ? "bg-cyan-100 text-cyan-800"
-                                : skill.action_config.type === "data_pipeline"
-                                ? "bg-indigo-100 text-indigo-800"
-                                : "bg-teal-100 text-teal-800"
+                              skill.executor === "llm"
+                                ? "bg-purple-100 text-purple-800"
+                                : skill.executor === "rest"
+                                ? "bg-orange-100 text-orange-800"
+                                : "bg-pink-100 text-pink-800"
                             }`}
                           >
-                            {skill.action_config.type === "data_query"
-                              ? "Data Query"
-                              : skill.action_config.type === "data_pipeline"
-                              ? "Pipeline"
-                              : "Python"}
+                            {skill.executor.toUpperCase()}
                           </span>
-                        ) : (
-                          <span className="text-xs text-gray-400">—</span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span
-                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                            skill.source === "database"
-                              ? "bg-green-100 text-green-800"
-                              : "bg-blue-100 text-blue-800"
-                          }`}
-                        >
-                          {skill.source === "database" ? "Database" : "Filesystem"}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm">
-                        <div className="flex items-center gap-2">
-                          <Link
-                            href={`/skills/${encodeURIComponent(skill.name)}`}
-                            className="text-blue-600 hover:text-blue-800"
-                          >
-                            View
-                          </Link>
-                          {skill.source === "database" && (
-                            <>
-                              <span className="text-gray-300">|</span>
-                              <Link
-                                href={`/skills/${encodeURIComponent(
-                                  skill.name
-                                )}/edit`}
-                                className="text-blue-600 hover:text-blue-800"
-                              >
-                                Edit
-                              </Link>
-                              <span className="text-gray-300">|</span>
-                              <button
-                                onClick={() => handleDelete(skill.name)}
-                                disabled={deletingSkill === skill.name}
-                                className="text-red-600 hover:text-red-800 disabled:opacity-50"
-                              >
-                                {deletingSkill === skill.name
-                                  ? "Deleting..."
-                                  : "Delete"}
-                              </button>
-                            </>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          {skill.executor === "action" && skill.action_config?.type ? (
+                            <span
+                              className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                skill.action_config.type === "data_query"
+                                  ? "bg-cyan-100 text-cyan-800"
+                                  : skill.action_config.type === "data_pipeline"
+                                  ? "bg-indigo-100 text-indigo-800"
+                                  : "bg-teal-100 text-teal-800"
+                              }`}
+                            >
+                              {skill.action_config.type === "data_query"
+                                ? "Data Query"
+                                : skill.action_config.type === "data_pipeline"
+                                ? "Pipeline"
+                                : "Python"}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-gray-400">—</span>
                           )}
-                        </div>
-                      </td>
-                    </tr>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span
+                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                              skill.source === "database"
+                                ? "bg-green-100 text-green-800"
+                                : "bg-blue-100 text-blue-800"
+                            }`}
+                          >
+                            {skill.source === "database" ? "Database" : "Filesystem"}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm">
+                          <div className="flex items-center gap-2">
+                            <Link
+                              href={`/skills/${encodeURIComponent(skill.name)}`}
+                              className="text-blue-600 hover:text-blue-800"
+                            >
+                              View
+                            </Link>
+                            {skill.source === "database" && (
+                              <>
+                                <span className="text-gray-300">|</span>
+                                <Link
+                                  href={`/skills/${encodeURIComponent(
+                                    skill.name
+                                  )}/edit`}
+                                  className="text-blue-600 hover:text-blue-800"
+                                >
+                                  Edit
+                                </Link>
+                                <span className="text-gray-300">|</span>
+                                <button
+                                  onClick={() => handleDelete(skill.name)}
+                                  disabled={deletingSkill === skill.name}
+                                  className="text-red-600 hover:text-red-800 disabled:opacity-50"
+                                >
+                                  {deletingSkill === skill.name
+                                    ? "Deleting..."
+                                    : "Delete"}
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
                   ))}
                 </tbody>
               </table>
+              </div>
             </div>
 
             {/* Pagination Controls */}
