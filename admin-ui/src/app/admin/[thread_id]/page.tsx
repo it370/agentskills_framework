@@ -23,6 +23,8 @@ export default function RunDetailPage() {
   const [hitlData, setHitlData] = useState<string>("");
   const [approving, setApproving] = useState(false);
   const logContainerRef = useRef<HTMLDivElement>(null);
+  const postCompleteRefreshDoneRef = useRef(false);
+  const [refreshingAfterComplete, setRefreshingAfterComplete] = useState(false);
   const hasCheckedInitialState = useRef(false);
 
   // Get config from URL params if starting from new run
@@ -177,17 +179,30 @@ export default function RunDetailPage() {
   const status: "pending" | "running" | "paused" | "completed" | "error" =
     (runMetadata?.status as any) || derivedStatus;
 
-  // Debug status detection
-  // useEffect(() => {
-  //   console.log("[RunDetail] Status detection:", {
-  //     status,
-  //     activeSkill,
-  //     isAtHumanReview,
-  //     historyLength: history.length,
-  //     lastHistory: history[history.length - 1],
-  //     branchValue: run?.checkpoint?.channel_values?.["branch:to:human_review"]
-  //   });
-  // }, [status, activeSkill, history, isAtHumanReview, run]);
+  // If we reach a terminal status and are still missing detailed data, fetch once (covers live event after run + hard refresh gaps)
+  useEffect(() => {
+    if (!threadId || !status) return;
+    const isTerminal = status === "completed" || status === "error";
+    const missingCheckpoint = !run?.checkpoint;
+    const missingInitial = !runMetadata;
+    const shouldRefresh =
+      isTerminal &&
+      (missingCheckpoint || missingInitial) &&
+      !postCompleteRefreshDoneRef.current &&
+      !loading;
+
+    if (shouldRefresh) {
+      postCompleteRefreshDoneRef.current = true;
+      setRefreshingAfterComplete(true);
+      loadHistoricalData(threadId)
+        .catch((err) => {
+          console.error("[RunDetail] Failed to refresh after completion:", err);
+        })
+        .finally(() => {
+          setRefreshingAfterComplete(false);
+        });
+    }
+  }, [status, threadId, loadHistoricalData]);
 
   const getStatusConfig = () => {
     switch (status) {
@@ -470,7 +485,20 @@ export default function RunDetailPage() {
             {activeTab === "overview" && (
               <div className="grid gap-6">
                 <div className="bg-white rounded-lg border border-gray-200 p-6">
-                  <h3 className="text-lg font-semibold text-gray-900 mb-4">Summary</h3>
+                  <div className="flex items-center gap-2 mb-4">
+                    <h3 className="text-lg font-semibold text-gray-900">Summary</h3>
+                    {refreshingAfterComplete && (
+                      <span className="inline-flex items-center gap-0.5">
+                        {[0, 1, 2].map((i) => (
+                          <span
+                            key={i}
+                            className="h-3 w-1 bg-blue-500 rounded-full animate-pulse"
+                            style={{ animationDelay: `${i * 120}ms` }}
+                          />
+                        ))}
+                      </span>
+                    )}
+                  </div>
                   <dl className="grid grid-cols-2 gap-4">
                     <div>
                       <dt className="text-sm font-medium text-gray-600">Checkpoint ID</dt>
@@ -518,7 +546,20 @@ export default function RunDetailPage() {
 
             {activeTab === "history" && (
               <div className="bg-white rounded-lg border border-gray-200 p-6">
-                <h3 className="text-lg font-semibold text-gray-900 mb-4">Execution History</h3>
+                <div className="flex items-center gap-2 mb-4">
+                  <h3 className="text-lg font-semibold text-gray-900">Execution History</h3>
+                  {refreshingAfterComplete && (
+                    <span className="inline-flex items-center gap-0.5">
+                      {[0, 1, 2].map((i) => (
+                        <span
+                          key={i}
+                          className="h-3 w-1 bg-blue-500 rounded-full animate-pulse"
+                          style={{ animationDelay: `${i * 120}ms` }}
+                        />
+                      ))}
+                    </span>
+                  )}
+                </div>
                 {history.length === 0 ? (
                   <p className="text-sm text-gray-600">No history events recorded yet.</p>
                 ) : (
@@ -538,7 +579,20 @@ export default function RunDetailPage() {
 
             {activeTab === "data" && (
               <div className="bg-white rounded-lg border border-gray-200 p-6">
-                <h3 className="text-lg font-semibold text-gray-900 mb-4">Data Store</h3>
+                <div className="flex items-center gap-2 mb-4">
+                  <h3 className="text-lg font-semibold text-gray-900">Data Store</h3>
+                  {refreshingAfterComplete && (
+                    <span className="inline-flex items-center gap-0.5">
+                      {[0, 1, 2].map((i) => (
+                        <span
+                          key={i}
+                          className="h-3 w-1 bg-blue-500 rounded-full animate-pulse"
+                          style={{ animationDelay: `${i * 120}ms` }}
+                        />
+                      ))}
+                    </span>
+                  )}
+                </div>
                 <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-auto text-sm font-mono">
                   {JSON.stringify(dataStore, null, 2)}
                 </pre>
