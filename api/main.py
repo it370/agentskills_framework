@@ -466,60 +466,46 @@ async def list_runs(current_user: AuthenticatedUser, limit: int = 50):
     # Try to use the database view for better performance
     db_uri = _get_env_value("DATABASE_URL", "")
     
-    # Use database view if DATABASE_URL is available (works with both direct PostgreSQL and buffered modes)
+    # Use run_metadata if DATABASE_URL is available (works with both direct PostgreSQL and buffered modes)
     if db_uri:
-        # Use database view with pre-computed status
         try:
-            import psycopg
-            
-            def _fetch_from_view():
-                with psycopg.connect(db_uri, autocommit=True) as conn:
+            pool = get_postgres_pool()
+
+            def _fetch_from_metadata():
+                conn = pool.getconn()
+                try:
                     with conn.cursor() as cur:
-                        # Filter by user_id unless admin
                         if current_user.is_admin:
                             cur.execute("""
-                                SELECT 
+                                SELECT
                                     thread_id,
-                                    checkpoint_id,
-                                    checkpoint_ns,
                                     run_name,
-                                    active_skill,
-                                    history_count,
+                                    parent_thread_id,
+                                    rerun_count,
                                     status,
-                                    sop_preview,
                                     created_at,
-                                    updated_at,
-                                    checkpoint,
-                                    metadata,
                                     error_message,
-                                    failed_skill
-                                FROM run_list_view
+                                    failed_skill,
+                                    user_id
+                                FROM run_metadata
                                 ORDER BY created_at DESC NULLS LAST
                                 LIMIT %s
                             """, (limit,))
                         else:
-                            # For non-admin, query run_metadata directly to ensure user ownership
-                            # Then join with view to get checkpoint data
                             cur.execute("""
-                                SELECT 
-                                    r.thread_id,
-                                    r.checkpoint_id,
-                                    r.checkpoint_ns,
-                                    r.run_name,
-                                    r.active_skill,
-                                    r.history_count,
-                                    r.status,
-                                    r.sop_preview,
-                                    r.created_at,
-                                    r.updated_at,
-                                    r.checkpoint,
-                                    r.metadata,
-                                    r.error_message,
-                                    r.failed_skill
-                                FROM run_metadata m
-                                INNER JOIN run_list_view r ON m.thread_id = r.thread_id
-                                WHERE m.user_id = %s
-                                ORDER BY r.created_at DESC NULLS LAST
+                                SELECT
+                                    thread_id,
+                                    run_name,
+                                    parent_thread_id,
+                                    rerun_count,
+                                    status,
+                                    created_at,
+                                    error_message,
+                                    failed_skill,
+                                    user_id
+                                FROM run_metadata
+                                WHERE user_id = %s
+                                ORDER BY created_at DESC NULLS LAST
                                 LIMIT %s
                             """, (current_user.id, limit))
                         
@@ -528,28 +514,27 @@ async def list_runs(current_user: AuthenticatedUser, limit: int = 50):
                         return [
                             {
                                 "thread_id": row[0],
-                                "checkpoint_id": row[1],
-                                "checkpoint_ns": row[2],
-                                "run_name": row[3],
-                                "active_skill": row[4],
-                                "history_count": row[5],
-                                "status": row[6],
-                                "sop_preview": row[7],
-                                "created_at": row[8].isoformat() if row[8] else None,
-                                "updated_at": row[9].isoformat() if row[9] else None,
-                                "checkpoint": row[10],
-                                "metadata": row[11],
-                                "error_message": row[12],
-                                "failed_skill": row[13],
+                                "run_name": row[1],
+                                # "sop": row[2],
+                                # "initial_data": row[3],
+                                "parent_thread_id": row[2],
+                                "rerun_count": row[3],
+                                "status": row[4],
+                                "created_at": row[5].isoformat() if row[5] else None,
+                                "error_message": row[6],
+                                "failed_skill": row[7],
+                                "user_id": row[8],
                             }
                             for row in rows
                         ]
+                finally:
+                    pool.putconn(conn)
             
-            runs = await asyncio.to_thread(_fetch_from_view)
+            runs = await asyncio.to_thread(_fetch_from_metadata)
             return {"runs": runs}
             
         except Exception as e:
-            emit_log(f"[ADMIN] Failed to fetch from view, falling back to checkpointer: {e}")
+            emit_log(f"[ADMIN] Failed to fetch runs from run_metadata, falling back to checkpointer: {e}")
     
     # Fallback to original checkpointer method
     cp = checkpointer

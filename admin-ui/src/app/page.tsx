@@ -23,15 +23,16 @@ type RunRow = {
 function normalizeRun(cp: CheckpointTuple | RunSummary): RunRow {
   // If the API already provided enriched data with status, use it directly
   if ('status' in cp && cp.status) {
+    const summary = cp as RunSummary;
     return {
-      thread_id: cp.thread_id,
-      checkpoint_id: cp.checkpoint_id,
-      active_skill: cp.active_skill || null,
-      updated_at: cp.updated_at,
+      thread_id: summary.thread_id,
+      checkpoint_id: undefined,
+      active_skill: null,
+      updated_at: summary.updated_at || summary.created_at,
       history: [],  // Not needed when status is pre-computed
-      status: cp.status,
-      sop_preview: cp.sop_preview,
-      run_name: cp.run_name,  // Include run_name from API
+      status: summary.status,
+      sop_preview: summary.sop_preview,
+      run_name: summary.run_name,  // Include run_name from API
     };
   }
 

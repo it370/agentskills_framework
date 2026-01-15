@@ -8,19 +8,19 @@ export type CheckpointTuple = {
 
 export type RunSummary = {
   thread_id: string;
-  checkpoint_id?: string;
-  checkpoint_ns?: string;
-  metadata?: Record<string, any>;
-  checkpoint?: Record<string, any>;
-  updated_at?: string;
-  // Enriched fields from view
-  active_skill?: string;
-  history_count?: number;
+  run_name?: string;
+  sop?: string;
+  initial_data?: Record<string, any>;
+  parent_thread_id?: string;
+  rerun_count?: number;
   status?: string;
+  created_at?: string;
+  updated_at?: string;
   sop_preview?: string;
-  run_name?: string;  // Human-friendly name
-  error_message?: string;  // Error message if status is error
-  failed_skill?: string;  // Skill that failed
+  error_message?: string;
+  failed_skill?: string;
+  user_id?: string | number;
+  completed_at?: string;
 };
 
 export type RunEvent = {
