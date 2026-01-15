@@ -190,8 +190,8 @@ export default function EditSkillPage() {
             return;
           }
           updates.action_config.function = functionName.trim();
-          // Set module name for inline Python functions
-          updates.action_config.module = `dynamic_skills.${skillName}`;
+          // Module name will be set automatically from the sanitized skill name by the backend
+          // The backend uses module_name field which is auto-generated from name
           updates.action_code = actionCodeOrQuery;
         }
       }

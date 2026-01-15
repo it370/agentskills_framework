@@ -105,7 +105,11 @@ def load_skills_from_database() -> List[Dict[str, Any]]:
                                     if not function_name:
                                         raise ValueError("action_config must include 'function' field specifying the function name to call")
                                     
+                                    # Register the function with the module_name
                                     _register_inline_action(module_name, function_name, action_code)
+                                    
+                                    # Update action_config to use correct module path
+                                    action_config["module"] = f"dynamic_skills.{module_name}"
                                 except Exception as e:
                                     print(f"[SKILL_DB] WARNING: Failed to register action code for '{name}': {e}")
                                     print(f"[SKILL_DB] Skill '{name}' will still load but may fail at runtime")
