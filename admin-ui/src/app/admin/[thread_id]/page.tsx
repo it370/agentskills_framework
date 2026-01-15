@@ -48,38 +48,44 @@ export default function RunDetailPage() {
   }, [sopFromUrl, initialDataFromUrl, initialConfig]);
 
   const load = async (retryCount = 0) => {
-    setLoading(true);
+    // Only show loading overlay on initial load or full reload
+    if (retryCount === 0) {
+      setLoading(true);
+    }
     
     try {
-      // Fetch both run detail and metadata in parallel
-      const [runData, metadata] = await Promise.all([
-        fetchRunDetail(threadId),
-        getRunMetadata(threadId)
-      ]);
-      
-      setRun(runData);
+      // STRATEGY: Fetch metadata first (fast, available shortly after ACK)
+      // Retry if not available yet with exponential backoff
+      const metadata = await getRunMetadata(threadId);
       setRunMetadata(metadata);
       setRunName(metadata?.run_name || threadId);
-      setError(null);
+      
+      // Remove loading overlay immediately - we have enough to render
       setLoading(false);
+      setError(null);
+      
+      // Now try to fetch checkpoint data (may not exist yet for new runs)
+      try {
+        const runData = await fetchRunDetail(threadId);
+        setRun(runData);
+      } catch (checkpointErr: any) {
+        // Checkpoint not ready yet - this is normal for new runs
+        // It will be updated via real-time events when available
+        console.log("[RunDetail] Checkpoint not available yet, will update via events");
+      }
     } catch (err: any) {
-      // If run not found and we haven't retried too many times, retry with backoff
-      if (err.message.includes("Run not found") && retryCount < 5) {
-        const delay = Math.min(1000 * Math.pow(2, retryCount), 5000); // Max 5 seconds
-        console.log(`[RunDetail] Run not found, retrying in ${delay}ms (attempt ${retryCount + 1}/5)...`);
+      // Metadata fetch failed - retry with backoff if it's a new run
+      if ((err.message.includes("not found") || err.message.includes("404")) && retryCount < 5) {
+        const delay = Math.min(500 * Math.pow(2, retryCount), 3000); // Max 3 seconds
+        console.log(`[RunDetail] Metadata not found, retrying in ${delay}ms (attempt ${retryCount + 1}/5)...`);
         setTimeout(() => load(retryCount + 1), delay);
         return;
       }
       
-      // After max retries or other errors, try to at least get metadata
+      // After max retries or other errors, show error but keep trying via events
+      console.error("[RunDetail] Failed to load metadata after retries:", err);
       setError(err.message);
-      try {
-        const metadata = await getRunMetadata(threadId);
-        setRunMetadata(metadata);
-        setRunName(metadata?.run_name || threadId);
-      } catch {
-        setRunName(threadId);
-      }
+      setRunName(threadId);
       setLoading(false);
     }
   };
@@ -93,7 +99,17 @@ export default function RunDetailPage() {
     // Set up real-time updates (Pusher or Socket.IO)
     const connection = connectAdminEvents((evt: RunEvent) => {
       if (evt.thread_id === threadId) {
-        load(); // Reload on any checkpoint update
+        // Only reload on meaningful events, not on every event
+        // ACK and run_started don't need reload (just starting)
+        // status_updated needs reload to update the status display
+        const shouldReload = evt.type === 'status_updated';
+        
+        if (shouldReload) {
+          console.log("[RunDetail] Reloading due to event:", evt.type);
+          load(); // Reload on status changes
+        } else {
+          console.log("[RunDetail] Ignoring event for reload:", evt.type);
+        }
       }
     });
     return () => { 
@@ -116,7 +132,8 @@ export default function RunDetailPage() {
           timestamp: new Date(log.created_at),
           threadId: log.thread_id
         }));
-        setLogs(convertedLogs);
+        // PREPEND historical logs to existing logs (don't replace)
+        setLogs((prev) => [...convertedLogs, ...prev]);
         setHistoricalLogsLoaded(true);
       })
       .catch((err) => {
@@ -215,6 +232,8 @@ export default function RunDetailPage() {
   }, [logs.length, threadLogs.length, threadId, logs]);
 
   const status: "pending" | "running" | "paused" | "completed" | "error" = 
+    // If we don't have checkpoint data yet, show as pending/initializing
+    !run ? "pending" :
     // PRIORITY 1: Check if workflow failed
     isFailedRun ? "error" :
     // PRIORITY 2: Check for END state
@@ -462,7 +481,7 @@ export default function RunDetailPage() {
         </div>
 
         {/* Content */}
-        {loading && !run ? (
+        {loading ? (
           <div className="flex items-center justify-center py-16">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900"></div>
           </div>

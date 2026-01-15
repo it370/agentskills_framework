@@ -72,14 +72,18 @@ export async function approveStep(
 }
 
 export async function rerunWorkflow(
-  threadId: string
-): Promise<{ status: string; thread_id: string; parent_thread_id: string; rerun_count: number }> {
+  threadId: string,
+  ackKey?: string
+): Promise<{ status: string; thread_id: string; parent_thread_id: string; rerun_count: number; run_name?: string }> {
   const res = await fetch(`${API_BASE}/rerun/${threadId}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...getAuthHeaders(),
     },
+    body: JSON.stringify({
+      ack_key: ackKey,
+    }),
   });
   if (!res.ok) {
     const errorText = await res.text();

@@ -24,10 +24,14 @@ export type RunSummary = {
 };
 
 export type RunEvent = {
+  type?: string;  // Event type: 'ack', 'run_started', 'status_updated', etc.
   thread_id?: string;
   checkpoint_id?: string;
   checkpoint_ns?: string;
   metadata?: Record<string, any>;
+  status?: string;  // For status_updated events
+  run_name?: string;  // For ack and run_started events
+  event?: string;  // Legacy field name (some events use 'event' instead of 'type')
 };
 
 export type RunListResponse = { runs: (CheckpointTuple | RunSummary)[] };

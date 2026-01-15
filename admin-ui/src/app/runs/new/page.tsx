@@ -22,6 +22,7 @@ function NewRunForm() {
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [ackUnsubscribe, setAckUnsubscribe] = useState<(() => void) | null>(null);
 
   // Pre-populate from sessionStorage (for Edit and Rerun) or query params (legacy)
   useEffect(() => {
@@ -61,6 +62,16 @@ function NewRunForm() {
     }
   }, [searchParams]);
 
+  // Cleanup ACK listener on unmount
+  useEffect(() => {
+    return () => {
+      if (ackUnsubscribe) {
+        console.log("[NewRun] Component unmounting, cleaning up ACK listener");
+        ackUnsubscribe();
+      }
+    };
+  }, [ackUnsubscribe]);
+
   const generateThreadId = () => {
     if (typeof window !== "undefined" && window.crypto?.randomUUID) {
       return `thread_${window.crypto.randomUUID()}`;
@@ -82,7 +93,23 @@ function NewRunForm() {
     }
 
     const threadId = generateThreadId();
-    console.log("[NewRun] Starting thread:", threadId);
+    const ackKey = `ack_${crypto.randomUUID()}`;
+    console.log("[NewRun] Starting thread:", threadId, "with ack_key:", ackKey);
+
+    // Subscribe to ACK event via global event bus
+    const { adminEvents } = await import("../../../lib/adminEvents");
+    
+    const unsubscribe = adminEvents.once('ack', (event: any) => {
+      if (event.ack_key === ackKey) {
+        console.log("[NewRun] ✅ ACK received! Redirecting immediately...");
+        setAckUnsubscribe(null);  // Clear reference since we're done
+        // Redirect IMMEDIATELY on ACK
+        window.location.href = `/admin/${threadId}`;
+      }
+    });
+    
+    // Store unsubscribe function so it can be cleaned up on unmount
+    setAckUnsubscribe(() => unsubscribe);
 
     try {
       const response = await fetch(`${API_BASE}/start`, {
@@ -95,26 +122,24 @@ function NewRunForm() {
           thread_id: threadId,
           sop: sop,
           initial_data: parsedData,
-          run_name: runName.trim() || undefined,  // Send only if provided
+          run_name: runName.trim() || undefined,
+          ack_key: ackKey,  // Send ACK key
         }),
       });
 
       console.log("[NewRun] Response status:", response.status);
 
       if (!response.ok) {
+        unsubscribe();  // Clean up listener on error
+        setAckUnsubscribe(null);
         const errorText = await response.text();
         throw new Error(`Start failed: ${response.status} - ${errorText}`);
       }
 
+      // Response received, waiting for ACK via global Pusher connection
       const result = await response.json();
-      console.log("[NewRun] Start result:", result);
-
-      // Redirect to admin page (data will be loaded from database)
-      const redirectUrl = `/admin/${threadId}`;
-      console.log("[NewRun] Redirecting to:", redirectUrl);
+      console.log("[NewRun] HTTP response received:", result, "- waiting for ACK...");
       
-      // Force navigation
-      window.location.href = redirectUrl;
     } catch (err: any) {
       console.error("[NewRun] Error:", err);
       setError(err.message || "Failed to start run");

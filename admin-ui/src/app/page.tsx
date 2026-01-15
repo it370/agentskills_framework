@@ -190,11 +190,35 @@ export default function RunsPage() {
     
     setRerunningThreadId(threadId);
     try {
-      const result = await rerunWorkflow(threadId);
-      console.log("[Rerun] Success:", result);
+      // Generate ACK key for instant redirect
+      const ackKey = `ack_${crypto.randomUUID()}`;
+      console.log("[Rerun] Starting rerun with ack_key:", ackKey);
       
-      // Navigate to the new thread
-      router.push(`/admin/${result.thread_id}`);
+      // Subscribe to ACK event via global event bus
+      const { adminEvents } = await import("../lib/adminEvents");
+      
+      let ackReceived = false;
+      const unsubscribe = adminEvents.once('ack', (event: any) => {
+        if (event.ack_key === ackKey) {
+          console.log("[Rerun] ✅ ACK received! Redirecting immediately...");
+          ackReceived = true;
+          // Redirect IMMEDIATELY on ACK
+          router.push(`/admin/${event.thread_id}`);
+        }
+      });
+      
+      // Call rerun API with ACK key (backend will send ACK via Pusher)
+      const result = await rerunWorkflow(threadId, ackKey);
+      console.log("[Rerun] HTTP response:", result);
+      
+      // If ACK hasn't arrived yet, wait a bit then redirect (fallback)
+      if (!ackReceived) {
+        console.log("[Rerun] ACK not received, redirecting via HTTP response");
+        setTimeout(() => {
+          unsubscribe();
+          router.push(`/admin/${result.thread_id}`);
+        }, 100);
+      }
     } catch (err: any) {
       console.error("[Rerun] Error:", err);
       alert(`Failed to rerun: ${err.message}`);

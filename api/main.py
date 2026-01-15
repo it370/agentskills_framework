@@ -60,9 +60,40 @@ class StartRequest(BaseModel):
     sop: str
     initial_data: Dict[str, Any]
     run_name: Optional[str] = None  # Human-friendly name (optional)
+    ack_key: Optional[str] = None  # Unique key for ACK handshake
 
 @api.post("/start")
 async def start_process(req: StartRequest, current_user: AuthenticatedUser):
+    """
+    Start a workflow with ACK handshake for instant UI feedback.
+    
+    Flow:
+    1. Send ACK via Pusher immediately (UI can redirect)
+    2. Save metadata and create checkpoint
+    3. Run workflow (sends progress updates via Pusher)
+    4. Return response
+    """
+    # Use run_name if provided, otherwise default to thread_id
+    run_name = req.run_name if req.run_name and req.run_name.strip() else req.thread_id
+    
+    # STEP 1: Save metadata FIRST (so it's available when UI fetches after redirect)
+    await _save_run_metadata(req.thread_id, req.sop, req.initial_data, run_name=run_name, user_id=current_user.id)
+    
+    # STEP 2: Send ACK via Pusher (UI will receive and redirect)
+    if req.ack_key:
+        await publish_log(f"[API] Sending ACK for thread={req.thread_id} with ack_key={req.ack_key}", req.thread_id)
+        await broadcast_run_event({
+            "type": "ack",
+            "ack_key": req.ack_key,
+            "thread_id": req.thread_id,
+            "run_name": run_name,
+            "status": "accepted"
+        })
+        await publish_log(f"[API] ACK sent successfully", req.thread_id)
+    else:
+        await publish_log(f"[API] No ack_key provided, skipping ACK", req.thread_id)
+    
+    # STEP 3: Create initial checkpoint
     config = {"configurable": {"thread_id": req.thread_id}}
     initial_state = {
         "layman_sop": req.sop,
@@ -70,17 +101,26 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
         "history": ["Process Started"],
         "thread_id": req.thread_id,
     }
+    await app.aupdate_state(config, initial_state)
+    
+    # STEP 4: Broadcast workflow started event
+    await broadcast_run_event({
+        "type": "run_started",
+        "thread_id": req.thread_id,
+        "run_name": run_name,
+        "user": current_user.username
+    })
+    
+    # Set log context
+    set_log_context(req.thread_id)
+    
+    # STEP 5: Log start
     await publish_log(f"[API] Start requested for thread={req.thread_id} by user={current_user.username}", req.thread_id)
     
-    # Use run_name if provided, otherwise default to thread_id
-    run_name = req.run_name if req.run_name and req.run_name.strip() else req.thread_id
-    
-    # Save run metadata to database for rerun functionality
-    await _save_run_metadata(req.thread_id, req.sop, req.initial_data, run_name=run_name, user_id=current_user.id)
-    
-    # Run the workflow in the background to avoid blocking the response
+    # STEP 6: Run workflow (will send progress updates via Pusher)
     asyncio.create_task(_run_workflow(initial_state, config))
     
+    # STEP 7: Return response
     return {"status": "started", "thread_id": req.thread_id, "run_name": run_name}
 
 
@@ -192,7 +232,7 @@ async def _update_run_status(thread_id: str, status: str, error_message: Optiona
         await broadcast_run_event({
             "thread_id": thread_id,
             "status": status,
-            "event": "status_updated"
+            "type": "status_updated",
         })
     except Exception as e:
         emit_log(f"[API] Failed to update run status: {e}")
@@ -223,7 +263,7 @@ async def _update_run_status(thread_id: str, status: str, error_message: Optiona
         await broadcast_run_event({
             "thread_id": thread_id,
             "status": status,
-            "event": "status_updated"
+            "type": "status_updated",
         })
     except Exception as e:
         emit_log(f"[API] Failed to update run status: {e}")
@@ -572,11 +612,19 @@ async def get_run_metadata_endpoint(thread_id: str, current_user: AuthenticatedU
     return metadata
 
 
+class RerunRequest(BaseModel):
+    ack_key: Optional[str] = None  # Unique key for ACK handshake
+
 @api.post("/rerun/{thread_id}")
-async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser):
+async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: RerunRequest = Body(default=RerunRequest())):
     """
-    Rerun a workflow with the same inputs as a previous run.
-    Creates a new thread with the same SOP and initial data.
+    Rerun a workflow with ACK handshake for instant UI feedback.
+    
+    Flow:
+    1. Send ACK via Pusher immediately (UI can redirect)
+    2. Save metadata and create checkpoint
+    3. Run workflow (sends progress updates via Pusher)
+    4. Return response
     """
     import uuid
     import re
@@ -589,21 +637,45 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser):
     if not metadata:
         raise HTTPException(status_code=404, detail="Original run not found")
     
-    # Generate new thread ID with fresh GUID (no suffix appending)
+    # Generate new thread ID with fresh GUID
     new_thread_id = f"thread_{uuid.uuid4()}"
     
     # Generate new run name based on original
     original_run_name = metadata.get('run_name', thread_id)
-    
-    # Strip any existing "(Rerun #N)" suffix to avoid duplication
     base_run_name = re.sub(r'\s*\(Rerun #\d+\)\s*$', '', original_run_name).strip()
-    
-    # Add the new rerun suffix
     new_run_name = f"{base_run_name} (Rerun #{metadata['rerun_count'] + 1})"
     
-    await publish_log(f"[API] Rerun requested from thread={thread_id} -> new thread={new_thread_id} by user={current_user.username}")
+    # STEP 1: Save metadata FIRST (so it's available when UI fetches after redirect)
+    await _save_run_metadata(
+        new_thread_id,
+        metadata["sop"],
+        metadata["initial_data"],
+        parent_thread_id=thread_id,
+        run_name=new_run_name,
+        user_id=current_user.id
+    )
     
-    # Create new run with same inputs
+    # STEP 2: Send ACK via Pusher (UI will receive and redirect)
+    if req.ack_key:
+        await broadcast_run_event({
+            "type": "ack",
+            "ack_key": req.ack_key,
+            "thread_id": new_thread_id,
+            "run_name": new_run_name,
+            "parent_thread_id": thread_id,
+            "status": "accepted"
+        })
+    else:
+        # Legacy: Send ACK without ack_key for backward compatibility
+        await broadcast_run_event({
+            "type": "ack",
+            "thread_id": new_thread_id,
+            "run_name": new_run_name,
+            "parent_thread_id": thread_id,
+            "status": "accepted"
+        })
+    
+    # STEP 3: Create initial checkpoint
     config = {"configurable": {"thread_id": new_thread_id}}
     initial_state = {
         "layman_sop": metadata["sop"],
@@ -611,20 +683,27 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser):
         "history": [f"Process Started (Rerun from {base_run_name})"],
         "thread_id": new_thread_id,
     }
+    await app.aupdate_state(config, initial_state)
     
-    # Save metadata with parent reference and new run name
-    await _save_run_metadata(
-        new_thread_id, 
-        metadata["sop"], 
-        metadata["initial_data"], 
-        parent_thread_id=thread_id,
-        run_name=new_run_name,
-        user_id=current_user.id
-    )
+    # STEP 4: Broadcast workflow started event
+    await broadcast_run_event({
+        "type": "run_started",
+        "thread_id": new_thread_id,
+        "run_name": new_run_name,
+        "parent_thread_id": thread_id,
+        "user": current_user.username
+    })
     
-    # Start the workflow
+    # Set log context
+    set_log_context(new_thread_id)
+    
+    # STEP 5: Log start
+    await publish_log(f"[API] Rerun requested from thread={thread_id} -> new thread={new_thread_id} by user={current_user.username}", new_thread_id)
+    
+    # STEP 6: Run workflow (will send progress updates via Pusher)
     asyncio.create_task(_run_workflow(initial_state, config))
     
+    # STEP 7: Return response
     return {
         "status": "started",
         "thread_id": new_thread_id,
