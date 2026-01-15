@@ -101,10 +101,10 @@ function NewRunForm() {
     
     const unsubscribe = adminEvents.once('ack', (event: any) => {
       if (event.ack_key === ackKey) {
-        console.log("[NewRun] ✅ ACK received! Redirecting immediately...");
+        console.log("[NewRun] ✅ ACK received! Redirecting to thread page...");
         setAckUnsubscribe(null);  // Clear reference since we're done
-        // Redirect IMMEDIATELY on ACK
-        window.location.href = `/admin/${threadId}`;
+        // Use Next.js router for client-side navigation (preserves console logs)
+        router.push(`/admin/${threadId}`);
       }
     });
     
