@@ -1147,7 +1147,13 @@ async def _execute_redis_query(cfg: ActionConfig, inputs: Dict[str, Any]) -> Dic
     raise NotImplementedError("Redis data source not yet implemented")
 
 
-async def _execute_pipeline_step(step: Dict[str, Any], context: Dict[str, Any], step_idx: int) -> Dict[str, Any]:
+async def _execute_pipeline_step(
+    step: Dict[str, Any],
+    context: Dict[str, Any],
+    step_idx: int,
+    default_credential_ref: Optional[str] = None,
+    default_db_config_file: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Execute a single pipeline step and return the outputs to be merged into context.
     Returns dict with output_key -> value mappings.
@@ -1160,6 +1166,13 @@ async def _execute_pipeline_step(step: Dict[str, Any], context: Dict[str, Any], 
         source = step.get("source")
         if not source:
             raise ValueError(f"Pipeline step {step_idx} ({step_name}): 'query' type requires 'source'")
+        credential_ref = step.get("credential_ref") or default_credential_ref
+        if not credential_ref:
+            raise ValueError(
+                f"Pipeline step {step_idx} ({step_name}): 'query' type requires 'credential_ref' "
+                f"to enforce secure connections"
+            )
+        db_config_file = step.get("db_config_file") or default_db_config_file
         
         # Create temporary ActionConfig for the query
         query_cfg = ActionConfig(
@@ -1167,7 +1180,9 @@ async def _execute_pipeline_step(step: Dict[str, Any], context: Dict[str, Any], 
             source=source,
             query=step.get("query"),
             collection=step.get("collection"),
-            filter=step.get("filter")
+            filter=step.get("filter"),
+            credential_ref=credential_ref,
+            db_config_file=db_config_file,
         )
         result = await _execute_data_query(query_cfg, context)
         
@@ -1268,7 +1283,13 @@ async def _execute_pipeline_step(step: Dict[str, Any], context: Dict[str, Any], 
         
         # Execute all parallel steps concurrently
         parallel_tasks = [
-            _execute_pipeline_step(substep, context, f"{step_idx}.{sub_idx}")
+            _execute_pipeline_step(
+                substep,
+                context,
+                f"{step_idx}.{sub_idx}",
+                default_credential_ref=default_credential_ref,
+                default_db_config_file=default_db_config_file,
+            )
             for sub_idx, substep in enumerate(parallel_steps)
         ]
         
@@ -1302,7 +1323,13 @@ async def _execute_data_pipeline(cfg: ActionConfig, inputs: Dict[str, Any]) -> D
     
     for step_idx, step in enumerate(cfg.steps):
         # Execute step and get outputs
-        step_outputs = await _execute_pipeline_step(step, context, step_idx)
+        step_outputs = await _execute_pipeline_step(
+            step,
+            context,
+            step_idx,
+            default_credential_ref=cfg.credential_ref,
+            default_db_config_file=cfg.db_config_file,
+        )
         
         # Merge outputs into context (auto-merge at top level)
         context.update(step_outputs)

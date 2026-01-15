@@ -596,7 +596,6 @@ export default function EditSkillPage() {
                             const template = `\n  - type: query
     name: my_query
     source: postgres
-    credential_ref: postgres_aiven_cloud_db
     query: "SELECT * FROM table WHERE id = {param}"
     output: query_result\n`;
                             setActionCodeOrQuery(actionCodeOrQuery + template);
