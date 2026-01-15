@@ -14,7 +14,7 @@ from env_loader import load_env_once
 import psycopg
 
 
-def apply_schema(conn, schema_file: Path, description: str):
+def apply_schema(conn, schema_file: Path, description: str, is_checkpoint_schema: bool = False):
     """Apply a single schema file."""
     if not schema_file.exists():
         print(f"WARNING: {schema_file.name} not found, skipping")
@@ -28,14 +28,45 @@ def apply_schema(conn, schema_file: Path, description: str):
     
     try:
         with conn.cursor() as cur:
-            cur.execute(schema_sql)
+            if is_checkpoint_schema:
+                # Split and execute checkpoint schema in parts
+                # Tables first (can be in transaction)
+                tables_sql = []
+                concurrent_indexes = []
+                
+                for line in schema_sql.split('\n'):
+                    if 'CREATE INDEX CONCURRENTLY' in line.upper():
+                        concurrent_indexes.append(line)
+                    else:
+                        tables_sql.append(line)
+                
+                # Execute table creation
+                if tables_sql:
+                    cur.execute('\n'.join(tables_sql))
+                    print(f"[OK] Checkpoint tables created")
+                
+                # Execute concurrent indexes separately (already in autocommit mode)
+                for idx_sql in concurrent_indexes:
+                    if idx_sql.strip():
+                        try:
+                            cur.execute(idx_sql)
+                        except Exception as idx_e:
+                            # Ignore if index already exists
+                            if "already exists" not in str(idx_e).lower():
+                                print(f"[WARN] Index creation warning: {idx_e}")
+                
+                if concurrent_indexes:
+                    print(f"[OK] Checkpoint indexes created")
+            else:
+                cur.execute(schema_sql)
+            
             print(f"[OK] {description} applied successfully")
             return True
     except Exception as e:
         error_msg = str(e)
-        # Checkpoints schema may fail if already exists - that's okay
-        if "already exists" in error_msg.lower() or "cannot run inside a transaction" in error_msg.lower():
-            print(f"[SKIP] {description} already exists or requires special handling")
+        # Schema may fail if already exists - that's okay
+        if "already exists" in error_msg.lower():
+            print(f"[SKIP] {description} already exists")
             return True  # Count as success
         print(f"[FAIL] Failed to apply {description}: {e}")
         return False
@@ -61,17 +92,17 @@ def main():
     # Note: Migrations are included for new installations
     # For existing databases, run migrations separately if needed
     schemas = [
-        (db_dir / "checkpoints_schema.sql", "Checkpoints schema (LangGraph)"),
-        (db_dir / "logs_schema.sql", "Thread logs schema"),
-        (db_dir / "run_metadata_schema.sql", "Run metadata schema (for reruns)"),
-        (db_dir / "add_status_columns_migration.sql", "Status tracking columns (migration)"),
-        (db_dir / "add_run_name_migration.sql", "Run name column (migration)"),
-        (db_dir / "add_paused_status_migration.sql", "Paused status support (migration)"),
-        (db_dir / "dynamic_skills_schema.sql", "Dynamic skills schema (UI skill builder)"),
-        (db_dir / "add_action_functions_column.sql", "Action functions column (migration)"),
-        (db_dir / "users_schema.sql", "User management schema (authentication)"),
-        (db_dir / "add_user_tracking_migration.sql", "User tracking migration (user_id columns)"),
-        (db_dir / "run_list_view.sql", "Run list view with computed status"),
+        (db_dir / "checkpoints_schema.sql", "Checkpoints schema (LangGraph)", True),  # Special handling
+        (db_dir / "logs_schema.sql", "Thread logs schema", False),
+        (db_dir / "run_metadata_schema.sql", "Run metadata schema (for reruns)", False),
+        (db_dir / "add_status_columns_migration.sql", "Status tracking columns (migration)", False),
+        (db_dir / "add_run_name_migration.sql", "Run name column (migration)", False),
+        (db_dir / "add_paused_status_migration.sql", "Paused status support (migration)", False),
+        (db_dir / "dynamic_skills_schema.sql", "Dynamic skills schema (UI skill builder)", False),
+        (db_dir / "add_action_functions_column.sql", "Action functions column (migration)", False),
+        (db_dir / "users_schema.sql", "User management schema (authentication)", False),
+        (db_dir / "add_user_tracking_migration.sql", "User tracking migration (user_id columns)", False),
+        (db_dir / "run_list_view.sql", "Run list view with computed status", False),
     ]
     
     print(f"\nConnecting to database...")
@@ -82,8 +113,8 @@ def main():
         with psycopg.connect(db_uri, autocommit=True) as conn:
             print(f"[OK] Connected successfully")
             
-            for schema_file, description in schemas:
-                if apply_schema(conn, schema_file, description):
+            for schema_file, description, is_checkpoint in schemas:
+                if apply_schema(conn, schema_file, description, is_checkpoint):
                     success_count += 1
             
             # Summary
@@ -144,9 +175,36 @@ def main():
                     system_user_exists = cur.fetchone()[0] > 0
                     
                     if not system_user_exists:
-                        print("NOTE: User management schema applied but no system user created.")
-                        print("      Run 'python db/apply_user_schema.py' to create default system user")
-                        print("      with a generated password, or register users via /auth/register\n")
+                        print("\n[USER] Creating default system user...")
+                        try:
+                            import secrets
+                            import bcrypt
+                            
+                            default_password = secrets.token_urlsafe(16)
+                            salt = bcrypt.gensalt()
+                            hashed = bcrypt.hashpw(default_password.encode('utf-8'), salt)
+                            
+                            cur.execute("""
+                                INSERT INTO users (username, email, password_hash, is_active, is_admin)
+                                VALUES ('system', 'system@localhost', %s, TRUE, TRUE)
+                                RETURNING id
+                            """, (hashed.decode('utf-8'),))
+                            
+                            user_id = cur.fetchone()[0]
+                            print(f"[USER] ✓ System user created (ID: {user_id})")
+                            print(f"[USER] Default username: system")
+                            print(f"[USER] Default password: {default_password}")
+                            print(f"[USER] IMPORTANT: Please change this password immediately!")
+                            print(f"[USER]            Login and use /auth/change-password endpoint\n")
+                        except ImportError as imp_e:
+                            print(f"[WARN] Could not create system user: {imp_e}")
+                            print(f"       Install 'bcrypt' package: pip install bcrypt")
+                            print(f"       Or run 'python db/apply_user_schema.py' to create it later\n")
+                        except Exception as user_e:
+                            print(f"[WARN] Could not create system user: {user_e}")
+                            print(f"       Run 'python db/apply_user_schema.py' to create it later\n")
+                    else:
+                        print(f"[USER] ✓ System user already exists\n")
             
             if success_count < total_count:
                 print(f"WARNING: Some schemas failed to apply")
