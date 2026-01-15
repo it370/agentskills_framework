@@ -1,11 +1,17 @@
 import { CheckpointTuple, RunEvent, RunListResponse, RunSummary } from "./types";
 import { io, Socket } from "socket.io-client";
+import Pusher from "pusher-js";
 import { getAuthHeaders } from "./auth";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") || "http://localhost:8000";
 export const SOCKETIO_BASE =
   process.env.NEXT_PUBLIC_SOCKETIO_BASE?.replace(/\/$/, "") || "http://localhost:7000";
+
+// Pusher configuration
+const PUSHER_KEY = process.env.NEXT_PUBLIC_PUSHER_KEY || "";
+const PUSHER_CLUSTER = process.env.NEXT_PUBLIC_PUSHER_CLUSTER || "ap2";
+const USE_PUSHER = process.env.NEXT_PUBLIC_USE_PUSHER === "true" || !!PUSHER_KEY;
 
 export async function fetchRuns(limit = 50): Promise<(CheckpointTuple | RunSummary)[]> {
   const res = await fetch(`${API_BASE}/admin/runs?limit=${limit}`, {
@@ -109,67 +115,130 @@ export async function getRunMetadata(
 }
 
 
-export function connectAdminEvents(onEvent: (event: RunEvent) => void): Socket {
-  // Connect directly to the /admin namespace
-  const socket = io(`${SOCKETIO_BASE}/admin`, {
-    path: "/socket.io/",
-    transports: ["websocket", "polling"],
-    reconnection: true,
-  });
-  
-  socket.on("connect", () => {
-    console.log("[SOCKETIO] Admin events connected");
-  });
-
-  socket.on("admin_event", (data: any) => {
-    try {
-      if (data?.type === "run_event" && data.data) {
-        onEvent(data.data as RunEvent);
+export function connectAdminEvents(onEvent: (event: RunEvent) => void): { disconnect: () => void } {
+  if (USE_PUSHER) {
+    // Use Pusher
+    const pusher = new Pusher(PUSHER_KEY, {
+      cluster: PUSHER_CLUSTER,
+      enabledTransports: ['ws', 'wss'],
+      forceTLS: true,
+    });
+    
+    const channel = pusher.subscribe('admin');
+    
+    channel.bind('admin_event', (data: any) => {
+      try {
+        if (data?.type === "run_event" && data.data) {
+          onEvent(data.data as RunEvent);
+        }
+      } catch (e) {
+        console.warn("[PUSHER] Failed to parse admin event", e);
       }
-    } catch (e) {
-      console.warn("Failed to parse admin event", e);
-    }
-  });
+    });
+    
+    channel.bind('pusher:subscription_error', (error: any) => {
+      console.error("[PUSHER] Admin events subscription error:", error);
+    });
+    
+    pusher.connection.bind('error', (err: any) => {
+      console.error("[PUSHER] Connection error:", err);
+    });
+    
+    return {
+      disconnect: () => {
+        channel.unbind_all();
+        channel.unsubscribe();
+        pusher.disconnect();
+      }
+    };
+  } else {
+    // Use Socket.IO (fallback/legacy)
+    const socket = io(`${SOCKETIO_BASE}/admin`, {
+      path: "/socket.io/",
+      transports: ["websocket", "polling"],
+      reconnection: true,
+    });
 
-  socket.on("disconnect", () => {
-    console.log("[SOCKETIO] Admin events disconnected");
-  });
+    socket.on("admin_event", (data: any) => {
+      try {
+        if (data?.type === "run_event" && data.data) {
+          onEvent(data.data as RunEvent);
+        }
+      } catch (e) {
+        console.warn("Failed to parse admin event", e);
+      }
+    });
 
-  return socket;
+    return {
+      disconnect: () => socket.disconnect()
+    };
+  }
 }
 
-export function connectLogs(onLog: (line: string, threadId?: string) => void): Socket {
-  // Connect directly to the /logs namespace
-  const socket = io(`${SOCKETIO_BASE}/logs`, {
-    path: "/socket.io/",
-    transports: ["websocket", "polling"],
-    reconnection: true,
-  });
-  
-  socket.on("connect", () => {
-    console.log("[SOCKETIO] Logs connected");
-  });
-  
-  socket.on("log", (data: any) => {
-    console.log("[SOCKETIO] Log received:", data);
-    try {
-      if (data.text !== undefined) {
-        onLog(data.text, data.thread_id);
+export function connectLogs(onLog: (line: string, threadId?: string) => void): { disconnect: () => void } {
+  if (USE_PUSHER) {
+    // Use Pusher
+    const pusher = new Pusher(PUSHER_KEY, {
+      cluster: PUSHER_CLUSTER,
+      enabledTransports: ['ws', 'wss'],
+      forceTLS: true,
+    });
+    
+    const channel = pusher.subscribe('logs');
+    
+    channel.bind('log', (data: any) => {
+      try {
+        if (data.text !== undefined) {
+          onLog(data.text, data.thread_id);
+        } else {
+          console.warn("[PUSHER] Message missing 'text' field:", data);
+        }
+      } catch (e) {
+        console.error("[PUSHER] Error processing log:", e);
       }
-    } catch (e) {
-      console.error("[SOCKETIO] Error processing log:", e);
-    }
-  });
-  
-  socket.on("error", (err: any) => {
-    console.error("[SOCKETIO] Logs error:", err);
-  });
-  
-  socket.on("disconnect", () => {
-    console.log("[SOCKETIO] Logs disconnected");
-  });
-  
-  return socket;
+    });
+    
+    channel.bind('pusher:subscription_error', (error: any) => {
+      console.error("[PUSHER] Logs subscription error:", error);
+    });
+    
+    pusher.connection.bind('error', (err: any) => {
+      console.error("[PUSHER] Connection error:", err);
+    });
+    
+    return {
+      disconnect: () => {
+        channel.unbind_all();
+        channel.unsubscribe();
+        pusher.disconnect();
+      }
+    };
+  } else {
+    // Use Socket.IO (fallback/legacy)
+    const socket = io(`${SOCKETIO_BASE}/logs`, {
+      path: "/socket.io/",
+      transports: ["websocket", "polling"],
+      reconnection: true,
+    });
+    
+    socket.on("log", (data: any) => {
+      try {
+        if (data.text !== undefined) {
+          onLog(data.text, data.thread_id);
+        }
+      } catch (e) {
+        console.error("[SOCKETIO] Error processing log:", e);
+      }
+    });
+    
+    socket.on("error", (err: any) => {
+      console.error("[SOCKETIO] Logs error:", err);
+    });
+    
+    return {
+      disconnect: () => socket.disconnect()
+    };
+  }
 }
 
 // --- SKILL MANAGEMENT API ---

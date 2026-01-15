@@ -89,15 +89,15 @@ export default function RunDetailPage() {
     
     // Load initial data
     load();
-    
-    // Set up Socket.IO for real-time updates
-    const socket = connectAdminEvents((evt: RunEvent) => {
+
+    // Set up real-time updates (Pusher or Socket.IO)
+    const connection = connectAdminEvents((evt: RunEvent) => {
       if (evt.thread_id === threadId) {
         load(); // Reload on any checkpoint update
       }
     });
     return () => { 
-      socket.disconnect(); 
+      connection.disconnect(); 
     };
   }, [threadId]);
 
@@ -125,11 +125,11 @@ export default function RunDetailPage() {
       });
   }, [threadId, historicalLogsLoaded]);
 
-  // Live logs Socket.IO connection
+  // Live logs connection (Pusher or Socket.IO)
   useEffect(() => {
     console.log("[RunDetail] Setting up logs connection for thread:", threadId);
-    const socket = connectLogs((line, logThreadId) => {
-      console.log("[RunDetail] Log line received:", line, "thread_id:", logThreadId);
+    const logsConnection = connectLogs((line, logThreadId) => {
+      // console.log("[RunDetail] Log line received:", line, "thread_id:", logThreadId);
       setLogs((prev) => {
         const newLog = { 
           id: logIdCounter.current++, 
@@ -143,7 +143,7 @@ export default function RunDetailPage() {
     });
     return () => {
       console.log("[RunDetail] Closing logs connection");
-      socket.disconnect();
+      logsConnection.disconnect();
     };
   }, []);
 

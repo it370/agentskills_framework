@@ -4,17 +4,38 @@ import { useEffect, useState } from "react";
 import { connectLogs, SOCKETIO_BASE } from "../../lib/api";
 import DashboardLayout from "../../components/DashboardLayout";
 
+// Check which broadcaster is being used
+const USE_PUSHER = process.env.NEXT_PUBLIC_USE_PUSHER === "true" || !!process.env.NEXT_PUBLIC_PUSHER_KEY;
+const PUSHER_CLUSTER = process.env.NEXT_PUBLIC_PUSHER_CLUSTER || "ap2";
+const BROADCASTER_NAME = USE_PUSHER ? "Pusher Channels" : "Socket.IO";
+const BROADCASTER_URL = USE_PUSHER 
+  ? `wss://ws-${PUSHER_CLUSTER}.pusher.com (cluster: ${PUSHER_CLUSTER})`
+  : `${SOCKETIO_BASE}/logs`;
+
 export default function LogsPage() {
   const [lines, setLines] = useState<string[]>([]);
   const [filter, setFilter] = useState("");
   const [autoscroll, setAutoscroll] = useState(true);
+  const [connectionStatus, setConnectionStatus] = useState<string>("Connecting...");
 
   useEffect(() => {
-    const socket = connectLogs((line) =>
-      setLines((prev) => [...prev.slice(-1000), line])
-    );
+    setConnectionStatus("Connecting...");
+    
+    const connection = connectLogs((line) => {
+      setLines((prev) => [...prev.slice(-1000), line]);
+      if (connectionStatus !== "Connected") {
+        setConnectionStatus("Connected");
+      }
+    });
+    
+    // Set connected status after a short delay (waiting for Pusher subscription)
+    const timer = setTimeout(() => {
+      setConnectionStatus("Connected");
+    }, 2000);
+    
     return () => { 
-      socket.disconnect(); 
+      clearTimeout(timer);
+      connection.disconnect(); 
     };
   }, []);
 
@@ -83,12 +104,12 @@ export default function LogsPage() {
                 <div className="w-3 h-3 rounded-full bg-green-500"></div>
               </div>
               <span className="text-xs text-gray-400 ml-2">
-                Streaming from Socket.IO server at {SOCKETIO_BASE}/logs
+                Streaming from {BROADCASTER_NAME} at {BROADCASTER_URL}
               </span>
             </div>
             <div className="flex items-center gap-1">
-              <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></div>
-              <span className="text-xs text-gray-400">Connected</span>
+              <div className={`w-2 h-2 rounded-full ${connectionStatus === "Connected" ? "bg-green-400 animate-pulse" : "bg-yellow-400 animate-pulse"}`}></div>
+              <span className="text-xs text-gray-400">{connectionStatus}</span>
             </div>
           </div>
           <div

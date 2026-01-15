@@ -1,12 +1,11 @@
 import os
-import subprocess
 import sys
 import asyncio
 import logging
 import signal
 from pathlib import Path
 
-from dotenv import load_dotenv
+from env_loader import load_env_once
 
 
 # Suppress Windows ProactorEventLoop connection reset errors
@@ -27,52 +26,26 @@ if sys.platform == 'win32':
     logging.getLogger("asyncio").addFilter(SuppressConnectionErrors())
 
 
-# Global reference to subprocess for signal handlers
-socketio_process = None
-
-
-def shutdown_handler(signum, frame):
-    """Handle shutdown signals (Ctrl+C, SIGTERM)"""
-    global socketio_process
-    print("\n[MAIN] Shutdown signal received, cleaning up...")
-    
-    # Kill Socket.IO server immediately
-    if socketio_process and socketio_process.poll() is None:
-        print("[MAIN] Terminating Socket.IO server...")
-        socketio_process.terminate()
-        try:
-            socketio_process.wait(timeout=2)
-            print("[MAIN] Socket.IO server stopped")
-        except subprocess.TimeoutExpired:
-            print("[MAIN] Force killing Socket.IO server...")
-            socketio_process.kill()
-            socketio_process.wait()
-    
-    print("[MAIN] Shutdown complete")
-    sys.exit(0)
-
-
 def run():
     """
-    Entrypoint to launch both REST API and Socket.IO servers.
+    Entrypoint to launch REST API server with real-time broadcasting.
 
     Environment variables:
     - REST_API_HOST: bind address for REST API (default "0.0.0.0")
     - REST_API_PORT: bind port for REST API (default 8000)
-    - SOCKETIO_HOST: bind address for Socket.IO (default "0.0.0.0")
-    - SOCKETIO_PORT: bind port for Socket.IO (default 7000)
     - RELOAD: enable auto-reload (set to "true" to enable; default off)
     - DEFAULT_USER_ID: default user for credential access (default "system")
     - SSL_KEYFILE: path to SSL key file (optional, enables HTTPS)
     - SSL_CERTFILE: path to SSL certificate file (optional, enables HTTPS)
+    
+    Real-time Broadcasting (Pusher):
+    - PUSHER_APP_ID: Pusher application ID
+    - PUSHER_KEY: Pusher application key
+    - PUSHER_SECRET: Pusher application secret
+    - PUSHER_CLUSTER: Pusher cluster (default: ap2)
     """
-    global socketio_process
     
-    load_dotenv()  # pick up .env before reading config
-    
-    # Register signal handlers for clean shutdown
-    signal.signal(signal.SIGINT, shutdown_handler)
-    signal.signal(signal.SIGTERM, shutdown_handler)
+    load_env_once(Path(__file__).resolve().parent)  # Load .env with proper path resolution
     
     # Initialize global auth context for credential access
     try:
@@ -83,22 +56,30 @@ def run():
         print(f"[AUTH] Warning: Could not initialize auth context: {e}")
         print("[AUTH] Credential-based skills may not work without user_context in inputs")
     
-    # Configure Socket.IO broadcast integration via HTTP
+    # Configure real-time broadcast integration (Pusher/Ably)
     try:
-        from services.websocket.http_broadcaster import broadcast_log, broadcast_admin_event
+        from services.websocket import broadcast_log, broadcast_admin_event, get_broadcaster_status
         import log_stream
         import admin_events
         
         log_stream.set_socketio_broadcast(broadcast_log)
         admin_events.set_socketio_broadcast(broadcast_admin_event)
-        print("[MAIN] Socket.IO HTTP broadcast integration configured")
+        
+        # Show broadcaster status
+        status = get_broadcaster_status()
+        primary = status.get('primary_broadcaster', 'none')
+        available = status.get('primary_available', False)
+        
+        print(f"[MAIN] Real-time broadcast configured: {primary} ({'available' if available else 'unavailable'})")
+        
+        if not available:
+            print("[MAIN] Warning: Primary broadcaster not available - check configuration")
+            print("[MAIN] Required env vars: PUSHER_APP_ID, PUSHER_KEY, PUSHER_SECRET, PUSHER_CLUSTER")
     except Exception as e:
-        print(f"[MAIN] Warning: Could not configure Socket.IO integration: {e}")
+        print(f"[MAIN] Warning: Could not configure broadcast integration: {e}")
     
     rest_host = os.getenv("REST_API_HOST", "0.0.0.0")
     rest_port = int(os.getenv("REST_API_PORT", "8000"))
-    socketio_host = os.getenv("SOCKETIO_HOST", "0.0.0.0")
-    socketio_port = int(os.getenv("SOCKETIO_PORT", "7000"))
     reload = os.getenv("RELOAD", "false").lower() == "true"
     
     # SSL configuration
@@ -112,34 +93,12 @@ def run():
 ║           AgentSkills Framework - Starting Services         ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  REST API Server:    {protocol}://{rest_host}:{rest_port:<35}║
-║  Socket.IO Server:   {protocol}://{socketio_host}:{socketio_port:<35}║
+║  Real-time Broadcast: Pusher Channels                        ║
 ║  SSL/TLS:            {'Enabled' if use_ssl else 'Disabled':<45}║
 ╚══════════════════════════════════════════════════════════════╝
 """)
     
-    # Get the project root
-    project_root = Path(__file__).resolve().parent
-    
-    # Build Socket.IO server command
-    socketio_cmd = [
-        sys.executable, "-m", "uvicorn", "socketio_server:socket_app",
-        "--host", socketio_host, "--port", str(socketio_port)
-    ]
-    if use_ssl:
-        socketio_cmd.extend(["--ssl-keyfile", ssl_keyfile, "--ssl-certfile", ssl_certfile])
-    
-    # Start Socket.IO server in background
-    print("[MAIN] Starting Socket.IO server...")
-    socketio_process = subprocess.Popen(
-        socketio_cmd,
-        cwd=str(project_root),
-        env=os.environ.copy(),
-        # Redirect output to suppress noise during shutdown
-        stdout=subprocess.PIPE if not reload else None,
-        stderr=subprocess.PIPE if not reload else None
-    )
-    
-    # Start REST API server (foreground)
+    # Start REST API server
     print("[MAIN] Starting REST API server...")
     try:
         import uvicorn
@@ -156,21 +115,11 @@ def run():
         
         uvicorn.run(**uvicorn_config)
     except KeyboardInterrupt:
-        # Signal handler will take care of cleanup
-        pass
+        print("\n[MAIN] Shutdown signal received")
     except Exception as e:
         print(f"[MAIN] Error: {e}")
     finally:
-        # Cleanup Socket.IO server (in case signal handler didn't run)
-        if socketio_process and socketio_process.poll() is None:
-            print("[MAIN] Stopping Socket.IO server...")
-            socketio_process.terminate()
-            try:
-                socketio_process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                socketio_process.kill()
-                socketio_process.wait()
-            print("[MAIN] Shutdown complete")
+        print("[MAIN] Shutdown complete")
 
 
 if __name__ == "__main__":

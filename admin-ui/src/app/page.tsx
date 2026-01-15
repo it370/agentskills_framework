@@ -248,7 +248,7 @@ export default function RunsPage() {
   }, []);
 
   useEffect(() => {
-    const socket = connectAdminEvents((evt: RunEvent) => {
+    const connection = connectAdminEvents((evt: RunEvent) => {
       if (!evt.thread_id) return;
       const threadId = evt.thread_id;
       
@@ -294,8 +294,8 @@ export default function RunsPage() {
         }));
       });
     });
-    return () => { 
-      socket.disconnect(); 
+    return () => {
+      connection.disconnect();
     };
   }, []);
 

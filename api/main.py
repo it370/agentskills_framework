@@ -743,8 +743,16 @@ async def health_check():
         # Get pool statistics
         pool_stats = get_pool_stats()
         
+        # Check broadcaster status
+        try:
+            from services.websocket import get_broadcaster_status
+            broadcaster_status = get_broadcaster_status()
+            broadcaster_available = broadcaster_status.get('primary_available', False)
+        except Exception:
+            broadcaster_available = False
+        
         # Determine overall status
-        status = "healthy" if pools_healthy else "degraded"
+        status = "healthy" if (pools_healthy and broadcaster_available) else "degraded"
         
         return {
             "status": status,
@@ -752,7 +760,7 @@ async def health_check():
             "checks": {
                 "postgres": pool_stats.get("postgres_healthy", False),
                 "mongodb": pool_stats.get("mongo_healthy", False),
-                "websockets": True,  # If we can respond, websockets work
+                "broadcaster": broadcaster_available,
             },
             "details": pool_stats
         }
@@ -760,8 +768,24 @@ async def health_check():
         raise HTTPException(status_code=503, detail=f"Health check failed: {str(e)}")
 
 
+
+
+@api.get("/admin/broadcaster-status")
+async def broadcaster_status():
+    """
+    Get real-time broadcaster status and statistics.
+    
+    Returns information about Pusher/Ably broadcaster availability, message counts, etc.
+    """
+    try:
+        from services.websocket import get_broadcaster_status
+        return get_broadcaster_status()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get broadcaster status: {str(e)}")
+
+
 @api.get("/admin/pool-stats")
-async def pool_statistics():
+async def pool_statistics_endpoint():
     """
     Get detailed connection pool statistics for monitoring.
     
