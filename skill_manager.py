@@ -95,9 +95,7 @@ def load_skills_from_database() -> List[Dict[str, Any]]:
                                         print(f"[SKILL_DB] Skill '{name}' will still load but pipeline may fail at runtime")
                                         # Don't skip the skill - allow it to load so it can be edited
                             
-                            skill_dict["action"] = ActionConfig(**action_config)
-
-                            # If python_function with inline code, try to register (but don't fail skill loading)
+                            # If python_function with inline code, register and update module path
                             if action_config.get("type") == "python_function" and action_code:
                                 try:
                                     # Check if function name is specified
@@ -108,12 +106,15 @@ def load_skills_from_database() -> List[Dict[str, Any]]:
                                     # Register the function with the module_name
                                     _register_inline_action(module_name, function_name, action_code)
                                     
-                                    # Update action_config to use correct module path
+                                    # Update action_config to use correct module path BEFORE creating ActionConfig
                                     action_config["module"] = f"dynamic_skills.{module_name}"
                                 except Exception as e:
                                     print(f"[SKILL_DB] WARNING: Failed to register action code for '{name}': {e}")
                                     print(f"[SKILL_DB] Skill '{name}' will still load but may fail at runtime")
                                     # Don't skip the skill - allow it to load so it can be edited
+                            
+                            # Create ActionConfig AFTER updating the module field
+                            skill_dict["action"] = ActionConfig(**action_config)
                         
                         skills.append(skill_dict)
                         
@@ -246,6 +247,18 @@ def save_skill_to_database(skill_data: Dict[str, Any]) -> str:
     """
     with get_db_connection() as conn:
         with conn.cursor() as cur:
+            # First, get the module_name that will be generated from the skill name
+            # We need this to set the correct module path in action_config
+            cur.execute("SELECT generate_module_name(%s)", (skill_data["name"],))
+            module_name = cur.fetchone()[0]
+            
+            # If this is a python_function action, ensure module field is set correctly
+            action_config = skill_data.get("action_config")
+            if action_config and isinstance(action_config, dict):
+                if action_config.get("type") == "python_function":
+                    # Always set the module path using the sanitized module_name
+                    action_config["module"] = f"dynamic_skills.{module_name}"
+            
             cur.execute("""
                 INSERT INTO dynamic_skills (
                     name, description, requires, produces, optional_produces,
@@ -282,7 +295,7 @@ def save_skill_to_database(skill_data: Dict[str, Any]) -> str:
                 "prompt": skill_data.get("prompt"),
                 "system_prompt": skill_data.get("system_prompt"),
                 "rest_config": json.dumps(skill_data.get("rest_config")) if skill_data.get("rest_config") else None,
-                "action_config": json.dumps(skill_data.get("action_config")) if skill_data.get("action_config") else None,
+                "action_config": json.dumps(action_config) if action_config else None,
                 "action_code": skill_data.get("action_code"),
                 "action_functions": skill_data.get("action_functions"),
                 "enabled": skill_data.get("enabled", True),
