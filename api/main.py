@@ -209,7 +209,7 @@ async def _update_run_status(thread_id: str, status: str, error_message: Optiona
     db_uri = _get_env_value("DATABASE_URL", "")
     if not db_uri:
         return
-    
+
     def _update_sync():
         import psycopg
         from datetime import datetime
@@ -223,31 +223,35 @@ async def _update_run_status(thread_id: str, status: str, error_message: Optiona
                         completed_at = %s
                     WHERE thread_id = %s
                 """, (status, error_message, failed_skill, datetime.utcnow(), thread_id))
-    
+
     try:
         await asyncio.to_thread(_update_sync)
         emit_log(f"[API] Updated run status to '{status}' for thread={thread_id}")
-        
-        # Flush Redis checkpoints to PostgreSQL on completion/error
-        if status in ["completed", "error"]:
-            try:
-                from services.checkpoint_buffer import RedisCheckpointBuffer
-                buffer = RedisCheckpointBuffer()
-                success = await buffer.flush_to_postgres(thread_id, db_uri)
-                if success:
-                    emit_log(f"[API] Flushed checkpoints to PostgreSQL for {thread_id}")
-                await buffer.close()
-            except Exception as e:
-                emit_log(f"[API] Error flushing checkpoints for {thread_id}: {e}")
-        
-        # Broadcast admin event to trigger UI refresh
+    except Exception as e:
+        emit_log(f"[API] Failed to update run status: {e}")
+        return
+    
+    # ALWAYS broadcast status update, regardless of checkpoint flush
+    try:
         await broadcast_run_event({
             "thread_id": thread_id,
             "status": status,
             "type": "status_updated",
         })
     except Exception as e:
-        emit_log(f"[API] Failed to update run status: {e}")
+        emit_log(f"[API] Failed to broadcast status update: {e}")
+    
+    # Flush Redis checkpoints to PostgreSQL on completion/error (non-blocking)
+    if status in ["completed", "error"]:
+        try:
+            from services.checkpoint_buffer import RedisCheckpointBuffer
+            buffer = RedisCheckpointBuffer()
+            success = await buffer.flush_to_postgres(thread_id, db_uri)
+            if success:
+                emit_log(f"[API] Flushed checkpoints to PostgreSQL for {thread_id}")
+            await buffer.close()
+        except Exception as e:
+            emit_log(f"[API] Error flushing checkpoints for {thread_id}: {e}")
 
 
 async def _get_run_metadata(thread_id: str) -> Optional[Dict[str, Any]]:
