@@ -205,7 +205,7 @@ async def _check_run_ownership(thread_id: str, user_id: int):
 
 
 async def _update_run_status(thread_id: str, status: str, error_message: Optional[str] = None, failed_skill: Optional[str] = None):
-    """Update the run status in run_metadata table."""
+    """Update the run status in run_metadata table and flush Redis checkpoints if completed."""
     db_uri = _get_env_value("DATABASE_URL", "")
     if not db_uri:
         return
@@ -228,36 +228,17 @@ async def _update_run_status(thread_id: str, status: str, error_message: Optiona
         await asyncio.to_thread(_update_sync)
         emit_log(f"[API] Updated run status to '{status}' for thread={thread_id}")
         
-        # Broadcast admin event to trigger UI refresh
-        await broadcast_run_event({
-            "thread_id": thread_id,
-            "status": status,
-            "type": "status_updated",
-        })
-    except Exception as e:
-        emit_log(f"[API] Failed to update run status: {e}")
-    """Update the run status in run_metadata table."""
-    db_uri = _get_env_value("DATABASE_URL", "")
-    if not db_uri:
-        return
-    
-    def _update_sync():
-        import psycopg
-        from datetime import datetime
-        with psycopg.connect(db_uri, autocommit=True) as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    UPDATE run_metadata
-                    SET status = %s,
-                        error_message = %s,
-                        failed_skill = %s,
-                        completed_at = %s
-                    WHERE thread_id = %s
-                """, (status, error_message, failed_skill, datetime.utcnow(), thread_id))
-    
-    try:
-        await asyncio.to_thread(_update_sync)
-        emit_log(f"[API] Updated run status to '{status}' for thread={thread_id}")
+        # Flush Redis checkpoints to PostgreSQL on completion/error
+        if status in ["completed", "error"]:
+            try:
+                from services.checkpoint_buffer import RedisCheckpointBuffer
+                buffer = RedisCheckpointBuffer()
+                success = await buffer.flush_to_postgres(thread_id, db_uri)
+                if success:
+                    emit_log(f"[API] Flushed checkpoints to PostgreSQL for {thread_id}")
+                await buffer.close()
+            except Exception as e:
+                emit_log(f"[API] Error flushing checkpoints for {thread_id}: {e}")
         
         # Broadcast admin event to trigger UI refresh
         await broadcast_run_event({
@@ -478,7 +459,8 @@ async def list_runs(current_user: AuthenticatedUser, limit: int = 50):
     # Try to use the database view for better performance
     db_uri = _get_env_value("DATABASE_URL", "")
     
-    if db_uri and isinstance(checkpointer, _AsyncPostgresSaver):
+    # Use database view if DATABASE_URL is available (works with both direct PostgreSQL and buffered modes)
+    if db_uri:
         # Use database view with pre-computed status
         try:
             import psycopg
@@ -501,12 +483,16 @@ async def list_runs(current_user: AuthenticatedUser, limit: int = 50):
                                     created_at,
                                     updated_at,
                                     checkpoint,
-                                    metadata
+                                    metadata,
+                                    error_message,
+                                    failed_skill
                                 FROM run_list_view
-                                ORDER BY updated_at DESC NULLS LAST
+                                ORDER BY created_at DESC NULLS LAST
                                 LIMIT %s
                             """, (limit,))
                         else:
+                            # For non-admin, query run_metadata directly to ensure user ownership
+                            # Then join with view to get checkpoint data
                             cur.execute("""
                                 SELECT 
                                     r.thread_id,
@@ -520,11 +506,13 @@ async def list_runs(current_user: AuthenticatedUser, limit: int = 50):
                                     r.created_at,
                                     r.updated_at,
                                     r.checkpoint,
-                                    r.metadata
-                                FROM run_list_view r
-                                JOIN run_metadata m ON r.thread_id = m.thread_id
+                                    r.metadata,
+                                    r.error_message,
+                                    r.failed_skill
+                                FROM run_metadata m
+                                INNER JOIN run_list_view r ON m.thread_id = r.thread_id
                                 WHERE m.user_id = %s
-                                ORDER BY r.updated_at DESC NULLS LAST
+                                ORDER BY r.created_at DESC NULLS LAST
                                 LIMIT %s
                             """, (current_user.id, limit))
                         
@@ -544,6 +532,8 @@ async def list_runs(current_user: AuthenticatedUser, limit: int = 50):
                                 "updated_at": row[9].isoformat() if row[9] else None,
                                 "checkpoint": row[10],
                                 "metadata": row[11],
+                                "error_message": row[12],
+                                "failed_skill": row[13],
                             }
                             for row in rows
                         ]

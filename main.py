@@ -78,6 +78,19 @@ def run():
     except Exception as e:
         print(f"[MAIN] Warning: Could not configure broadcast integration: {e}")
     
+    # Recover buffered checkpoints from Redis (if any)
+    try:
+        import asyncio
+        from services.checkpoint_buffer import recover_buffered_checkpoints
+        from engine import _get_env_value
+        
+        db_uri = _get_env_value("DATABASE_URL", "")
+        if db_uri:
+            print("[MAIN] Checking for buffered checkpoints to recover...")
+            asyncio.run(recover_buffered_checkpoints(db_uri))
+    except Exception as e:
+        print(f"[MAIN] Warning: Could not recover buffered checkpoints: {e}")
+    
     rest_host = os.getenv("REST_API_HOST", "0.0.0.0")
     rest_port = int(os.getenv("REST_API_PORT", "8000"))
     reload = os.getenv("RELOAD", "false").lower() == "true"

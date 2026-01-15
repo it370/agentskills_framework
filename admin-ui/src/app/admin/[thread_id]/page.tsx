@@ -106,6 +106,13 @@ export default function RunDetailPage() {
         
         if (shouldReload) {
           console.log("[RunDetail] Reloading due to event:", evt.type);
+          
+          // If status changed to completed/error, load historical logs
+          if (evt.status === 'completed' || evt.status === 'error') {
+            console.log("[RunDetail] Run completed, loading historical logs");
+            setHistoricalLogsLoaded(false); // Reset to trigger historical log load
+          }
+          
           load(); // Reload on status changes
         } else {
           console.log("[RunDetail] Ignoring event for reload:", evt.type);
@@ -121,7 +128,18 @@ export default function RunDetailPage() {
   useEffect(() => {
     if (!threadId || historicalLogsLoaded) return;
     
-    console.log("[RunDetail] Loading historical logs for thread:", threadId);
+    // Only load historical logs if run is NOT active
+    // For active runs, we rely on live logs via Pusher
+    const runStatus = runMetadata?.status || run?.metadata?.workflow_status;
+    const isActive = runStatus === 'running' || runStatus === 'pending';
+    
+    if (isActive) {
+      console.log("[RunDetail] Run is active, skipping historical logs (using live logs only)");
+      setHistoricalLogsLoaded(true); // Mark as loaded to prevent loading later
+      return;
+    }
+    
+    console.log("[RunDetail] Loading historical logs for completed/inactive run");
     fetchThreadLogs(threadId)
       .then((historicalLogs) => {
         console.log("[RunDetail] Loaded", historicalLogs.length, "historical logs");
@@ -132,15 +150,15 @@ export default function RunDetailPage() {
           timestamp: new Date(log.created_at),
           threadId: log.thread_id
         }));
-        // PREPEND historical logs to existing logs (don't replace)
-        setLogs((prev) => [...convertedLogs, ...prev]);
+        // Replace all logs with historical logs (completed run)
+        setLogs(convertedLogs);
         setHistoricalLogsLoaded(true);
       })
       .catch((err) => {
         console.error("[RunDetail] Failed to load historical logs:", err);
         setHistoricalLogsLoaded(true); // Mark as loaded even on error to avoid retries
       });
-  }, [threadId, historicalLogsLoaded]);
+  }, [threadId, historicalLogsLoaded, runMetadata?.status, run?.metadata?.workflow_status]);
 
   // Live logs connection (Pusher or Socket.IO)
   useEffect(() => {

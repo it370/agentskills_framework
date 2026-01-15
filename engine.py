@@ -1862,30 +1862,73 @@ def _build_checkpointer():
         emit_log("[CHECKPOINTER] Using in-memory checkpoints (Postgres disabled).")
         return MemorySaver()
 
+def _build_checkpointer():
+    """
+    Build checkpointer based on environment configuration.
+    
+    Options:
+    1. USE_POSTGRES_CHECKPOINTS=true: Direct PostgreSQL (slow, causes bottleneck)
+    2. USE_POSTGRES_CHECKPOINTS=false: Buffered Redis + PostgreSQL (RECOMMENDED)
+       - Fast execution with Redis buffering
+       - Batch writes to PostgreSQL on completion
+       - 30-minute TTL with incremental extension
+    """
     # Ensure env files are loaded before reading DATABASE_URL
     load_env_once(Path(__file__).resolve().parent)
-    DB_URI = _get_env_value("DATABASE_URL", "")
-    if not DB_URI:
-        raise ValueError("DB_URI is not set")
+    
+    use_postgres = _get_env_value("USE_POSTGRES_CHECKPOINTS", "false").lower() == "true"
+    
+    if use_postgres:
+        # Direct PostgreSQL checkpointing (legacy mode)
+        emit_log("[CHECKPOINTER] Using direct PostgreSQL checkpointing (may cause performance issues)")
+        
+        DB_URI = _get_env_value("DATABASE_URL", "")
+        if not DB_URI:
+            raise ValueError("DB_URI is not set")
 
-    try:
-        # Initialize centralized connection pools
-        init_connection_pools()
+        try:
+            # Initialize centralized connection pools
+            init_connection_pools()
+            
+            # Get shared Postgres pool
+            pool = get_postgres_pool()
+            
+            checkpointer = _AsyncPostgresSaver(pool)
+            checkpointer.setup()
+            emit_log("[CHECKPOINTER] Postgres checkpointer initialized with shared pool.")
+            
+            # Initialize log persistence with shared pool
+            _init_log_persistence_from_pool(pool)
+            
+            return checkpointer
+        except Exception as exc:
+            emit_log(f"[CHECKPOINTER] Postgres checkpointer unavailable; falling back to memory. Reason: {exc}")
+            return MemorySaver()
+    else:
+        # Buffered mode: Redis + PostgreSQL (RECOMMENDED)
+        emit_log("[CHECKPOINTER] Using buffered checkpointing (Redis + PostgreSQL)")
         
-        # Get shared Postgres pool
-        pool = get_postgres_pool()
-        
-        checkpointer = _AsyncPostgresSaver(pool)
-        checkpointer.setup()
-        emit_log("[CHECKPOINTER] Postgres checkpointer initialized with shared pool.")
-        
-        # Initialize log persistence with shared pool
-        _init_log_persistence_from_pool(pool)
-        
-        return checkpointer
-    except Exception as exc:
-        emit_log(f"[CHECKPOINTER] Postgres checkpointer unavailable; falling back to memory. Reason: {exc}")
-        return MemorySaver()
+        try:
+            from services.buffered_saver import BufferedCheckpointSaver
+            
+            checkpointer = BufferedCheckpointSaver()
+            emit_log("[CHECKPOINTER] ✅ Buffered checkpointer initialized (Memory + Redis buffer)")
+            
+            # Initialize log persistence if PostgreSQL is available
+            DB_URI = _get_env_value("DATABASE_URL", "")
+            if DB_URI:
+                try:
+                    init_connection_pools()
+                    pool = get_postgres_pool()
+                    _init_log_persistence_from_pool(pool)
+                except Exception as exc:
+                    emit_log(f"[LOG_PERSIST] Failed to initialize log persistence: {exc}")
+            
+            return checkpointer
+            
+        except Exception as exc:
+            emit_log(f"[CHECKPOINTER] Buffered checkpointer unavailable; falling back to memory. Reason: {exc}")
+            return MemorySaver()
 
 
 def _init_log_persistence_from_pool(pool: ConnectionPool):
