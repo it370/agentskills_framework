@@ -204,6 +204,14 @@ class RedisCheckpointBuffer:
                             checkpoint_ns = config.get('configurable', {}).get('checkpoint_ns', '')
                             checkpoint_id = checkpoint.get('id', '')
                             
+                            # Handle parent_config - it might be a string (checkpoint_id) or dict
+                            if isinstance(parent_config, str):
+                                parent_checkpoint_id = parent_config
+                            elif isinstance(parent_config, dict):
+                                parent_checkpoint_id = parent_config.get('configurable', {}).get('checkpoint_id')
+                            else:
+                                parent_checkpoint_id = None
+                            
                             cur.execute("""
                                 INSERT INTO checkpoints 
                                 (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata)
@@ -216,7 +224,7 @@ class RedisCheckpointBuffer:
                                 thread_id,
                                 checkpoint_ns,
                                 checkpoint_id,
-                                parent_config.get('configurable', {}).get('checkpoint_id') if parent_config else None,
+                                parent_checkpoint_id,
                                 'checkpoint',
                                 json.dumps(checkpoint),
                                 json.dumps(metadata)
