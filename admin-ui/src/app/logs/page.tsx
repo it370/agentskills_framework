@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { connectLogs, SOCKETIO_BASE } from "../../lib/api";
+import { connectLogs } from "../../lib/api";
 import DashboardLayout from "../../components/DashboardLayout";
 
 // Check which broadcaster is being used
@@ -10,7 +10,7 @@ const PUSHER_CLUSTER = process.env.NEXT_PUBLIC_PUSHER_CLUSTER || "ap2";
 const BROADCASTER_NAME = USE_PUSHER ? "Pusher Channels" : "Socket.IO";
 const BROADCASTER_URL = USE_PUSHER 
   ? `wss://ws-${PUSHER_CLUSTER}.pusher.com (cluster: ${PUSHER_CLUSTER})`
-  : `${SOCKETIO_BASE}/logs`;
+  : `Socket.IO (default host)`;
 
 export default function LogsPage() {
   const [lines, setLines] = useState<string[]>([]);
