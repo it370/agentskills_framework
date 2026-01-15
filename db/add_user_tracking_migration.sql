@@ -3,7 +3,7 @@
 
 -- Add user_id to run_metadata
 ALTER TABLE run_metadata 
-ADD COLUMN IF NOT EXISTS user_id BIGINT REFERENCES users(id) ON DELETE SET NULL;
+ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE SET NULL;
 
 -- Index for user_id lookups
 CREATE INDEX IF NOT EXISTS idx_run_metadata_user_id ON run_metadata(user_id);
@@ -13,7 +13,7 @@ DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'logs') THEN
         ALTER TABLE logs 
-        ADD COLUMN IF NOT EXISTS user_id BIGINT REFERENCES users(id) ON DELETE SET NULL;
+        ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE SET NULL;
         
         CREATE INDEX IF NOT EXISTS idx_logs_user_id ON logs(user_id);
     END IF;

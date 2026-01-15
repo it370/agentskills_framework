@@ -109,7 +109,7 @@ async def get_skill(skill_name: str):
             with get_db_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute("""
-                        SELECT name, description, requires, produces, optional_produces,
+                        SELECT name, module_name, description, requires, produces, optional_produces,
                                executor, hitl_enabled, prompt, system_prompt,
                                rest_config, action_config, action_code, action_functions,
                                source, enabled, created_at, updated_at
@@ -124,22 +124,23 @@ async def get_skill(skill_name: str):
                     # Build skill dict from database row
                     skill_dict = {
                         "name": row[0],
-                        "description": row[1],
-                        "requires": row[2] or [],
-                        "produces": row[3] or [],
-                        "optional_produces": row[4] or [],
-                        "executor": row[5],
-                        "hitl_enabled": row[6],
-                        "prompt": row[7],
-                        "system_prompt": row[8],
-                        "rest_config": row[9],
-                        "action_config": row[10],
-                        "action_code": row[11],
-                        "action_functions": row[12],
-                        "source": row[13] or "database",
-                        "enabled": row[14],
-                        "created_at": row[15].isoformat() if row[15] else None,
-                        "updated_at": row[16].isoformat() if row[16] else None,
+                        "module_name": row[1],
+                        "description": row[2],
+                        "requires": row[3] or [],
+                        "produces": row[4] or [],
+                        "optional_produces": row[5] or [],
+                        "executor": row[6],
+                        "hitl_enabled": row[7],
+                        "prompt": row[8],
+                        "system_prompt": row[9],
+                        "rest_config": row[10],
+                        "action_config": row[11],
+                        "action_code": row[12],
+                        "action_functions": row[13],
+                        "source": row[14] or "database",
+                        "enabled": row[15],
+                        "created_at": row[16].isoformat() if row[16] else None,
+                        "updated_at": row[17].isoformat() if row[17] else None,
                     }
                     
                     return skill_dict
@@ -156,7 +157,7 @@ async def get_skill(skill_name: str):
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT source, enabled, created_at, updated_at, action_code, action_functions
+                    SELECT source, enabled, created_at, updated_at, action_code, action_functions, module_name
                     FROM dynamic_skills
                     WHERE name = %s
                 """, (skill_name,))
@@ -169,6 +170,7 @@ async def get_skill(skill_name: str):
                         "updated_at": row[3].isoformat() if row[3] else None,
                         "action_code": row[4],
                         "action_functions": row[5],
+                        "module_name": row[6],
                     }
     except Exception as e:
         print(f"[SKILLS_API] Warning: Failed to check database for skill source: {e}")
@@ -298,7 +300,7 @@ async def update_skill(skill_name: str, updates: SkillUpdateRequest):
         with psycopg.connect(db_uri) as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT name, description, requires, produces, optional_produces,
+                    SELECT name, module_name, description, requires, produces, optional_produces,
                            executor, hitl_enabled, prompt, system_prompt,
                            rest_config, action_config, action_code, action_functions
                     FROM dynamic_skills
@@ -312,18 +314,19 @@ async def update_skill(skill_name: str, updates: SkillUpdateRequest):
                 # Build updated skill data
                 current_data = {
                     "name": row[0],
-                    "description": row[1],
-                    "requires": row[2] or [],
-                    "produces": row[3] or [],
-                    "optional_produces": row[4] or [],
-                    "executor": row[5],
-                    "hitl_enabled": row[6],
-                    "prompt": row[7],
-                    "system_prompt": row[8],
-                    "rest_config": row[9],
-                    "action_config": row[10],
-                    "action_code": row[11],
-                    "action_functions": row[12],
+                    "module_name": row[1],
+                    "description": row[2],
+                    "requires": row[3] or [],
+                    "produces": row[4] or [],
+                    "optional_produces": row[5] or [],
+                    "executor": row[6],
+                    "hitl_enabled": row[7],
+                    "prompt": row[8],
+                    "system_prompt": row[9],
+                    "rest_config": row[10],
+                    "action_config": row[11],
+                    "action_code": row[12],
+                    "action_functions": row[13],
                 }
                 
                 # Apply updates

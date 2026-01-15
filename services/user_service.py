@@ -77,7 +77,7 @@ class PasswordReset(BaseModel):
 
 class User(BaseModel):
     """User model"""
-    id: int
+    id: str  # UUID stored as string
     username: str
     email: str
     is_active: bool
@@ -87,7 +87,7 @@ class User(BaseModel):
     
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "id": self.id,
+            "id": self.id,  # Already a string
             "username": self.username,
             "email": self.email,
             "is_active": self.is_active,
@@ -116,7 +116,7 @@ class UserService:
         """Verify password against hash"""
         return bcrypt.checkpw(password.encode('utf-8'), password_hash.encode('utf-8'))
     
-    def _generate_jwt(self, user_id: int, username: str, is_admin: bool) -> tuple[str, str]:
+    def _generate_jwt(self, user_id: str, username: str, is_admin: bool) -> tuple[str, str]:
         """
         Generate JWT token for user
         
@@ -129,7 +129,7 @@ class UserService:
         
         payload = {
             "jti": jti,
-            "user_id": user_id,
+            "user_id": user_id,  # Already a string (UUID converted)
             "username": username,
             "is_admin": is_admin,
             "iat": now,
@@ -181,12 +181,12 @@ class UserService:
                     cur.execute("""
                         INSERT INTO users (username, email, password_hash, is_active, is_admin)
                         VALUES (%s, %s, %s, %s, %s)
-                        RETURNING id, username, email, is_active, is_admin, created_at, last_login_at
+                        RETURNING id::text, username, email, is_active, is_admin, created_at, last_login_at
                     """, (registration.username, registration.email, password_hash, True, False))
                     
                     row = cur.fetchone()
                     return User(
-                        id=row[0],
+                        id=row[0],  # Already text from SQL query
                         username=row[1],
                         email=row[2],
                         is_active=row[3],
@@ -212,7 +212,7 @@ class UserService:
                 with conn.cursor() as cur:
                     # Get user by username
                     cur.execute("""
-                        SELECT id, username, email, password_hash, is_active, is_admin, created_at, last_login_at
+                        SELECT id::text, username, email, password_hash, is_active, is_admin, created_at, last_login_at
                         FROM users
                         WHERE username = %s
                     """, (login.username,))
@@ -278,7 +278,7 @@ class UserService:
                 with conn.cursor() as cur:
                     # Check if session exists and is not expired
                     cur.execute("""
-                        SELECT s.id, u.id, u.username, u.email, u.is_active, u.is_admin, u.created_at, u.last_login_at
+                        SELECT s.id, u.id::text, u.username, u.email, u.is_active, u.is_admin, u.created_at, u.last_login_at
                         FROM user_sessions s
                         JOIN users u ON s.user_id = u.id
                         WHERE s.token_jti = %s AND s.expires_at > NOW() AND u.is_active = TRUE
@@ -298,7 +298,7 @@ class UserService:
                             """, (row[0],))
                     
                     return User(
-                        id=row[1],
+                        id=row[1],  # Already text from SQL query
                         username=row[2],
                         email=row[3],
                         is_active=row[4],
@@ -345,12 +345,12 @@ class UserService:
             with psycopg.connect(self.db_uri, autocommit=True) as conn:
                 with conn.cursor() as cur:
                     # Get user by email
-                    cur.execute("SELECT id FROM users WHERE email = %s AND is_active = TRUE", (email,))
+                    cur.execute("SELECT id::text FROM users WHERE email = %s AND is_active = TRUE", (email,))
                     row = cur.fetchone()
                     if not row:
                         raise ValueError("Email not found")
                     
-                    user_id = row[0]
+                    user_id = row[0]  # Already text from SQL query
                     
                     # Generate token
                     token = secrets.token_urlsafe(32)
@@ -425,13 +425,13 @@ class UserService:
         
         return await asyncio.to_thread(_reset_sync)
     
-    async def get_user_by_id(self, user_id: int) -> Optional[User]:
-        """Get user by ID"""
+    async def get_user_by_id(self, user_id: str) -> Optional[User]:
+        """Get user by ID (UUID string)"""
         def _get_sync():
             with psycopg.connect(self.db_uri) as conn:
                 with conn.cursor() as cur:
                     cur.execute("""
-                        SELECT id, username, email, is_active, is_admin, created_at, last_login_at
+                        SELECT id::text, username, email, is_active, is_admin, created_at, last_login_at
                         FROM users
                         WHERE id = %s
                     """, (user_id,))
@@ -441,7 +441,7 @@ class UserService:
                         return None
                     
                     return User(
-                        id=row[0],
+                        id=row[0],  # Already text from SQL query
                         username=row[1],
                         email=row[2],
                         is_active=row[3],
@@ -468,7 +468,7 @@ class UserService:
             with psycopg.connect(self.db_uri) as conn:
                 with conn.cursor() as cur:
                     cur.execute("""
-                        SELECT id, username, email, is_active, is_admin, created_at, last_login_at
+                        SELECT id::text, username, email, is_active, is_admin, created_at, last_login_at
                         FROM users
                         WHERE username = %s
                     """, (username,))
@@ -478,7 +478,7 @@ class UserService:
                         return None
                     
                     return User(
-                        id=row[0],
+                        id=row[0],  # Already text from SQL query
                         username=row[1],
                         email=row[2],
                         is_active=row[3],

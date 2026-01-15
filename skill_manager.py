@@ -38,7 +38,7 @@ def load_skills_from_database() -> List[Dict[str, Any]]:
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT 
-                        name, description, requires, produces, optional_produces,
+                        name, module_name, description, requires, produces, optional_produces,
                         executor, hitl_enabled, prompt, system_prompt,
                         rest_config, action_config, action_code, action_functions
                     FROM dynamic_skills
@@ -48,7 +48,7 @@ def load_skills_from_database() -> List[Dict[str, Any]]:
                 
                 skills = []
                 for row in cur.fetchall():
-                    (name, description, requires, produces, optional_produces,
+                    (name, module_name, description, requires, produces, optional_produces,
                      executor, hitl_enabled, prompt, system_prompt,
                      rest_config, action_config, action_code, action_functions) = row
                     
@@ -89,7 +89,7 @@ def load_skills_from_database() -> List[Dict[str, Any]]:
                                 # Register pipeline functions if provided (but don't fail skill loading)
                                 if action_functions:
                                     try:
-                                        _register_pipeline_functions(name, action_functions)
+                                        _register_pipeline_functions(module_name, action_functions)
                                     except (SyntaxError, RuntimeError) as e:
                                         print(f"[SKILL_DB] WARNING: Failed to register pipeline functions for '{name}': {e}")
                                         print(f"[SKILL_DB] Skill '{name}' will still load but pipeline may fail at runtime")
@@ -105,7 +105,7 @@ def load_skills_from_database() -> List[Dict[str, Any]]:
                                     if not function_name:
                                         raise ValueError("action_config must include 'function' field specifying the function name to call")
                                     
-                                    _register_inline_action(name, function_name, action_code)
+                                    _register_inline_action(module_name, function_name, action_code)
                                 except Exception as e:
                                     print(f"[SKILL_DB] WARNING: Failed to register action code for '{name}': {e}")
                                     print(f"[SKILL_DB] Skill '{name}' will still load but may fail at runtime")
@@ -126,20 +126,25 @@ def load_skills_from_database() -> List[Dict[str, Any]]:
         return []
 
 
-def _register_inline_action(skill_name: str, function_name: str, code: str):
+def _register_inline_action(module_name: str, function_name: str, code: str):
     """
     Register a Python function from inline code for action execution.
     
     Creates a temporary module and registers the function in ACTION_REGISTRY.
+    
+    Args:
+        module_name: The Python module name (from module_name column, already sanitized)
+        function_name: The function name to register
+        code: The Python code containing the function
     """
     import sys
     import types
     from actions import ACTION_REGISTRY
     
-    # Create a module for this skill's action
-    module_name = f"dynamic_skills.{skill_name}"
-    module = types.ModuleType(module_name)
-    module.__file__ = f"<dynamic:{skill_name}>"
+    # Create a module for this skill's action using the sanitized module_name
+    full_module_name = f"dynamic_skills.{module_name}"
+    module = types.ModuleType(full_module_name)
+    module.__file__ = f"<dynamic:{module_name}>"
     
     # Execute the code in the module's namespace
     try:
@@ -152,23 +157,27 @@ def _register_inline_action(skill_name: str, function_name: str, code: str):
         func = getattr(module, function_name)
         
         # Register in ACTION_REGISTRY
-        registry_key = f"{module_name}.{function_name}"
+        registry_key = f"{full_module_name}.{function_name}"
         ACTION_REGISTRY[registry_key] = func
         
         # Also add module to sys.modules for imports
-        sys.modules[module_name] = module
+        sys.modules[full_module_name] = module
         
         print(f"[SKILL_DB] Registered inline action: {registry_key}")
         
     except Exception as e:
-        raise RuntimeError(f"Failed to register inline action for {skill_name}: {e}")
+        raise RuntimeError(f"Failed to register inline action for {module_name}: {e}")
 
 
-def _register_pipeline_functions(skill_name: str, functions_code: str):
+def _register_pipeline_functions(module_name: str, functions_code: str):
     """
     Register Python functions for data_pipeline transform steps.
     
     Registers all functions defined in the code into the _ACTION_FUNCTION_REGISTRY.
+    
+    Args:
+        module_name: The Python module name (from module_name column, already sanitized)
+        functions_code: The Python code containing the functions
     
     Raises:
         SyntaxError: If the Python code has syntax errors
@@ -178,15 +187,15 @@ def _register_pipeline_functions(skill_name: str, functions_code: str):
     import types
     from engine import _ACTION_FUNCTION_REGISTRY
     
-    # Create a module for this skill's pipeline functions
-    module_name = f"pipeline_functions.{skill_name}"
-    module = types.ModuleType(module_name)
-    module.__file__ = f"<pipeline:{skill_name}>"
+    # Create a module for this skill's pipeline functions using the sanitized module_name
+    full_module_name = f"pipeline_functions.{module_name}"
+    module = types.ModuleType(full_module_name)
+    module.__file__ = f"<pipeline:{module_name}>"
     
     # Execute the code in the module's namespace
     try:
         # First, validate syntax by compiling (this gives better error messages)
-        compile(functions_code, f"<pipeline:{skill_name}>", 'exec')
+        compile(functions_code, f"<pipeline:{module_name}>", 'exec')
         
         # If compilation succeeds, execute it
         exec(functions_code, module.__dict__)
@@ -202,9 +211,9 @@ def _register_pipeline_functions(skill_name: str, functions_code: str):
                     registered_count += 1
         
         # Also add module to sys.modules for imports
-        sys.modules[module_name] = module
+        sys.modules[full_module_name] = module
         
-        print(f"[SKILL_DB] Registered {registered_count} pipeline functions for {skill_name}")
+        print(f"[SKILL_DB] Registered {registered_count} pipeline functions for {module_name}")
         
     except SyntaxError as e:
         # Provide detailed syntax error information
@@ -218,10 +227,10 @@ def _register_pipeline_functions(skill_name: str, functions_code: str):
             error_msg += f"\n  → {e.text.strip()}"
         raise SyntaxError(error_msg)
     except Exception as e:
-        raise RuntimeError(f"Failed to register pipeline functions for {skill_name}: {e}")
+        raise RuntimeError(f"Failed to register pipeline functions for {module_name}: {e}")
 
 
-def save_skill_to_database(skill_data: Dict[str, Any]) -> int:
+def save_skill_to_database(skill_data: Dict[str, Any]) -> str:
     """
     Save or update a skill in the database.
     
@@ -229,7 +238,7 @@ def save_skill_to_database(skill_data: Dict[str, Any]) -> int:
         skill_data: Skill configuration dictionary
         
     Returns:
-        Skill ID (int)
+        Skill ID (UUID as string)
     """
     with get_db_connection() as conn:
         with conn.cursor() as cur:
@@ -257,7 +266,7 @@ def save_skill_to_database(skill_data: Dict[str, Any]) -> int:
                     action_code = EXCLUDED.action_code,
                     action_functions = EXCLUDED.action_functions,
                     enabled = EXCLUDED.enabled
-                RETURNING id
+                RETURNING id::text
             """, {
                 "name": skill_data["name"],
                 "description": skill_data.get("description", ""),

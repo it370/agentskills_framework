@@ -185,7 +185,7 @@ async def _check_run_ownership(thread_id: str, user_id: int):
         with psycopg.connect(db_uri) as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT user_id FROM run_metadata WHERE thread_id = %s
+                    SELECT user_id::text FROM run_metadata WHERE thread_id = %s
                 """, (thread_id,))
                 row = cur.fetchone()
                 if not row:
