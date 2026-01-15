@@ -9,14 +9,20 @@ _external_socketio_broadcast = None  # Will be set to services.websocket.broadca
 # Context variable to store current thread_id for log correlation
 _current_thread_id: ContextVar[Optional[str]] = ContextVar("thread_id", default=None)
 
-# Database connection pool (sync pool, accessed via thread)
+# Database connection pool (from services.connection_pool)
 _db_pool = None
 
 
 def set_db_pool(pool):
-    """Set the database connection pool for log persistence."""
+    """
+    Set the database connection pool for log persistence.
+    
+    DEPRECATED: This function is maintained for backwards compatibility.
+    The module now uses services.connection_pool.get_postgres_pool() directly.
+    """
     global _db_pool
     _db_pool = pool
+    print("[LOG_STREAM] WARNING: set_db_pool() is deprecated. Using connection_pool.get_postgres_pool() instead.")
 
 
 def set_socketio_broadcast(broadcast_func):
@@ -45,12 +51,15 @@ def get_log_context() -> Optional[str]:
 
 
 def _persist_log_sync(message: str, thread_id: Optional[str], level: str = "INFO"):
-    """Persist log to database (sync version for thread execution)."""
-    if not _db_pool:
-        return  # No database pool configured
+    """Persist log to database using connection pool (sync version for thread execution)."""
+    try:
+        from services.connection_pool import get_postgres_pool
+        pool = get_postgres_pool()
+    except (RuntimeError, ImportError):
+        return  # No database pool configured or available
     
     try:
-        conn = _db_pool.getconn()
+        conn = pool.getconn()
         try:
             with conn.cursor() as cur:
                 cur.execute(
@@ -62,7 +71,7 @@ def _persist_log_sync(message: str, thread_id: Optional[str], level: str = "INFO
                 )
             conn.commit()
         finally:
-            _db_pool.putconn(conn)
+            pool.putconn(conn)
     except Exception as e:
         # Don't let DB errors stop log broadcasting
         print(f"[LOG_PERSIST] Failed to persist log: {e}")
@@ -74,7 +83,7 @@ async def _persist_log(message: str, thread_id: Optional[str], level: str = "INF
 
 
 async def publish_log(message: str, thread_id: Optional[str] = None, level: str = "INFO"):
-    """Broadcast a log line to Socket.IO subscribers and persist to DB.
+    """Broadcast a log line to Socket.IO subscribers and persist to DB using connection pool.
     
     Args:
         message: The log message text
@@ -87,8 +96,8 @@ async def publish_log(message: str, thread_id: Optional[str] = None, level: str 
     tid = thread_id or _current_thread_id.get()
     
     # Persist to database asynchronously (in thread to avoid blocking)
-    if _db_pool:
-        asyncio.create_task(_persist_log(message, tid, level))
+    # Connection pool will be fetched inside _persist_log_sync
+    asyncio.create_task(_persist_log(message, tid, level))
     
     # Send structured message to Socket.IO server
     log_data = {
@@ -124,12 +133,15 @@ def emit_log(message: str, thread_id: Optional[str] = None, level: str = "INFO")
 
 
 def _get_thread_logs_sync(thread_id: str, limit: int = 1000):
-    """Retrieve historical logs for a specific thread (sync version)."""
-    if not _db_pool:
+    """Retrieve historical logs for a specific thread using connection pool (sync version)."""
+    try:
+        from services.connection_pool import get_postgres_pool
+        pool = get_postgres_pool()
+    except (RuntimeError, ImportError):
         return []
     
     try:
-        conn = _db_pool.getconn()
+        conn = pool.getconn()
         try:
             with conn.cursor() as cur:
                 cur.execute(
@@ -154,7 +166,7 @@ def _get_thread_logs_sync(thread_id: str, limit: int = 1000):
                     for row in rows
                 ]
         finally:
-            _db_pool.putconn(conn)
+            pool.putconn(conn)
     except Exception as e:
         print(f"[LOG_RETRIEVE] Failed to retrieve logs: {e}")
         return []

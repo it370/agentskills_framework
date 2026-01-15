@@ -10,7 +10,6 @@ from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from psycopg import Connection as SyncConnection
-
 from env_loader import load_env_once
 
 # Load environment variables before importing other modules
@@ -22,7 +21,7 @@ from log_stream import publish_log, emit_log, set_log_context, get_thread_logs
 from .mock_api import router as mock_router
 from .auth_api import router as auth_router
 from admin_events import broadcast_run_event
-from services.connection_pool import get_pool_stats, health_check as check_pool_health
+from services.connection_pool import get_pool_stats, health_check as check_pool_health, get_postgres_pool
 from services.auth_middleware import AuthenticatedUser, OptionalUser, AdminUser
 
 ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
@@ -78,10 +77,10 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
     
     # STEP 1: Save metadata FIRST (so it's available when UI fetches after redirect)
     await _save_run_metadata(req.thread_id, req.sop, req.initial_data, run_name=run_name, user_id=current_user.id)
-    
     # STEP 2: Send ACK via Pusher (UI will receive and redirect)
     if req.ack_key:
-        await publish_log(f"[API] Sending ACK for thread={req.thread_id} with ack_key={req.ack_key}", req.thread_id)
+        # await publish_log(f"[API] Sending ACK for thread={req.thread_id} with ack_key={req.ack_key}", req.thread_id)
+        # ticker.settick("Sent ACK")
         await broadcast_run_event({
             "type": "ack",
             "ack_key": req.ack_key,
@@ -89,7 +88,8 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
             "run_name": run_name,
             "status": "accepted"
         })
-        await publish_log(f"[API] ACK sent successfully", req.thread_id)
+        # await publish_log(f"[API] ACK sent successfully", req.thread_id)
+        # ticker.settick("Published ACK")
     else:
         await publish_log(f"[API] No ack_key provided, skipping ACK", req.thread_id)
     
@@ -101,6 +101,7 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
         "history": ["Process Started"],
         "thread_id": req.thread_id,
     }
+    
     await app.aupdate_state(config, initial_state)
     
     # STEP 4: Broadcast workflow started event
@@ -115,20 +116,19 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
     set_log_context(req.thread_id)
     
     # STEP 5: Log start
-    await publish_log(f"[API] Start requested for thread={req.thread_id} by user={current_user.username}", req.thread_id)
-    
+    emit_log(f"[API] Start requested for thread={req.thread_id} by user={current_user.username}", req.thread_id)
     # STEP 6: Run workflow (will send progress updates via Pusher)
     asyncio.create_task(_run_workflow(initial_state, config))
-    
     # STEP 7: Return response
     return {"status": "started", "thread_id": req.thread_id, "run_name": run_name}
 
 
 async def _save_run_metadata(thread_id: str, sop: str, initial_data: Dict[str, Any], parent_thread_id: Optional[str] = None, run_name: Optional[str] = None, user_id: Optional[int] = None):
-    """Save run metadata to database for rerun functionality."""
-    db_uri = _get_env_value("DATABASE_URL", "")
-    if not db_uri:
-        emit_log("[API] DATABASE_URL not set, skipping run metadata save")
+    """Save run metadata to database using connection pool for rerun functionality."""
+    try:
+        pool = get_postgres_pool()
+    except RuntimeError:
+        emit_log("[API] Postgres pool not available, skipping run metadata save")
         return
     
     # Default run_name to thread_id if not provided
@@ -136,8 +136,8 @@ async def _save_run_metadata(thread_id: str, sop: str, initial_data: Dict[str, A
         run_name = thread_id
     
     def _save_sync():
-        import psycopg
-        with psycopg.connect(db_uri, autocommit=True) as conn:
+        conn = pool.getconn()
+        try:
             with conn.cursor() as cur:
                 # Check if parent thread exists and get its rerun count
                 rerun_count = 0
@@ -162,10 +162,13 @@ async def _save_run_metadata(thread_id: str, sop: str, initial_data: Dict[str, A
                         rerun_count = EXCLUDED.rerun_count,
                         user_id = EXCLUDED.user_id
                 """, (thread_id, run_name, sop, json.dumps(initial_data), parent_thread_id, rerun_count, user_id))
+            conn.commit()
+        finally:
+            pool.putconn(conn)
     
     try:
         await asyncio.to_thread(_save_sync)
-        await publish_log(f"[API] Saved run metadata for thread={thread_id}, name={run_name}, user_id={user_id}", thread_id)
+        # emit_log(f"[API] Saved run metadata for thread={thread_id}, name={run_name}, user_id={user_id}")
     except Exception as e:
         emit_log(f"[API] Failed to save run metadata: {e}")
 
