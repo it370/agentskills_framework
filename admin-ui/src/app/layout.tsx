@@ -1,6 +1,8 @@
 "use client";
 
 import "./globals.css";
+import { ReduxProvider } from "@/contexts/ReduxProvider";
+import { RunProvider } from "@/contexts/RunContext";
 import { AuthProvider } from "@/contexts/AuthContext";
 
 export default function RootLayout({
@@ -11,7 +13,13 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="antialiased">
-        <AuthProvider>{children}</AuthProvider>
+        <ReduxProvider>
+          <AuthProvider>
+            <RunProvider>
+              {children}
+            </RunProvider>
+          </AuthProvider>
+        </ReduxProvider>
       </body>
     </html>
   );

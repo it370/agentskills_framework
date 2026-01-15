@@ -5,12 +5,14 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import DashboardLayout from "../../../components/DashboardLayout";
 import { getAuthHeaders } from "../../../lib/auth";
+import { useRun } from "../../../contexts/RunContext";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 
 function NewRunForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { initializeRun } = useRun();
   
   const [runName, setRunName] = useState("");
   const [sop, setSop] = useState(
@@ -95,6 +97,13 @@ function NewRunForm() {
     const threadId = generateThreadId();
     const ackKey = `ack_${crypto.randomUUID()}`;
     console.log("[NewRun] Starting thread:", threadId, "with ack_key:", ackKey);
+
+    // Initialize run in Redux store
+    await initializeRun(threadId, {
+      sop,
+      initialData: parsedData,
+      runName: runName.trim() || undefined,
+    });
 
     // Subscribe to ACK event via global event bus
     const { adminEvents } = await import("../../../lib/adminEvents");

@@ -1,46 +1,43 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
-import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { connectAdminEvents, connectLogs, fetchRunDetail, fetchThreadLogs, approveStep, getRunMetadata } from "../../../lib/api";
-import { CheckpointTuple, RunEvent } from "../../../lib/types";
+import { approveStep } from "../../../lib/api";
 import DashboardLayout from "../../../components/DashboardLayout";
 import RerunContextMenu from "../../../components/RerunContextMenu";
+import { useRun } from "../../../contexts/RunContext";
+import { useAppSelector } from "../../../store/hooks";
 
 export default function RunDetailPage() {
   const params = useParams();
   const searchParams = useSearchParams();
-  const router = useRouter();
   const threadId = params?.thread_id as string;
-  const [run, setRun] = useState<CheckpointTuple | null>(null);
-  const [runName, setRunName] = useState<string | null>(null);
-  const [runMetadata, setRunMetadata] = useState<any>(null); // Store full metadata
+
+  const { initializeRun, loadHistoricalData } = useRun();
+
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<string>(searchParams.get("tab") || "config");
-  const [logs, setLogs] = useState<Array<{id: number, text: string, timestamp: Date, threadId?: string}>>([]);
-  const [historicalLogsLoaded, setHistoricalLogsLoaded] = useState(false);
   const [showHitlModal, setShowHitlModal] = useState(false);
   const [hitlData, setHitlData] = useState<string>("");
   const [approving, setApproving] = useState(false);
-  const logIdCounter = useRef(0);
   const logContainerRef = useRef<HTMLDivElement>(null);
   const hasCheckedInitialState = useRef(false);
 
   // Get config from URL params if starting from new run
   const sopFromUrl = searchParams.get("sop");
   const initialDataFromUrl = searchParams.get("initialData");
-  
+
   // Parse and store initial config on mount (only once)
-  const [initialConfig, setInitialConfig] = useState<{sop: string, data: any} | null>(null);
-  
+  const [initialConfig, setInitialConfig] = useState<{ sop: string; data: any } | null>(null);
+
   useEffect(() => {
     if (sopFromUrl && initialDataFromUrl && !initialConfig) {
       try {
         setInitialConfig({
           sop: sopFromUrl,
-          data: JSON.parse(initialDataFromUrl)
+          data: JSON.parse(initialDataFromUrl),
         });
       } catch (e) {
         console.error("Failed to parse initial data from URL", e);
@@ -48,140 +45,84 @@ export default function RunDetailPage() {
     }
   }, [sopFromUrl, initialDataFromUrl, initialConfig]);
 
-  const load = async (retryCount = 0) => {
-    // Only show loading overlay on initial load or full reload
-    if (retryCount === 0) {
-      setLoading(true);
-    }
-    
-    try {
-      // STRATEGY: Fetch metadata first (fast, available shortly after ACK)
-      // Retry if not available yet with exponential backoff
-      const metadata = await getRunMetadata(threadId);
-      setRunMetadata(metadata);
-      setRunName(metadata?.run_name || threadId);
-      
-      // Remove loading overlay immediately - we have enough to render
-      setLoading(false);
-      setError(null);
-      
-      // Now try to fetch checkpoint data (may not exist yet for new runs)
-      try {
-        const runData = await fetchRunDetail(threadId);
-        setRun(runData);
-      } catch (checkpointErr: any) {
-        // Checkpoint not ready yet - this is normal for new runs
-        // It will be updated via real-time events when available
-        console.log("[RunDetail] Checkpoint not available yet, will update via events");
-      }
-    } catch (err: any) {
-      // Metadata fetch failed - retry with backoff if it's a new run
-      if ((err.message.includes("not found") || err.message.includes("404")) && retryCount < 5) {
-        const delay = Math.min(500 * Math.pow(2, retryCount), 3000); // Max 3 seconds
-        console.log(`[RunDetail] Metadata not found, retrying in ${delay}ms (attempt ${retryCount + 1}/5)...`);
-        setTimeout(() => load(retryCount + 1), delay);
-        return;
-      }
-      
-      // After max retries or other errors, show error but keep trying via events
-      console.error("[RunDetail] Failed to load metadata after retries:", err);
-      setError(err.message);
-      setRunName(threadId);
-      setLoading(false);
-    }
-  };
+  // Redux-backed run + logs state
+  const runState = useAppSelector((state) => state.run.runs[threadId]);
+  const runMetadata = runState?.metadata;
+  const run = runState?.checkpoint;
+  const hasRunData = Boolean(runMetadata || run);
 
+  const logsByThread = useAppSelector((state) => state.logs.logsByThread);
+  const threadLogsRaw = useAppSelector((state) => state.logs.logsByThread[threadId] || []);
+  const historicalLogsLoaded = useAppSelector(
+    (state) => state.logs.historicalLogsLoaded[threadId] || false
+  );
+
+  const threadLogs = useMemo(
+    () =>
+      threadLogsRaw.map((log) => ({
+        id: log.id,
+        text: log.message,
+        timestamp: new Date(log.timestamp),
+        threadId: log.thread_id,
+        level: log.level,
+        persisted: log.persisted,
+      })),
+    [threadLogsRaw]
+  );
+
+  const totalLogsCount = useMemo(
+    () => Object.values(logsByThread).reduce((sum, list) => sum + (list?.length || 0), 0),
+    [logsByThread]
+  );
+  const crossThreadLogCount = Math.max(totalLogsCount - threadLogs.length, 0);
+
+  // Bootstrap data on mount
   useEffect(() => {
     if (!threadId) return;
-    
-    // Load initial data
-    load();
+    let cancelled = false;
 
-    // Set up real-time updates (Pusher or Socket.IO)
-    const connection = connectAdminEvents((evt: RunEvent) => {
-      if (evt.thread_id === threadId) {
-        // Only reload on meaningful events, not on every event
-        // ACK and run_started don't need reload (just starting)
-        // status_updated needs reload to update the status display
-        const shouldReload = evt.type === 'status_updated';
-        
-        if (shouldReload) {
-          console.log("[RunDetail] Reloading due to event:", evt.type);
-          
-          // If status changed to completed/error, load historical logs
-          if (evt.status === 'completed' || evt.status === 'error') {
-            console.log("[RunDetail] Run completed, loading historical logs");
-            setHistoricalLogsLoaded(false); // Reset to trigger historical log load
-          }
-          
-          load(); // Reload on status changes
-        } else {
-          console.log("[RunDetail] Ignoring event for reload:", evt.type);
+    const bootstrap = async () => {
+      setLoading(true);
+      try {
+        await initializeRun(
+          threadId,
+          initialConfig
+            ? { sop: initialConfig.sop, initialData: initialConfig.data, runName: threadId }
+            : undefined
+        );
+
+        // If we don't already have data in the store (e.g., hard refresh), hydrate once
+        if (!hasRunData) {
+          await loadHistoricalData(threadId);
+        }
+
+        if (!cancelled) {
+          setError(null);
+        }
+      } catch (err: any) {
+        if (!cancelled) {
+          setError(err.message || "Failed to load run");
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
         }
       }
-    });
-    return () => { 
-      connection.disconnect(); 
     };
-  }, [threadId]);
 
-  // Load historical logs from database on mount
-  useEffect(() => {
-    if (!threadId || historicalLogsLoaded) return;
-    
-    // Only load historical logs if run is NOT active
-    // For active runs, we rely on live logs via Pusher
-    const runStatus = runMetadata?.status || run?.metadata?.workflow_status;
-    const isActive = runStatus === 'running' || runStatus === 'pending';
-    
-    if (isActive) {
-      console.log("[RunDetail] Run is active, skipping historical logs (using live logs only)");
-      setHistoricalLogsLoaded(true); // Mark as loaded to prevent loading later
-      return;
-    }
-    
-    console.log("[RunDetail] Loading historical logs for completed/inactive run");
-    fetchThreadLogs(threadId)
-      .then((historicalLogs) => {
-        console.log("[RunDetail] Loaded", historicalLogs.length, "historical logs");
-        // Convert historical logs to the same format as live logs
-        const convertedLogs = historicalLogs.map((log) => ({
-          id: logIdCounter.current++,
-          text: log.message,
-          timestamp: new Date(log.created_at),
-          threadId: log.thread_id
-        }));
-        // Replace all logs with historical logs (completed run)
-        setLogs(convertedLogs);
-        setHistoricalLogsLoaded(true);
-      })
-      .catch((err) => {
-        console.error("[RunDetail] Failed to load historical logs:", err);
-        setHistoricalLogsLoaded(true); // Mark as loaded even on error to avoid retries
-      });
-  }, [threadId, historicalLogsLoaded, runMetadata?.status, run?.metadata?.workflow_status]);
-
-  // Live logs connection (Pusher or Socket.IO)
-  useEffect(() => {
-    console.log("[RunDetail] Setting up logs connection for thread:", threadId);
-    const logsConnection = connectLogs((line, logThreadId) => {
-      // console.log("[RunDetail] Log line received:", line, "thread_id:", logThreadId);
-      setLogs((prev) => {
-        const newLog = { 
-          id: logIdCounter.current++, 
-          text: line, 
-          timestamp: new Date(),
-          threadId: logThreadId
-        };
-        // Keep last 1000 logs
-        return [...prev.slice(-999), newLog];
-      });
-    });
+    bootstrap();
     return () => {
-      console.log("[RunDetail] Closing logs connection");
-      logsConnection.disconnect();
+      cancelled = true;
     };
-  }, []);
+  }, [threadId, initializeRun, loadHistoricalData, initialConfig]);
+
+  // If store data arrives via global listeners while loading, stop the spinner
+  useEffect(() => {
+    if (runMetadata && loading) {
+      setLoading(false);
+      setError(null);
+    }
+  }, [runMetadata, loading]);
 
   const history =
     (run?.checkpoint?.channel_values?.history ||
@@ -214,43 +155,9 @@ export default function RunDetailPage() {
   const initialData = runMetadata?.initial_data || 
                      initialConfig?.data || 
                      (initialDataFromUrl ? (() => { try { return JSON.parse(initialDataFromUrl); } catch { return {}; } })() : {});
+  const runName = runMetadata?.run_name || threadId;
 
-  // Filter logs for this specific thread
-  const threadLogs = logs.filter((logEntry) => {
-    // First, check if we have explicit thread_id metadata from the backend
-    if (logEntry.threadId) {
-      return logEntry.threadId === threadId;
-    }
-    
-    // Fallback: check if thread_id appears in the log text (for backward compatibility)
-    const logText = logEntry.text;
-    const lowerLog = logText.toLowerCase();
-    const lowerThreadId = threadId.toLowerCase();
-    
-    // Extract UUID part if thread_id has "thread_" prefix
-    const uuidPart = threadId.startsWith("thread_") 
-      ? threadId.substring(7).toLowerCase() 
-      : null;
-    
-    // Match various formats:
-    // 1. Direct inclusion anywhere in the log
-    if (lowerLog.includes(lowerThreadId)) return true;
-    
-    // 2. UUID part match (if applicable)
-    if (uuidPart && lowerLog.includes(uuidPart)) return true;
-    
-    return false;
-  });
-
-  // Debug: log filtering results
-  useEffect(() => {
-    console.log(`[RunDetail] Thread: ${threadId}, Total logs: ${logs.length}, Filtered: ${threadLogs.length}`);
-    if (logs.length > 0 && threadLogs.length === 0) {
-      console.log("[RunDetail] Sample logs (first 3):", logs.slice(0, 3).map(l => ({ text: l.text, threadId: l.threadId })));
-    }
-  }, [logs.length, threadLogs.length, threadId, logs]);
-
-  const status: "pending" | "running" | "paused" | "completed" | "error" = 
+  const derivedStatus: "pending" | "running" | "paused" | "completed" | "error" = 
     // If we don't have checkpoint data yet, show as pending/initializing
     !run ? "pending" :
     // PRIORITY 1: Check if workflow failed
@@ -267,17 +174,20 @@ export default function RunDetailPage() {
     history.length > 0 ? "completed" :
     "pending";
 
+  const status: "pending" | "running" | "paused" | "completed" | "error" =
+    (runMetadata?.status as any) || derivedStatus;
+
   // Debug status detection
-  useEffect(() => {
-    console.log("[RunDetail] Status detection:", {
-      status,
-      activeSkill,
-      isAtHumanReview,
-      historyLength: history.length,
-      lastHistory: history[history.length - 1],
-      branchValue: run?.checkpoint?.channel_values?.["branch:to:human_review"]
-    });
-  }, [status, activeSkill, history, isAtHumanReview, run]);
+  // useEffect(() => {
+  //   console.log("[RunDetail] Status detection:", {
+  //     status,
+  //     activeSkill,
+  //     isAtHumanReview,
+  //     historyLength: history.length,
+  //     lastHistory: history[history.length - 1],
+  //     branchValue: run?.checkpoint?.channel_values?.["branch:to:human_review"]
+  //   });
+  // }, [status, activeSkill, history, isAtHumanReview, run]);
 
   const getStatusConfig = () => {
     switch (status) {
@@ -310,16 +220,16 @@ export default function RunDetailPage() {
                        lastHistoryEntry.match(/HITL enabled for (.+)\./i)?.[1] || 
                        activeSkill || "Unknown";
 
-  // Debug HITL state
-  useEffect(() => {
-    console.log("[RunDetail] HITL state:", {
-      isPaused,
-      showHitlModal,
-      awaitingSkill,
-      hasCheckedInitialState: hasCheckedInitialState.current,
-      loading
-    });
-  }, [isPaused, showHitlModal, awaitingSkill, loading]);
+  // // Debug HITL state
+  // useEffect(() => {
+  //   console.log("[RunDetail] HITL state:", {
+  //     isPaused,
+  //     showHitlModal,
+  //     awaitingSkill,
+  //     hasCheckedInitialState: hasCheckedInitialState.current,
+  //     loading
+  //   });
+  // }, [isPaused, showHitlModal, awaitingSkill, loading]);
 
   // Update HITL data when dataStore changes
   useEffect(() => {
@@ -334,6 +244,25 @@ export default function RunDetailPage() {
     }
   }, [isPaused, dataStore, loading]);
 
+  const load = async () => {
+    if (!threadId) return;
+    setLoading(true);
+    try {
+      await initializeRun(
+        threadId,
+        initialConfig
+          ? { sop: initialConfig.sop, initialData: initialConfig.data, runName: runName || threadId }
+          : undefined
+      );
+      await loadHistoricalData(threadId);
+      setError(null);
+    } catch (err: any) {
+      setError(err.message || "Failed to load run");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleApprove = async (withChanges: boolean) => {
     setApproving(true);
     try {
@@ -343,8 +272,7 @@ export default function RunDetailPage() {
       }
       await approveStep(threadId, updatedData);
       setShowHitlModal(false);
-      // Reload the run data
-      setTimeout(() => load(), 500);
+      await load();
     } catch (err: any) {
       setError(err.message || "Failed to approve step");
     } finally {
@@ -493,10 +421,22 @@ export default function RunDetailPage() {
                 }`}
               >
                 {tab.label}
-                {tab.badge !== undefined && (
-                  <span className="ml-2 px-2 py-0.5 bg-gray-100 text-gray-700 rounded-full text-xs">
-                    {tab.badge}
+                {tab.id === "logs" && !historicalLogsLoaded && threadLogs.length === 0 ? (
+                  <span className="ml-2 inline-flex items-center gap-0.5">
+                    {[0, 1, 2].map((i) => (
+                      <span
+                        key={i}
+                        className="h-3 w-1 bg-blue-500 rounded-full animate-pulse"
+                        style={{ animationDelay: `${i * 120}ms` }}
+                      />
+                    ))}
                   </span>
+                ) : (
+                  tab.badge !== undefined && (
+                    <span className="ml-2 px-2 py-0.5 bg-gray-100 text-gray-700 rounded-full text-xs">
+                      {tab.badge}
+                    </span>
+                  )
                 )}
               </button>
             ))}
@@ -618,9 +558,9 @@ export default function RunDetailPage() {
                         Loading historical logs...
                       </span>
                     )}
-                    {logs.length > threadLogs.length && (
+                    {crossThreadLogCount > 0 && (
                       <span className="text-xs text-gray-500">
-                        ({logs.length} total across all threads)
+                        ({crossThreadLogCount} log{crossThreadLogCount !== 1 ? 's' : ''} from other threads)
                       </span>
                     )}
                   </div>
@@ -636,9 +576,9 @@ export default function RunDetailPage() {
                         {historicalLogsLoaded ? "No logs for this thread yet..." : "Loading logs..."}
                       </div>
                       <div className="text-xs">Waiting for events from: {threadId}</div>
-                      {logs.length > 0 && (
+                      {crossThreadLogCount > 0 && (
                         <div className="text-xs mt-2">
-                          ({logs.length} log{logs.length !== 1 ? 's' : ''} received from other threads)
+                          ({crossThreadLogCount} log{crossThreadLogCount !== 1 ? 's' : ''} received from other threads)
                         </div>
                       )}
                     </div>

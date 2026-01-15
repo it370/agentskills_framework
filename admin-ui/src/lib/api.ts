@@ -1,17 +1,13 @@
 import { CheckpointTuple, RunEvent, RunListResponse, RunSummary } from "./types";
-import { io, Socket } from "socket.io-client";
 import Pusher from "pusher-js";
 import { getAuthHeaders } from "./auth";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") || "http://localhost:8000";
-export const SOCKETIO_BASE =
-  process.env.NEXT_PUBLIC_SOCKETIO_BASE?.replace(/\/$/, "") || "http://localhost:7000";
 
 // Pusher configuration
 const PUSHER_KEY = process.env.NEXT_PUBLIC_PUSHER_KEY || "";
 const PUSHER_CLUSTER = process.env.NEXT_PUBLIC_PUSHER_CLUSTER || "ap2";
-const USE_PUSHER = process.env.NEXT_PUBLIC_USE_PUSHER === "true" || !!PUSHER_KEY;
 
 export async function fetchRuns(limit = 50): Promise<(CheckpointTuple | RunSummary)[]> {
   const res = await fetch(`${API_BASE}/admin/runs?limit=${limit}`, {
@@ -119,130 +115,80 @@ export async function getRunMetadata(
 }
 
 
-export function connectAdminEvents(onEvent: (event: RunEvent) => void): { disconnect: () => void } {
-  if (USE_PUSHER) {
-    // Use Pusher
-    const pusher = new Pusher(PUSHER_KEY, {
-      cluster: PUSHER_CLUSTER,
-      enabledTransports: ['ws', 'wss'],
-      forceTLS: true,
-    });
-    
-    const channel = pusher.subscribe('admin');
-    
-    channel.bind('admin_event', (data: any) => {
-      try {
-        if (data?.type === "run_event" && data.data) {
-          onEvent(data.data as RunEvent);
-        }
-      } catch (e) {
-        console.warn("[PUSHER] Failed to parse admin event", e);
+export function connectAdminEvents(onEvent: (RunEvent) => void): { disconnect: () => void } {
+  // Use Pusher for real-time admin events
+  const pusher = new Pusher(PUSHER_KEY, {
+    cluster: PUSHER_CLUSTER,
+    enabledTransports: ['ws', 'wss'],
+    forceTLS: true,
+  });
+  
+  const channel = pusher.subscribe('admin');
+  
+  channel.bind('admin_event', (data: any) => {
+    try {
+      if (data?.type === "run_event" && data.data) {
+        onEvent(data.data as RunEvent);
       }
-    });
-    
-    channel.bind('pusher:subscription_error', (error: any) => {
-      console.error("[PUSHER] Admin events subscription error:", error);
-    });
-    
-    pusher.connection.bind('error', (err: any) => {
-      console.error("[PUSHER] Connection error:", err);
-    });
-    
-    return {
-      disconnect: () => {
-        channel.unbind_all();
-        channel.unsubscribe();
-        pusher.disconnect();
-      }
-    };
-  } else {
-    // Use Socket.IO (fallback/legacy)
-    const socket = io(`${SOCKETIO_BASE}/admin`, {
-      path: "/socket.io/",
-      transports: ["websocket", "polling"],
-      reconnection: true,
-    });
-
-    socket.on("admin_event", (data: any) => {
-      try {
-        if (data?.type === "run_event" && data.data) {
-          onEvent(data.data as RunEvent);
-        }
-      } catch (e) {
-        console.warn("Failed to parse admin event", e);
-      }
-    });
-
-    return {
-      disconnect: () => socket.disconnect()
-    };
-  }
+    } catch (e) {
+      console.warn("[PUSHER] Failed to parse admin event", e);
+    }
+  });
+  
+  channel.bind('pusher:subscription_error', (error: any) => {
+    console.error("[PUSHER] Admin events subscription error:", error);
+  });
+  
+  pusher.connection.bind('error', (err: any) => {
+    console.error("[PUSHER] Connection error:", err);
+  });
+  
+  return {
+    disconnect: () => {
+      channel.unbind_all();
+      channel.unsubscribe();
+      pusher.disconnect();
+    }
+  };
 }
 
 export function connectLogs(onLog: (line: string, threadId?: string) => void): { disconnect: () => void } {
-  if (USE_PUSHER) {
-    // Use Pusher
-    const pusher = new Pusher(PUSHER_KEY, {
-      cluster: PUSHER_CLUSTER,
-      enabledTransports: ['ws', 'wss'],
-      forceTLS: true,
-    });
-    
-    const channel = pusher.subscribe('logs');
-    
-    channel.bind('log', (data: any) => {
-      try {
-        if (data.text !== undefined) {
-          onLog(data.text, data.thread_id);
-        } else {
-          console.warn("[PUSHER] Message missing 'text' field:", data);
-        }
-      } catch (e) {
-        console.error("[PUSHER] Error processing log:", e);
+  // Use Pusher for real-time logs
+  const pusher = new Pusher(PUSHER_KEY, {
+    cluster: PUSHER_CLUSTER,
+    enabledTransports: ['ws', 'wss'],
+    forceTLS: true,
+  });
+  
+  const channel = pusher.subscribe('logs');
+  
+  channel.bind('log', (data: any) => {
+    try {
+      if (data.text !== undefined) {
+        onLog(data.text, data.thread_id);
+      } else {
+        console.warn("[PUSHER] Message missing 'text' field:", data);
       }
-    });
-    
-    channel.bind('pusher:subscription_error', (error: any) => {
-      console.error("[PUSHER] Logs subscription error:", error);
-    });
-    
-    pusher.connection.bind('error', (err: any) => {
-      console.error("[PUSHER] Connection error:", err);
-    });
-    
-    return {
-      disconnect: () => {
-        channel.unbind_all();
-        channel.unsubscribe();
-        pusher.disconnect();
-      }
-    };
-  } else {
-    // Use Socket.IO (fallback/legacy)
-    const socket = io(`${SOCKETIO_BASE}/logs`, {
-      path: "/socket.io/",
-      transports: ["websocket", "polling"],
-      reconnection: true,
-    });
-    
-    socket.on("log", (data: any) => {
-      try {
-        if (data.text !== undefined) {
-          onLog(data.text, data.thread_id);
-        }
-      } catch (e) {
-        console.error("[SOCKETIO] Error processing log:", e);
-      }
-    });
-    
-    socket.on("error", (err: any) => {
-      console.error("[SOCKETIO] Logs error:", err);
-    });
-    
-    return {
-      disconnect: () => socket.disconnect()
-    };
-  }
+    } catch (e) {
+      console.error("[PUSHER] Error processing log:", e);
+    }
+  });
+  
+  channel.bind('pusher:subscription_error', (error: any) => {
+    console.error("[PUSHER] Logs subscription error:", error);
+  });
+  
+  pusher.connection.bind('error', (err: any) => {
+    console.error("[PUSHER] Connection error:", err);
+  });
+  
+  return {
+    disconnect: () => {
+      channel.unbind_all();
+      channel.unsubscribe();
+      pusher.disconnect();
+    }
+  };
 }
 
 // --- SKILL MANAGEMENT API ---
