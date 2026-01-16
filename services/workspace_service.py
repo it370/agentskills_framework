@@ -22,6 +22,7 @@ class Workspace(BaseModel):
     id: str
     user_id: str
     name: str
+    code: str
     is_default: bool = False
     created_at: datetime
     updated_at: datetime
@@ -55,7 +56,7 @@ class WorkspaceService:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
-                        SELECT id::text, user_id::text, name, is_default, created_at, updated_at
+                        SELECT id::text, user_id::text, name, code, is_default, created_at, updated_at
                         FROM workspaces
                         WHERE user_id = %s AND is_default = TRUE
                         LIMIT 1
@@ -68,9 +69,10 @@ class WorkspaceService:
                             id=row[0],
                             user_id=row[1],
                             name=row[2],
-                            is_default=row[3],
-                            created_at=row[4],
-                            updated_at=row[5],
+                            code=row[3],
+                            is_default=row[4],
+                            created_at=row[5],
+                            updated_at=row[6],
                         )
 
                     # Create a default workspace if none exist
@@ -79,7 +81,7 @@ class WorkspaceService:
                         INSERT INTO workspaces (user_id, name, is_default)
                         VALUES (%s, 'default', TRUE)
                         ON CONFLICT (user_id, name) DO UPDATE SET is_default = TRUE
-                        RETURNING id::text, user_id::text, name, is_default, created_at, updated_at
+                        RETURNING id::text, user_id::text, name, code, is_default, created_at, updated_at
                         """,
                         (user_id,),
                     )
@@ -88,9 +90,10 @@ class WorkspaceService:
                         id=row[0],
                         user_id=row[1],
                         name=row[2],
-                        is_default=row[3],
-                        created_at=row[4],
-                        updated_at=row[5],
+                        code=row[3],
+                        is_default=row[4],
+                        created_at=row[5],
+                        updated_at=row[6],
                     )
 
         return await asyncio.to_thread(_ensure)
@@ -104,7 +107,7 @@ class WorkspaceService:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
-                        SELECT id::text, user_id::text, name, is_default, created_at, updated_at
+                        SELECT id::text, user_id::text, name, code, is_default, created_at, updated_at
                         FROM workspaces
                         WHERE user_id = %s
                         ORDER BY is_default DESC, name ASC
@@ -116,9 +119,10 @@ class WorkspaceService:
                             id=row[0],
                             user_id=row[1],
                             name=row[2],
-                            is_default=row[3],
-                            created_at=row[4],
-                            updated_at=row[5],
+                            code=row[3],
+                            is_default=row[4],
+                            created_at=row[5],
+                            updated_at=row[6],
                         )
                         for row in cur.fetchall()
                     ]
@@ -141,7 +145,7 @@ class WorkspaceService:
                         INSERT INTO workspaces (user_id, name, is_default)
                         VALUES (%s, %s, %s)
                         ON CONFLICT (user_id, name) DO NOTHING
-                        RETURNING id::text, user_id::text, name, is_default, created_at, updated_at
+                        RETURNING id::text, user_id::text, name, code, is_default, created_at, updated_at
                         """,
                         (user_id, create_req.name, is_first),
                     )
@@ -163,9 +167,10 @@ class WorkspaceService:
                         id=row[0],
                         user_id=row[1],
                         name=row[2],
-                        is_default=row[3] or is_first,
-                        created_at=row[4],
-                        updated_at=row[5],
+                        code=row[3],
+                        is_default=row[4] or is_first,
+                        created_at=row[5],
+                        updated_at=row[6],
                     )
 
         return await asyncio.to_thread(_create)
@@ -195,7 +200,7 @@ class WorkspaceService:
                         UPDATE workspaces
                         SET is_default = TRUE, updated_at = NOW()
                         WHERE id = %s
-                        RETURNING id::text, user_id::text, name, is_default, created_at, updated_at
+                        RETURNING id::text, user_id::text, name, code, is_default, created_at, updated_at
                         """,
                         (workspace_id,),
                     )
@@ -204,9 +209,10 @@ class WorkspaceService:
                         id=row[0],
                         user_id=row[1],
                         name=row[2],
-                        is_default=row[3],
-                        created_at=row[4],
-                        updated_at=row[5],
+                        code=row[3],
+                        is_default=row[4],
+                        created_at=row[5],
+                        updated_at=row[6],
                     )
 
         return await asyncio.to_thread(_set_default)
@@ -225,7 +231,7 @@ class WorkspaceService:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
-                        SELECT id::text, user_id::text, name, is_default, created_at, updated_at
+                        SELECT id::text, user_id::text, name, code, is_default, created_at, updated_at
                         FROM workspaces
                         WHERE id = %s
                         """,
@@ -240,9 +246,10 @@ class WorkspaceService:
                         id=row[0],
                         user_id=row[1],
                         name=row[2],
-                        is_default=row[3],
-                        created_at=row[4],
-                        updated_at=row[5],
+                        code=row[3],
+                        is_default=row[4],
+                        created_at=row[5],
+                        updated_at=row[6],
                     )
 
         return await asyncio.to_thread(_resolve)

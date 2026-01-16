@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { fetchSkill, updateSkill, Skill } from "../../../../lib/api";
+import { fetchSkill, fetchSkillById, updateSkill, Skill } from "../../../../lib/api";
 import DashboardLayout from "../../../../components/DashboardLayout";
 import PythonEditor from "../../../../components/PythonEditor";
 import { useAppSelector } from "@/store/hooks";
@@ -11,7 +11,10 @@ import { useAppSelector } from "@/store/hooks";
 export default function EditSkillPage() {
   const params = useParams();
   const router = useRouter();
-  const skillName = decodeURIComponent(params.skill_name as string);
+  // Use skill_id if available (new routing), fallback to skill_name (backward compat)
+  const skillId = params.skill_id 
+    ? decodeURIComponent(params.skill_id as string) 
+    : decodeURIComponent(params.skill_name as string);
 
   const [originalSkill, setOriginalSkill] = useState<Skill | null>(null);
   const [formData, setFormData] = useState<Partial<Skill>>({});
@@ -46,7 +49,7 @@ export default function EditSkillPage() {
     const load = async () => {
       try {
         setLoading(true);
-        const data = await fetchSkill(skillName);
+        const data = await fetchSkillById(skillId);
         
         if (data.source !== "database") {
           setError("Only database skills can be edited via UI");
@@ -94,7 +97,7 @@ export default function EditSkillPage() {
       }
     };
     load();
-  }, [skillName, activeWorkspaceId]);
+  }, [skillId, activeWorkspaceId]);
 
   const handleSubmit = async () => {
     setError(null);
@@ -201,9 +204,9 @@ export default function EditSkillPage() {
       
       updates.enabled = formData.enabled;
 
-      await updateSkill(skillName, updates);
+      await updateSkill(skillId, updates);
       alert("Skill updated successfully!");
-      router.push(`/skills/${encodeURIComponent(skillName)}`);
+      router.push("/skills");
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -245,7 +248,7 @@ export default function EditSkillPage() {
         {/* Header */}
         <div className="mb-6">
           <Link
-            href={`/skills/${encodeURIComponent(skillName)}`}
+            href={`/skills`}
             className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900 mb-4"
           >
             <svg
@@ -261,10 +264,10 @@ export default function EditSkillPage() {
                 d="M15 19l-7-7 7-7"
               />
             </svg>
-            Back to {skillName}
+            Back to Skills
           </Link>
           <h1 className="text-3xl font-bold text-gray-900">
-            Edit Skill: {skillName}
+            Edit Skill: {formData.name || skillId}
           </h1>
           <p className="mt-2 text-sm text-gray-600">
             Modify skill configuration and settings
@@ -293,7 +296,7 @@ export default function EditSkillPage() {
                 </label>
                 <input
                   type="text"
-                  value={skillName}
+                  value={formData.name || ""}
                   disabled
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-500 cursor-not-allowed"
                 />
@@ -851,19 +854,23 @@ def format_financial_report(computed_metrics):
                 Disabled skills are not available in workflows
               </p>
 
-              <label className="flex items-center gap-2 cursor-pointer">
+              <label className="flex items-center gap-2 cursor-not-allowed opacity-60">
                 <input
                   type="checkbox"
                   checked={formData.is_public || false}
                   onChange={(e) =>
                     setFormData({ ...formData, is_public: e.target.checked })
                   }
-                  className="w-4 h-4 text-blue-600 rounded"
+                  disabled
+                  className="w-4 h-4 text-blue-600 rounded cursor-not-allowed"
                 />
                 <span className="text-sm font-medium text-gray-900">
-                  Public (visible to all workspaces)
+                  Make Public (Coming Soon)
                 </span>
               </label>
+              <p className="text-xs text-gray-500 ml-6 mt-1">
+                Public skills will be visible across all workspaces (currently disabled)
+              </p>
               <p className="text-xs text-gray-600 ml-6">
                 Public skills can be used outside your workspace.
               </p>
@@ -880,7 +887,7 @@ def format_financial_report(computed_metrics):
               {saving ? "Saving..." : "Save Changes"}
             </button>
             <Link
-              href={`/skills/${encodeURIComponent(skillName)}`}
+              href={`/skills`}
               className="px-6 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold rounded-lg transition-colors flex items-center justify-center"
             >
               Cancel

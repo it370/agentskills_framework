@@ -52,14 +52,14 @@ export default function SkillsPage() {
     }
   };
 
-  const handleDelete = async (name: string) => {
-    if (!confirm(`Delete skill "${name}"? This cannot be undone.`)) {
+  const handleDelete = async (skillId: string, skillName: string) => {
+    if (!confirm(`Delete skill "${skillName}"? This cannot be undone.`)) {
       return;
     }
 
-    setDeletingSkill(name);
+    setDeletingSkill(skillId);
     try {
-      await deleteSkill(name);
+      await deleteSkill(skillId);
       await loadSkills();
     } catch (err: any) {
       alert(`Failed to delete: ${err.message}`);
@@ -409,7 +409,7 @@ export default function SkillsPage() {
                         <td className="px-6 py-4 whitespace-nowrap text-sm">
                           <div className="flex items-center gap-2">
                             <Link
-                              href={`/skills/${encodeURIComponent(skill.name)}`}
+                              href={`/skills/${encodeURIComponent(skill.id || skill.name)}`}
                               className="text-blue-600 hover:text-blue-800"
                             >
                               View
@@ -419,7 +419,7 @@ export default function SkillsPage() {
                                 <span className="text-gray-300">|</span>
                                 <Link
                                   href={`/skills/${encodeURIComponent(
-                                    skill.name
+                                    skill.id || skill.name
                                   )}/edit`}
                                   className="text-blue-600 hover:text-blue-800"
                                 >
@@ -427,8 +427,8 @@ export default function SkillsPage() {
                                 </Link>
                                 <span className="text-gray-300">|</span>
                                 <button
-                                  onClick={() => handleDelete(skill.name)}
-                                  disabled={deletingSkill === skill.name}
+                                  onClick={() => handleDelete(skill.id || skill.name, skill.name)}
+                                  disabled={deletingSkill === (skill.id || skill.name)}
                                   className="text-red-600 hover:text-red-800 disabled:opacity-50"
                                 >
                                   {deletingSkill === skill.name

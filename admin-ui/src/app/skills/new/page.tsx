@@ -754,19 +754,23 @@ def format_financial_report(computed_metrics):
               Disabled skills will not be available to the planner.
             </p>
 
-            <label className="flex items-center gap-2 cursor-pointer mt-4">
+            <label className="flex items-center gap-2 cursor-not-allowed opacity-60 mt-4">
               <input
                 type="checkbox"
                 checked={formData.is_public || false}
                 onChange={(e) =>
                   setFormData({ ...formData, is_public: e.target.checked })
                 }
-                className="w-4 h-4 text-blue-600 rounded"
+                disabled
+                className="w-4 h-4 text-blue-600 rounded cursor-not-allowed"
               />
               <span className="text-sm font-medium text-gray-900">
-                Public (visible to all workspaces)
+                Make Public (Coming Soon)
               </span>
             </label>
+            <p className="text-xs text-gray-500 ml-6 mt-1">
+              Public skills will be visible across all workspaces (currently disabled)
+            </p>
             <p className="mt-2 text-xs text-gray-600 ml-6">
               Leave unchecked to keep this skill private to your workspace.
             </p>

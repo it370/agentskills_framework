@@ -208,6 +208,7 @@ export function connectLogs(onLog: (line: string, threadId?: string) => void): {
 // --- SKILL MANAGEMENT API ---
 
 export interface Skill {
+  id?: string; // UUID
   name: string;
   description: string;
   requires: string[];
@@ -232,6 +233,7 @@ export interface Skill {
     credential_ref?: string;
   };
   action_code?: string;
+  action_functions?: string;
   source?: string;
   enabled?: boolean;
   created_at?: string;
@@ -256,6 +258,18 @@ export async function fetchSkills(): Promise<{skills: Skill[], count: number}> {
 export async function fetchSkill(name: string): Promise<Skill> {
   const workspaceId = getActiveWorkspaceId();
   const res = await fetch(withWorkspace(`${API_BASE}/admin/skills/${encodeURIComponent(name)}`, workspaceId), {
+    cache: "no-store",
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch skill: ${res.status}`);
+  }
+  return await res.json();
+}
+
+export async function fetchSkillById(id: string): Promise<Skill> {
+  const workspaceId = getActiveWorkspaceId();
+  const res = await fetch(withWorkspace(`${API_BASE}/admin/skills/${encodeURIComponent(id)}`, workspaceId), {
     cache: "no-store",
     headers: getAuthHeaders(),
   });
@@ -301,9 +315,9 @@ export async function createSkill(skill: Skill): Promise<any> {
   return await res.json();
 }
 
-export async function updateSkill(name: string, updates: Partial<Skill>): Promise<any> {
+export async function updateSkill(skillIdOrName: string, updates: Partial<Skill>): Promise<any> {
   const workspaceId = getActiveWorkspaceId();
-  const res = await fetch(withWorkspace(`${API_BASE}/admin/skills/${encodeURIComponent(name)}`, workspaceId), {
+  const res = await fetch(withWorkspace(`${API_BASE}/admin/skills/${encodeURIComponent(skillIdOrName)}`, workspaceId), {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
@@ -336,9 +350,9 @@ export async function updateSkill(name: string, updates: Partial<Skill>): Promis
   return await res.json();
 }
 
-export async function deleteSkill(name: string): Promise<any> {
+export async function deleteSkill(skillIdOrName: string): Promise<any> {
   const workspaceId = getActiveWorkspaceId();
-  const res = await fetch(withWorkspace(`${API_BASE}/admin/skills/${encodeURIComponent(name)}`, workspaceId), {
+  const res = await fetch(withWorkspace(`${API_BASE}/admin/skills/${encodeURIComponent(skillIdOrName)}`, workspaceId), {
     method: "DELETE",
     headers: getAuthHeaders(),
   });

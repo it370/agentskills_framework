@@ -3,12 +3,15 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { fetchSkill, Skill } from "../../../lib/api";
+import { fetchSkillById, Skill } from "../../../lib/api";
 import DashboardLayout from "../../../components/DashboardLayout";
 
 export default function ViewSkillPage() {
   const params = useParams();
-  const skillName = decodeURIComponent(params.skill_name as string);
+  // Support both skill_id and skill_name for backward compatibility
+  const skillId = params.skill_id 
+    ? decodeURIComponent(params.skill_id as string) 
+    : decodeURIComponent(params.skill_name as string);
   
   const [skill, setSkill] = useState<Skill | null>(null);
   const [loading, setLoading] = useState(true);
@@ -18,7 +21,7 @@ export default function ViewSkillPage() {
     const load = async () => {
       try {
         setLoading(true);
-        const data = await fetchSkill(skillName);
+        const data = await fetchSkillById(skillId);
         setSkill(data);
         setError(null);
       } catch (err: any) {
@@ -28,7 +31,7 @@ export default function ViewSkillPage() {
       }
     };
     load();
-  }, [skillName]);
+  }, [skillId]);
 
   if (loading) {
     return (

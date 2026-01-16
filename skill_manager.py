@@ -175,9 +175,26 @@ def _register_inline_action(module_name: str, function_name: str, code: str):
     import sys
     import types
     from actions import ACTION_REGISTRY
+
+    def _ensure_virtual_packages(full_name: str) -> None:
+        """
+        Ensure all parent packages exist in sys.modules for dotted module paths.
+        Example: for 'dynamic_skills.abcd1234.foo', ensure:
+          - dynamic_skills (package)
+          - dynamic_skills.abcd1234 (package)
+        """
+        parts = full_name.split(".")
+        for i in range(1, len(parts)):
+            pkg_name = ".".join(parts[:i])
+            if pkg_name not in sys.modules:
+                pkg = types.ModuleType(pkg_name)
+                pkg.__path__ = []  # mark as package
+                sys.modules[pkg_name] = pkg
     
     # Create a module for this skill's action using the sanitized module_name
+    # module_name is namespaced: "{workspace_code}.{base_module}"
     full_module_name = f"dynamic_skills.{module_name}"
+    _ensure_virtual_packages(full_module_name)
     module = types.ModuleType(full_module_name)
     module.__file__ = f"<dynamic:{module_name}>"
     
@@ -221,9 +238,20 @@ def _register_pipeline_functions(module_name: str, functions_code: str):
     import sys
     import types
     from engine import _ACTION_FUNCTION_REGISTRY
+
+    def _ensure_virtual_packages(full_name: str) -> None:
+        parts = full_name.split(".")
+        for i in range(1, len(parts)):
+            pkg_name = ".".join(parts[:i])
+            if pkg_name not in sys.modules:
+                pkg = types.ModuleType(pkg_name)
+                pkg.__path__ = []  # mark as package
+                sys.modules[pkg_name] = pkg
     
     # Create a module for this skill's pipeline functions using the sanitized module_name
+    # module_name is namespaced: "{workspace_code}.{base_module}"
     full_module_name = f"pipeline_functions.{module_name}"
+    _ensure_virtual_packages(full_module_name)
     module = types.ModuleType(full_module_name)
     module.__file__ = f"<pipeline:{module_name}>"
     
@@ -269,6 +297,13 @@ def save_skill_to_database(skill_data: Dict[str, Any]) -> str:
     """
     Save or update a skill in the database.
     
+    - If 'id' is provided: UPDATE that specific skill by ID (name CANNOT be changed)
+    - If 'id' is not provided: INSERT new skill (will fail if name+workspace_id already exists)
+    
+    Module naming is handled in Python code (not triggers):
+    - module_name = "{workspace_code}.{sanitized_name}"
+    - This ensures consistent, predictable naming without trigger conflicts
+    
     Args:
         skill_data: Skill configuration dictionary
         
@@ -277,10 +312,35 @@ def save_skill_to_database(skill_data: Dict[str, Any]) -> str:
     """
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            # First, get the module_name that will be generated from the skill name
-            # We need this to set the correct module path in action_config
-            cur.execute("SELECT generate_module_name(%s)", (skill_data["name"],))
-            module_name = cur.fetchone()[0]
+            workspace_id = skill_data.get("workspace_id")
+            if not workspace_id:
+                raise ValueError("workspace_id is required to save a database skill (module namespace needs workspace code)")
+
+            # Fetch workspace code
+            cur.execute("SELECT code FROM workspaces WHERE id = %s", (workspace_id,))
+            ws_row = cur.fetchone()
+            if not ws_row or not ws_row[0]:
+                raise ValueError(f"Workspace not found or missing code: {workspace_id}")
+            workspace_code = ws_row[0]
+            
+            skill_id = skill_data.get("id")
+            
+            # Compute module_name only for INSERT (new skills)
+            # For UPDATE, we fetch the existing module_name from database (name is immutable)
+            if skill_id:
+                # UPDATE mode: fetch existing module_name (name cannot change)
+                cur.execute("SELECT module_name FROM dynamic_skills WHERE id = %s", (skill_id,))
+                existing_row = cur.fetchone()
+                if not existing_row:
+                    raise ValueError(f"Skill with id {skill_id} not found")
+                module_name = existing_row[0]
+                print(f"[SKILL_DB] UPDATE mode: reusing existing module_name={module_name}")
+            else:
+                # INSERT mode: compute new namespaced module_name
+                cur.execute("SELECT generate_module_name(%s)", (skill_data["name"],))
+                base_module_name = cur.fetchone()[0]
+                module_name = f"{workspace_code}.{base_module_name}"
+                print(f"[SKILL_DB] INSERT mode: workspace_code={workspace_code}, base={base_module_name}, module_name={module_name}")
             
             # If this is a python_function action, ensure module field is set correctly
             action_config = skill_data.get("action_config")
@@ -289,57 +349,92 @@ def save_skill_to_database(skill_data: Dict[str, Any]) -> str:
                     # Always set the module path using the sanitized module_name
                     action_config["module"] = f"dynamic_skills.{module_name}"
             
-            cur.execute("""
-                INSERT INTO dynamic_skills (
-                    name, description, requires, produces, optional_produces,
-                    executor, hitl_enabled, prompt, system_prompt,
-                    rest_config, action_config, action_code, action_functions,
-                    source, enabled, workspace_id, owner_id, is_public
-                ) VALUES (
-                    %(name)s, %(description)s, %(requires)s, %(produces)s, %(optional_produces)s,
-                    %(executor)s, %(hitl_enabled)s, %(prompt)s, %(system_prompt)s,
-                    %(rest_config)s, %(action_config)s, %(action_code)s, %(action_functions)s,
-                    'database', %(enabled)s, %(workspace_id)s, %(owner_id)s, %(is_public)s
-                )
-                ON CONFLICT (name) DO UPDATE SET
-                    description = EXCLUDED.description,
-                    requires = EXCLUDED.requires,
-                    produces = EXCLUDED.produces,
-                    optional_produces = EXCLUDED.optional_produces,
-                    executor = EXCLUDED.executor,
-                    hitl_enabled = EXCLUDED.hitl_enabled,
-                    prompt = EXCLUDED.prompt,
-                    system_prompt = EXCLUDED.system_prompt,
-                    rest_config = EXCLUDED.rest_config,
-                    action_config = EXCLUDED.action_config,
-                    action_code = EXCLUDED.action_code,
-                    action_functions = EXCLUDED.action_functions,
-                    enabled = EXCLUDED.enabled,
-                    workspace_id = EXCLUDED.workspace_id,
-                    owner_id = EXCLUDED.owner_id,
-                    is_public = EXCLUDED.is_public
-                RETURNING id::text
-            """, {
-                "name": skill_data["name"],
-                "description": skill_data.get("description", ""),
-                "requires": json.dumps(list(skill_data.get("requires", []))),
-                "produces": json.dumps(list(skill_data.get("produces", []))),
-                "optional_produces": json.dumps(list(skill_data.get("optional_produces", []))),
-                "executor": skill_data.get("executor", "llm"),
-                "hitl_enabled": skill_data.get("hitl_enabled", False),
-                "prompt": skill_data.get("prompt"),
-                "system_prompt": skill_data.get("system_prompt"),
-                "rest_config": json.dumps(skill_data.get("rest_config")) if skill_data.get("rest_config") else None,
-                "action_config": json.dumps(action_config) if action_config else None,
-                "action_code": skill_data.get("action_code"),
-                "action_functions": skill_data.get("action_functions"),
-                "enabled": skill_data.get("enabled", True),
-                "workspace_id": skill_data.get("workspace_id"),
-                "owner_id": skill_data.get("owner_id"),
-                "is_public": skill_data.get("is_public", False),
-            })
+            if skill_id:
+                # UPDATE mode: User provided an ID, update that specific skill
+                # NOTE: name is NOT updated (immutable), module_name stays the same
+                cur.execute("""
+                    UPDATE dynamic_skills SET
+                        description = %(description)s,
+                        requires = %(requires)s,
+                        produces = %(produces)s,
+                        optional_produces = %(optional_produces)s,
+                        executor = %(executor)s,
+                        hitl_enabled = %(hitl_enabled)s,
+                        prompt = %(prompt)s,
+                        system_prompt = %(system_prompt)s,
+                        rest_config = %(rest_config)s,
+                        action_config = %(action_config)s,
+                        action_code = %(action_code)s,
+                        action_functions = %(action_functions)s,
+                        enabled = %(enabled)s,
+                        workspace_id = %(workspace_id)s,
+                        owner_id = %(owner_id)s,
+                        is_public = %(is_public)s
+                    WHERE id = %(id)s
+                    RETURNING id::text
+                """, {
+                    "id": skill_id,
+                    "description": skill_data.get("description", ""),
+                    "requires": json.dumps(list(skill_data.get("requires", []))),
+                    "produces": json.dumps(list(skill_data.get("produces", []))),
+                    "optional_produces": json.dumps(list(skill_data.get("optional_produces", []))),
+                    "executor": skill_data.get("executor", "llm"),
+                    "hitl_enabled": skill_data.get("hitl_enabled", False),
+                    "prompt": skill_data.get("prompt"),
+                    "system_prompt": skill_data.get("system_prompt"),
+                    "rest_config": json.dumps(skill_data.get("rest_config")) if skill_data.get("rest_config") else None,
+                    "action_config": json.dumps(action_config) if action_config else None,
+                    "action_code": skill_data.get("action_code"),
+                    "action_functions": skill_data.get("action_functions"),
+                    "enabled": skill_data.get("enabled", True),
+                    "workspace_id": skill_data.get("workspace_id"),
+                    "owner_id": skill_data.get("owner_id"),
+                    "is_public": skill_data.get("is_public", False),
+                })
+                
+                result = cur.fetchone()
+                if not result:
+                    raise ValueError(f"Skill with id {skill_id} not found")
+                skill_id = result[0]
+            else:
+                # INSERT mode: No ID provided, create new skill
+                # Will fail if (workspace_id, name) already exists due to unique constraint
+                cur.execute("""
+                    INSERT INTO dynamic_skills (
+                        name, module_name, description, requires, produces, optional_produces,
+                        executor, hitl_enabled, prompt, system_prompt,
+                        rest_config, action_config, action_code, action_functions,
+                        source, enabled, workspace_id, owner_id, is_public
+                    ) VALUES (
+                        %(name)s, %(module_name)s, %(description)s, %(requires)s, %(produces)s, %(optional_produces)s,
+                        %(executor)s, %(hitl_enabled)s, %(prompt)s, %(system_prompt)s,
+                        %(rest_config)s, %(action_config)s, %(action_code)s, %(action_functions)s,
+                        'database', %(enabled)s, %(workspace_id)s, %(owner_id)s, %(is_public)s
+                    )
+                    RETURNING id::text
+                """, {
+                    "name": skill_data["name"],
+                    "module_name": module_name,
+                    "description": skill_data.get("description", ""),
+                    "requires": json.dumps(list(skill_data.get("requires", []))),
+                    "produces": json.dumps(list(skill_data.get("produces", []))),
+                    "optional_produces": json.dumps(list(skill_data.get("optional_produces", []))),
+                    "executor": skill_data.get("executor", "llm"),
+                    "hitl_enabled": skill_data.get("hitl_enabled", False),
+                    "prompt": skill_data.get("prompt"),
+                    "system_prompt": skill_data.get("system_prompt"),
+                    "rest_config": json.dumps(skill_data.get("rest_config")) if skill_data.get("rest_config") else None,
+                    "action_config": json.dumps(action_config) if action_config else None,
+                    "action_code": skill_data.get("action_code"),
+                    "action_functions": skill_data.get("action_functions"),
+                    "enabled": skill_data.get("enabled", True),
+                    "workspace_id": skill_data.get("workspace_id"),
+                    "owner_id": skill_data.get("owner_id"),
+                    "is_public": skill_data.get("is_public", False),
+                })
+                
+                skill_id = cur.fetchone()[0]
             
-            skill_id = cur.fetchone()[0]
             conn.commit()
             return skill_id
 
@@ -376,24 +471,25 @@ def get_all_skills_metadata() -> List[Dict[str, Any]]:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT name, description, executor, enabled, created_at, updated_at, source, action_config,
+                    SELECT id::text, name, description, executor, enabled, created_at, updated_at, source, action_config,
                            workspace_id::text, owner_id::text, is_public
                     FROM dynamic_skills
                     ORDER BY name
                 """)
                 for row in cur.fetchall():
                     skills.append({
-                        "name": row[0],
-                        "description": row[1],
-                        "executor": row[2],
-                        "enabled": row[3],
-                        "created_at": row[4].isoformat() if row[4] else None,
-                        "updated_at": row[5].isoformat() if row[5] else None,
-                        "source": row[6],
-                        "action_config": row[7],  # Add action_config
-                        "workspace_id": row[8],
-                        "owner_id": row[9],
-                        "is_public": bool(row[10]),
+                        "id": row[0],
+                        "name": row[1],
+                        "description": row[2],
+                        "executor": row[3],
+                        "enabled": row[4],
+                        "created_at": row[5].isoformat() if row[5] else None,
+                        "updated_at": row[6].isoformat() if row[6] else None,
+                        "source": row[7],
+                        "action_config": row[8],  # Add action_config
+                        "workspace_id": row[9],
+                        "owner_id": row[10],
+                        "is_public": bool(row[11]),
                     })
     except Exception as e:
         print(f"[SKILL_DB] Warning: Failed to get database skills: {e}")
