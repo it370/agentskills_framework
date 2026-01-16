@@ -1606,24 +1606,32 @@ async def _execute_skill_core(skill_meta: Skill, input_ctx: Dict[str, Any], stat
             mapped_result[target_key] = result
             await publish_log(f"[EXECUTOR] Stored entire result under '{target_key}'")
         else:
-            # Multiple produces keys: map by position
-            result_keys = list(result.keys())
-            
-            if len(result_keys) != len(produces_list):
-                await publish_log(
-                    f"[EXECUTOR] Warning: Action {skill_meta.name} returned {len(result_keys)} keys "
-                    f"but skill defines {len(produces_list)} produces. Mapping by position."
-                )
-            
-            for idx, result_key in enumerate(result_keys):
-                if idx < len(produces_list):
-                    target_key = produces_list[idx]
-                    mapped_result[target_key] = result[result_key]
-                    if result_key != target_key:
-                        await publish_log(f"[EXECUTOR] Mapped '{result_key}' -> '{target_key}'")
-                else:
-                    mapped_result[result_key] = result[result_key]
-                    await publish_log(f"[EXECUTOR] Warning: Extra key '{result_key}' not in produces list")
+            # Multiple produces keys: map by key (no positional remapping).
+            # - Copy values for declared produces keys when present.
+            # - Warn on missing produces keys.
+            # - Append any remaining result keys unchanged (in original result order).
+            if len(produces_list) == 0:
+                mapped_result = dict(result)
+            else:
+                result_keys = list(result.keys())
+                remaining_keys = set(result_keys)
+
+                for target_key in produces_list:
+                    if target_key in result:
+                        mapped_result[target_key] = result[target_key]
+                        remaining_keys.discard(target_key)
+                    else:
+                        await publish_log(
+                            f"[EXECUTOR] Warning: Skill {skill_meta.name} declares produces '{target_key}' "
+                            f"but action did not return it"
+                        )
+
+                for result_key in result_keys:
+                    if result_key in remaining_keys:
+                        # mapped_result[result_key] = result[result_key]
+                        await publish_log(
+                            f"[EXECUTOR] Warning: Extra key '{result_key}' not in produces list, ignored."
+                        )
         
         await publish_log(f"[EXECUTOR] Action {skill_meta.name} completed. Results: {list(mapped_result.keys())}")
         return mapped_result
