@@ -123,8 +123,9 @@ class UserService:
         Returns:
             tuple of (token, jti)
         """
+        from datetime import timezone
         jti = secrets.token_urlsafe(32)
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         expiry = now + timedelta(hours=self.jwt_expiry_hours)
         
         payload = {
@@ -242,7 +243,8 @@ class UserService:
                     """, (user_id,))
                     
                     # Store session
-                    expiry = datetime.utcnow() + timedelta(hours=self.jwt_expiry_hours)
+                    from datetime import timezone
+                    expiry = datetime.now(timezone.utc) + timedelta(hours=self.jwt_expiry_hours)
                     cur.execute("""
                         INSERT INTO user_sessions (user_id, token_jti, expires_at, ip_address, user_agent)
                         VALUES (%s, %s, %s, %s, %s)
@@ -255,7 +257,7 @@ class UserService:
                         is_active=is_active,
                         is_admin=is_admin,
                         created_at=created_at,
-                        last_login_at=datetime.utcnow()
+                        last_login_at=datetime.now(timezone.utc)
                     )
                     
                     return token, user
@@ -353,8 +355,9 @@ class UserService:
                     user_id = row[0]  # Already text from SQL query
                     
                     # Generate token
+                    from datetime import timezone
                     token = secrets.token_urlsafe(32)
-                    expiry = datetime.utcnow() + timedelta(hours=1)  # 1 hour expiry
+                    expiry = datetime.now(timezone.utc) + timedelta(hours=1)  # 1 hour expiry
                     
                     # Store token
                     cur.execute("""
@@ -395,7 +398,11 @@ class UserService:
                     if used:
                         raise ValueError("Reset token has already been used")
                     
-                    if expires_at < datetime.utcnow():
+                    # Check if token has expired
+                    # Use timezone-aware datetime for comparison
+                    from datetime import timezone
+                    now_utc = datetime.now(timezone.utc)
+                    if expires_at < now_utc:
                         raise ValueError("Reset token has expired")
                     
                     # Hash new password
