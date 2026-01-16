@@ -1169,7 +1169,8 @@ async def _execute_pipeline_step(
     """
     step_type = step.get("type")
     step_name = step.get("name", f"step_{step_idx}")
-    
+    error_prefix = f"Pipeline step {step_idx} ({step_name})"
+
     if step_type == "query":
         # Execute a data query step
         source = step.get("source")
@@ -1198,7 +1199,8 @@ async def _execute_pipeline_step(
         # Store result in context
         output_key = step.get("output", "result")
         await publish_log(f"[ACTIONS] Pipeline step {step_idx} ({step_name}): query completed")
-        return {output_key: result.get("query_result", result)}
+        # return {output_key: result.get("query_result", result)}
+        return _apply_output_spec(output_key, result.get("query_result", result), error_prefix=error_prefix)
         
     elif step_type == "transform":
         # Apply transformation function
@@ -1225,7 +1227,8 @@ async def _execute_pipeline_step(
         # Store result
         output_key = step.get("output", "result")
         await publish_log(f"[ACTIONS] Pipeline step {step_idx} ({step_name}): transform completed")
-        return {output_key: transform_result}
+        # return {output_key: transform_result}
+        return _apply_output_spec(output_key, transform_result, error_prefix=error_prefix)
         
     elif step_type == "merge":
         # Merge multiple inputs
@@ -1240,7 +1243,9 @@ async def _execute_pipeline_step(
         
         output_key = step.get("output", "merged")
         await publish_log(f"[ACTIONS] Pipeline step {step_idx} ({step_name}): merge completed")
-        return {output_key: merged}
+        # return {output_key: merged}
+        return _apply_output_spec(output_key, merged, error_prefix=error_prefix)
+
         
     elif step_type == "skill":
         # Invoke another skill (typically LLM) with current context
@@ -1324,7 +1329,39 @@ async def _execute_pipeline_step(
         raise ValueError(f"Pipeline step {step_idx} ({step_name}): unknown type '{step_type}'")
 
 
-async def _execute_data_pipeline(cfg: ActionConfig, inputs: Dict[str, Any], workspace_id: Optional[str] = None) -> Dict[str, Any]:
+def _apply_output_spec(output_spec: Any, value: Any, *, error_prefix: str) -> Dict[str, Any]:
+    """
+    Map a produced value into one or more output keys.
+
+    - output: "key" -> {"key": value}
+    - output: ["k1","k2"] with value as (list/tuple) -> {"k1": value[0], "k2": value[1]}
+    - output: ["k1","k2"] with value as dict containing keys -> {"k1": value["k1"], "k2": value["k2"]}
+    """
+    if output_spec is None:
+        return {"result": value}
+    if isinstance(output_spec, str):
+        return {output_spec: value}
+    if isinstance(output_spec, (list, tuple)):
+        keys = [str(k) for k in output_spec]
+        if len(keys) == 1:
+            return {keys[0]: value}
+        if isinstance(value, dict):
+            missing = [k for k in keys if k not in value]
+            if missing:
+                raise ValueError(f"{error_prefix}: output keys {missing} not present in produced dict")
+            return {k: value[k] for k in keys}
+        if isinstance(value, (list, tuple)):
+            if len(value) != len(keys):
+                raise ValueError(
+                    f"{error_prefix}: output key count ({len(keys)}) does not match produced sequence length ({len(value)})"
+                )
+            return {k: value[i] for i, k in enumerate(keys)}
+        raise ValueError(
+            f"{error_prefix}: output is a list but produced value is {type(value)}; expected dict, list, or tuple"
+        )
+    raise ValueError(f"{error_prefix}: 'output' must be a string or list of strings, got {type(output_spec)}")
+
+async def _execute_data_pipeline(cfg: ActionConfig, inputs: Dict[str, Any]) -> Dict[str, Any]:
     """Execute multi-step data pipeline with support for parallel execution"""
     if not cfg.steps:
         raise ValueError("data_pipeline action requires 'steps' field")
@@ -1632,28 +1669,80 @@ async def _execute_skill_core(skill_meta: Skill, input_ctx: Dict[str, Any], stat
         
         if len(produces_list) == 1:
             # Single produces key: store entire result under it
-            target_key = produces_list[0]
-            mapped_result[target_key] = result
-            await publish_log(f"[EXECUTOR] Stored entire result under '{target_key}'")
-        else:
-            # Multiple produces keys: map by position
-            result_keys = list(result.keys())
-            
-            if len(result_keys) != len(produces_list):
-                await publish_log(
-                    f"[EXECUTOR] Warning: Action {skill_meta.name} returned {len(result_keys)} keys "
-                    f"but skill defines {len(produces_list)} produces. Mapping by position."
-                )
-            
-            for idx, result_key in enumerate(result_keys):
-                if idx < len(produces_list):
-                    target_key = produces_list[idx]
-                    mapped_result[target_key] = result[result_key]
-                    if result_key != target_key:
-                        await publish_log(f"[EXECUTOR] Mapped '{result_key}' -> '{target_key}'")
+            # if it is datapipeline result, then ensure the single key is mapped to the result key
+            if action_cfg.type == ActionType.DATA_PIPELINE:
+                # matched_key = None
+                if produces_list[0] in result.keys():
+                    mapped_result[produces_list[0]] = result[produces_list[0]]
+                    await publish_log(f"[EXECUTOR] Stored entire result under '{produces_list[0]}'")
                 else:
-                    mapped_result[result_key] = result[result_key]
-                    await publish_log(f"[EXECUTOR] Warning: Extra key '{result_key}' not in produces list")
+                    await publish_log(
+                        f"[EXECUTOR] Critical Warning: Skill {skill_meta.name} declares produces '{produces_list[0]}' "
+                        f"but action did not return it"
+                    )
+                    raise ValueError(f"Critical Error: Missing expected key: {produces_list[0]}")
+                
+                # for pipe_result_key in result.keys():
+                #     # matched_key = pipe_result_key
+                #     mapped_result[pipe_result_key] = result[pipe_result_key]
+                #     await publish_log(f"[EXECUTOR] Stored entire result under '{pipe_result_key}'")
+                # else:
+                #     mapped_result[produces_list[0]] = result
+                #     await publish_log(f"[EXECUTOR] Stored entire result under '{produces_list[0]}'")
+                    
+                return mapped_result
+            
+                # target_key = list(result.keys())[0]
+                # if target_key not in produces_list:
+                #     await publish_log(
+                #         f"[EXECUTOR] [Pipeline Parser] Warning: Extra key '{target_key}' not in produces list, ignored."
+                #     )
+                #     return mapped_result
+                # mapped_result[target_key] = result[target_key]
+                # await publish_log(f"[EXECUTOR] Stored entire result under '{target_key}'")
+            else:
+                target_key = produces_list[0]
+                mapped_result[target_key] = result
+                await publish_log(f"[EXECUTOR] Stored entire result under '{target_key}'")
+                
+        else:
+            # Multiple produces keys: map by key (no positional remapping).
+            # - Copy values for declared produces keys when present.
+            # - Warn on missing produces keys.
+            # - Append any remaining result keys unchanged (in original result order).
+            if len(produces_list) == 0:
+                mapped_result = dict(result)
+            else:
+                result_keys = list(result.keys())
+                remaining_keys = set(result_keys)
+                missing_expected_keys = set()
+
+                for target_key in produces_list:
+                    if target_key in result:
+                        mapped_result[target_key] = result[target_key]
+                        remaining_keys.discard(target_key)
+                    else:
+                        missing_expected_keys.add(target_key)
+                        await publish_log(
+                            f"[EXECUTOR] Critical Warning: Skill {skill_meta.name} declares produces '{target_key}' "
+                            f"but action did not return it"
+                        )
+                    
+                        
+                # we need to end the loop as an error and not continue as keys missing will fault future errors
+                # we did not end immediately above as we want all missing keys to be printed to user first.
+                if missing_expected_keys:
+                    raise ValueError(
+                        f"Critical Error: Missing expected keys: {missing_expected_keys}"
+                    )
+                    
+
+                for result_key in result_keys:
+                    if result_key in remaining_keys:
+                        # mapped_result[result_key] = result[result_key]
+                        await publish_log(
+                            f"[EXECUTOR] Warning: Extra key '{result_key}' not in produces list, ignored."
+                        )
         
         await publish_log(f"[EXECUTOR] Action {skill_meta.name} completed. Results: {list(mapped_result.keys())}")
         return mapped_result
