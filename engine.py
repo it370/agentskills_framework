@@ -1615,16 +1615,27 @@ async def _execute_skill_core(skill_meta: Skill, input_ctx: Dict[str, Any], stat
             else:
                 result_keys = list(result.keys())
                 remaining_keys = set(result_keys)
+                missing_expected_keys = set()
 
                 for target_key in produces_list:
                     if target_key in result:
                         mapped_result[target_key] = result[target_key]
                         remaining_keys.discard(target_key)
                     else:
+                        missing_expected_keys.add(target_key)
                         await publish_log(
-                            f"[EXECUTOR] Warning: Skill {skill_meta.name} declares produces '{target_key}' "
+                            f"[EXECUTOR] Critical Warning: Skill {skill_meta.name} declares produces '{target_key}' "
                             f"but action did not return it"
                         )
+                    
+                        
+                # we need to end the loop as an error and not continue as keys missing will fault future errors
+                # we did not end immediately above as we want all missing keys to be printed to user first.
+                if missing_expected_keys:
+                    raise ValueError(
+                        f"Critical Error: Missing expected keys: {missing_expected_keys}"
+                    )
+                    
 
                 for result_key in result_keys:
                     if result_key in remaining_keys:
