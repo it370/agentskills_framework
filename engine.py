@@ -1641,14 +1641,35 @@ async def _execute_skill_core(skill_meta: Skill, input_ctx: Dict[str, Any], stat
             # Single produces key: store entire result under it
             # if it is datapipeline result, then ensure the single key is mapped to the result key
             if action_cfg.type == ActionType.DATA_PIPELINE:
-                target_key = list(result.keys())[0]
-                if target_key not in produces_list:
+                # matched_key = None
+                if produces_list[0] in result.keys():
+                    mapped_result[produces_list[0]] = result[produces_list[0]]
+                    await publish_log(f"[EXECUTOR] Stored entire result under '{produces_list[0]}'")
+                else:
                     await publish_log(
-                        f"[EXECUTOR] Warning: Extra key '{target_key}' not in produces list, ignored."
+                        f"[EXECUTOR] Critical Warning: Skill {skill_meta.name} declares produces '{produces_list[0]}' "
+                        f"but action did not return it"
                     )
-                    return mapped_result
-                mapped_result[target_key] = result[target_key]
-                await publish_log(f"[EXECUTOR] Stored entire result under '{target_key}'")
+                    raise ValueError(f"Critical Error: Missing expected key: {produces_list[0]}")
+                
+                # for pipe_result_key in result.keys():
+                #     # matched_key = pipe_result_key
+                #     mapped_result[pipe_result_key] = result[pipe_result_key]
+                #     await publish_log(f"[EXECUTOR] Stored entire result under '{pipe_result_key}'")
+                # else:
+                #     mapped_result[produces_list[0]] = result
+                #     await publish_log(f"[EXECUTOR] Stored entire result under '{produces_list[0]}'")
+                    
+                return mapped_result
+            
+                # target_key = list(result.keys())[0]
+                # if target_key not in produces_list:
+                #     await publish_log(
+                #         f"[EXECUTOR] [Pipeline Parser] Warning: Extra key '{target_key}' not in produces list, ignored."
+                #     )
+                #     return mapped_result
+                # mapped_result[target_key] = result[target_key]
+                # await publish_log(f"[EXECUTOR] Stored entire result under '{target_key}'")
             else:
                 target_key = produces_list[0]
                 mapped_result[target_key] = result
