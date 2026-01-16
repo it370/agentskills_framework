@@ -21,6 +21,7 @@ export type RunSummary = {
   failed_skill?: string;
   user_id?: string | number;
   completed_at?: string;
+  workspace_id?: string;
 };
 
 export type RunEvent = {

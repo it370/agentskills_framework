@@ -142,6 +142,12 @@ class Skill(BaseModel):
     executor: str = "llm"  # "llm" (default), "rest", or "action"
     rest: Optional[RestConfig] = None
     action: Optional[ActionConfig] = None  # Configuration for action executor
+    workspace_id: Optional[str] = None  # Workspace isolation (None = public/filesystem)
+    owner_id: Optional[str] = None  # Skill owner
+    is_public: bool = False  # Visibility outside workspace
+    workspace_id: Optional[str] = None     # Workspace that owns the skill
+    owner_id: Optional[str] = None         # User who owns the skill
+    is_public: bool = True                 # Public skills are visible across workspaces
 
 class PlannerDecision(BaseModel):
     next_agent: str = Field(description="Name of agent or 'END'")
@@ -369,6 +375,8 @@ class AgentState(TypedDict):
     active_skill: Optional[str]
     history: Annotated[List[str], lambda x, y: x + y]
     thread_id: str
+    workspace_id: Optional[str]
+    workspace_id: Optional[str]
 
 
 # --- Utilities ---
@@ -1153,6 +1161,7 @@ async def _execute_pipeline_step(
     step_idx: int,
     default_credential_ref: Optional[str] = None,
     default_db_config_file: Optional[str] = None,
+    workspace_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Execute a single pipeline step and return the outputs to be merged into context.
@@ -1240,7 +1249,8 @@ async def _execute_pipeline_step(
             raise ValueError(f"Pipeline step {step_idx} ({step_name}): 'skill' type requires 'skill' field")
         
         # Find the skill in registry
-        skill = next((s for s in SKILL_REGISTRY if s.name == skill_name), None)
+        registry = get_skill_registry_for_workspace(workspace_id)
+        skill = next((s for s in registry if s.name == skill_name), None)
         if not skill:
             raise ValueError(f"Skill '{skill_name}' not found in registry")
         
@@ -1289,6 +1299,7 @@ async def _execute_pipeline_step(
                 f"{step_idx}.{sub_idx}",
                 default_credential_ref=default_credential_ref,
                 default_db_config_file=default_db_config_file,
+                workspace_id=workspace_id,
             )
             for sub_idx, substep in enumerate(parallel_steps)
         ]
@@ -1313,7 +1324,7 @@ async def _execute_pipeline_step(
         raise ValueError(f"Pipeline step {step_idx} ({step_name}): unknown type '{step_type}'")
 
 
-async def _execute_data_pipeline(cfg: ActionConfig, inputs: Dict[str, Any]) -> Dict[str, Any]:
+async def _execute_data_pipeline(cfg: ActionConfig, inputs: Dict[str, Any], workspace_id: Optional[str] = None) -> Dict[str, Any]:
     """Execute multi-step data pipeline with support for parallel execution"""
     if not cfg.steps:
         raise ValueError("data_pipeline action requires 'steps' field")
@@ -1329,6 +1340,7 @@ async def _execute_data_pipeline(cfg: ActionConfig, inputs: Dict[str, Any]) -> D
             step_idx,
             default_credential_ref=cfg.credential_ref,
             default_db_config_file=cfg.db_config_file,
+            workspace_id=workspace_id,
         )
         
         # Merge outputs into context (auto-merge at top level)
@@ -1458,6 +1470,20 @@ except Exception as e:
     print(f"[ENGINE] Warning: Failed to load database skills: {e}")
     print(f"[ENGINE] Loaded {len(SKILL_REGISTRY)} skills from filesystem only")
 
+
+def get_skill_registry_for_workspace(workspace_id: Optional[str]) -> List[Skill]:
+    """
+    Filter skills for a workspace, allowing public and workspace-specific skills.
+    Filesystem skills are treated as public (workspace_id=None, is_public=True).
+    """
+    if workspace_id is None:
+        return SKILL_REGISTRY
+    return [
+        s
+        for s in SKILL_REGISTRY
+        if s.workspace_id is None or s.workspace_id == workspace_id or s.is_public
+    ]
+
 # --- 3. NODES ---
 
 async def autonomous_planner(state: AgentState):
@@ -1465,6 +1491,8 @@ async def autonomous_planner(state: AgentState):
     
     current_keys = _available_keys(state["data_store"])
     pending_rest = _rest_pending(state["data_store"])
+    workspace_id = state.get("workspace_id")
+    workspace_registry = get_skill_registry_for_workspace(workspace_id)
 
     # Check if workflow has failed - if so, go directly to END
     data_store = state.get("data_store", {})
@@ -1487,7 +1515,7 @@ async def autonomous_planner(state: AgentState):
         return {"active_skill": "END", "history": [f"Waiting for REST callback: {sorted(pending_rest)}"]}
 
     completed = _completed_skills(state.get("history", []))
-    runnable = [s for s in SKILL_REGISTRY if s.requires.issubset(current_keys)]
+    runnable = [s for s in workspace_registry if s.requires.issubset(current_keys)]
     runnable = [s for s in runnable if s.name not in pending_rest]
     
     # Allow reruns when outputs are missing; skip only if already completed AND outputs are present
@@ -1498,7 +1526,7 @@ async def autonomous_planner(state: AgentState):
     
     # Map missing requirements to runnable skills that can provide them.
     missing_requirements: Dict[str, Set[str]] = {}
-    for skill in SKILL_REGISTRY:
+    for skill in workspace_registry:
         if skill.produces.issubset(current_keys):
             continue
         missing = skill.requires - current_keys
@@ -1511,7 +1539,7 @@ async def autonomous_planner(state: AgentState):
     def _caps(s: Skill) -> str:
         opt = f" Optional {s.optional_produces}" if s.optional_produces else ""
         return f"- {s.name}: Provides {s.produces}.{opt} (Needs {s.requires})"
-    capabilities = "\n".join([_caps(s) for s in SKILL_REGISTRY])
+    capabilities = "\n".join([_caps(s) for s in workspace_registry])
     unblockers = sorted({name for providers in missing_requirements.values() for name in providers})
     summary_lines = _progress_summary(state)
     
@@ -1556,6 +1584,8 @@ async def _execute_skill_core(skill_meta: Skill, input_ctx: Dict[str, Any], stat
     Core skill execution logic - reusable from both executor node and pipelines.
     Returns a dict with the skill's outputs.
     """
+    workspace_id = state.get("workspace_id")
+
     # REST executor path
     if skill_meta.executor == "rest":
         # REST skills need full state for callback handling
@@ -1584,7 +1614,7 @@ async def _execute_skill_core(skill_meta: Skill, input_ctx: Dict[str, Any], stat
         elif action_cfg.type == ActionType.DATA_QUERY:
             result = await _execute_data_query(action_cfg, input_ctx)
         elif action_cfg.type == ActionType.DATA_PIPELINE:
-            result = await _execute_data_pipeline(action_cfg, input_ctx)
+            result = await _execute_data_pipeline(action_cfg, input_ctx, workspace_id)
         elif action_cfg.type == ActionType.SCRIPT:
             result = await _execute_script(action_cfg, input_ctx)
         elif action_cfg.type == ActionType.HTTP_CALL:
@@ -1718,7 +1748,9 @@ async def _execute_skill_core(skill_meta: Skill, input_ctx: Dict[str, Any], stat
 
 async def skilled_executor(state: AgentState):
     skill_name = state["active_skill"]
-    skill_meta = next(s for s in SKILL_REGISTRY if s.name == skill_name)
+    workspace_id = state.get("workspace_id")
+    registry = get_skill_registry_for_workspace(workspace_id)
+    skill_meta = next(s for s in registry if s.name == skill_name)
 
     await publish_log(f"[EXECUTOR] Running {skill_name}...")
 
@@ -1771,7 +1803,9 @@ def route_post_exec(state: AgentState):
         return "planner"
     
     # Find the skill metadata safely
-    skill_meta = next((s for s in SKILL_REGISTRY if s.name == skill_name), None)
+    workspace_id = state.get("workspace_id")
+    registry = get_skill_registry_for_workspace(workspace_id)
+    skill_meta = next((s for s in registry if s.name == skill_name), None)
     if not skill_meta:
         emit_log(f"[ROUTER] Unknown skill '{skill_name}', routing to planner.")
         return "planner"

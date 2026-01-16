@@ -20,9 +20,11 @@ import log_stream
 from log_stream import publish_log, emit_log, set_log_context, get_thread_logs
 from .mock_api import router as mock_router
 from .auth_api import router as auth_router
+from .workspaces_api import router as workspace_router
 from admin_events import broadcast_run_event
 from services.connection_pool import get_pool_stats, health_check as check_pool_health, get_postgres_pool
 from services.auth_middleware import AuthenticatedUser, OptionalUser, AdminUser
+from services.workspace_service import get_workspace_service
 
 ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 
@@ -51,6 +53,9 @@ else:
 # Authentication endpoints
 api.include_router(auth_router)
 
+# Workspace endpoints
+api.include_router(workspace_router)
+
 # Mock endpoints for hardcoded data (sandbox/testing)
 api.include_router(mock_router)
 
@@ -60,6 +65,7 @@ class StartRequest(BaseModel):
     initial_data: Dict[str, Any]
     run_name: Optional[str] = None  # Human-friendly name (optional)
     ack_key: Optional[str] = None  # Unique key for ACK handshake
+    workspace_id: Optional[str] = None  # Target workspace (defaults to user's default)
 
 @api.post("/start")
 async def start_process(req: StartRequest, current_user: AuthenticatedUser):
@@ -74,9 +80,21 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
     """
     # Use run_name if provided, otherwise default to thread_id
     run_name = req.run_name if req.run_name and req.run_name.strip() else req.thread_id
+
+    # Resolve workspace (defaults to user's default)
+    workspace_service = get_workspace_service()
+    workspace = await workspace_service.resolve_workspace(current_user.id, req.workspace_id)
+    workspace_id = workspace.id
     
     # STEP 1: Save metadata FIRST (so it's available when UI fetches after redirect)
-    await _save_run_metadata(req.thread_id, req.sop, req.initial_data, run_name=run_name, user_id=current_user.id)
+    await _save_run_metadata(
+        req.thread_id,
+        req.sop,
+        req.initial_data,
+        run_name=run_name,
+        user_id=current_user.id,
+        workspace_id=workspace_id,
+    )
     # STEP 2: Send ACK via Pusher (UI will receive and redirect)
     if req.ack_key:
         # await publish_log(f"[API] Sending ACK for thread={req.thread_id} with ack_key={req.ack_key}", req.thread_id)
@@ -94,12 +112,13 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
         await publish_log(f"[API] No ack_key provided, skipping ACK", req.thread_id)
     
     # STEP 3: Create initial checkpoint
-    config = {"configurable": {"thread_id": req.thread_id}}
+    config = {"configurable": {"thread_id": req.thread_id, "workspace_id": workspace_id}}
     initial_state = {
         "layman_sop": req.sop,
         "data_store": req.initial_data,
         "history": ["Process Started"],
         "thread_id": req.thread_id,
+        "workspace_id": workspace_id,
     }
     
     await app.aupdate_state(config, initial_state)
@@ -123,7 +142,15 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
     return {"status": "started", "thread_id": req.thread_id, "run_name": run_name}
 
 
-async def _save_run_metadata(thread_id: str, sop: str, initial_data: Dict[str, Any], parent_thread_id: Optional[str] = None, run_name: Optional[str] = None, user_id: Optional[int] = None):
+async def _save_run_metadata(
+    thread_id: str,
+    sop: str,
+    initial_data: Dict[str, Any],
+    parent_thread_id: Optional[str] = None,
+    run_name: Optional[str] = None,
+    user_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+):
     """Save run metadata to database using connection pool for rerun functionality."""
     try:
         pool = get_postgres_pool()
@@ -152,16 +179,17 @@ async def _save_run_metadata(thread_id: str, sop: str, initial_data: Dict[str, A
                 
                 # Insert run metadata
                 cur.execute("""
-                    INSERT INTO run_metadata (thread_id, run_name, sop, initial_data, parent_thread_id, rerun_count, status, user_id)
-                    VALUES (%s, %s, %s, %s, %s, %s, 'running', %s)
+                    INSERT INTO run_metadata (thread_id, run_name, sop, initial_data, parent_thread_id, rerun_count, status, user_id, workspace_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'running', %s, %s)
                     ON CONFLICT (thread_id) DO UPDATE
                     SET run_name = EXCLUDED.run_name,
                         sop = EXCLUDED.sop,
                         initial_data = EXCLUDED.initial_data,
                         parent_thread_id = EXCLUDED.parent_thread_id,
                         rerun_count = EXCLUDED.rerun_count,
-                        user_id = EXCLUDED.user_id
-                """, (thread_id, run_name, sop, json.dumps(initial_data), parent_thread_id, rerun_count, user_id))
+                        user_id = EXCLUDED.user_id,
+                        workspace_id = EXCLUDED.workspace_id
+                """, (thread_id, run_name, sop, json.dumps(initial_data), parent_thread_id, rerun_count, user_id, workspace_id))
             conn.commit()
         finally:
             pool.putconn(conn)
@@ -173,7 +201,7 @@ async def _save_run_metadata(thread_id: str, sop: str, initial_data: Dict[str, A
         emit_log(f"[API] Failed to save run metadata: {e}")
 
 
-async def _check_run_ownership(thread_id: str, user_id: int):
+async def _check_run_ownership(thread_id: str, user_id: str, is_admin: bool = False, workspace_id: Optional[str] = None):
     """
     Check if user owns a run
     
@@ -188,19 +216,22 @@ async def _check_run_ownership(thread_id: str, user_id: int):
         with psycopg.connect(db_uri) as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT user_id::text FROM run_metadata WHERE thread_id = %s
+                    SELECT user_id::text, workspace_id::text FROM run_metadata WHERE thread_id = %s
                 """, (thread_id,))
                 row = cur.fetchone()
                 if not row:
                     return None
-                return row[0]
+                return row
     
     try:
-        owner_id = await asyncio.to_thread(_check_sync)
-        if owner_id is None:
+        owner_workspace = await asyncio.to_thread(_check_sync)
+        if owner_workspace is None:
             raise HTTPException(status_code=404, detail="Run not found")
-        if owner_id != user_id:
+        owner_id, run_workspace_id = owner_workspace
+        if not is_admin and owner_id != user_id:
             raise HTTPException(status_code=403, detail="Not authorized to access this run")
+        if workspace_id and run_workspace_id and run_workspace_id != workspace_id:
+            raise HTTPException(status_code=404, detail="Run not found in workspace")
     except HTTPException:
         raise
     except Exception as e:
@@ -257,7 +288,7 @@ async def _update_run_status(thread_id: str, status: str, error_message: Optiona
             emit_log(f"[API] Error flushing checkpoints for {thread_id}: {e}")
 
 
-async def _get_run_metadata(thread_id: str) -> Optional[Dict[str, Any]]:
+async def _get_run_metadata(thread_id: str, workspace_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Retrieve run metadata from database."""
     db_uri = _get_env_value("DATABASE_URL", "")
     if not db_uri:
@@ -269,12 +300,14 @@ async def _get_run_metadata(thread_id: str) -> Optional[Dict[str, Any]]:
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT thread_id, run_name, sop, initial_data, created_at, parent_thread_id, rerun_count, metadata,
-                           status, error_message, failed_skill, completed_at
+                           status, error_message, failed_skill, completed_at, workspace_id::text
                     FROM run_metadata
                     WHERE thread_id = %s
                 """, (thread_id,))
                 row = cur.fetchone()
                 if row:
+                    if workspace_id and row[12] and row[12] != workspace_id:
+                        return None
                     return {
                         "thread_id": row[0],
                         "run_name": row[1] or row[0],  # Default to thread_id if run_name is None
@@ -287,7 +320,8 @@ async def _get_run_metadata(thread_id: str) -> Optional[Dict[str, Any]]:
                         "status": row[8],
                         "error_message": row[9],
                         "failed_skill": row[10],
-                        "completed_at": row[11].isoformat() if row[11] else None
+                        "completed_at": row[11].isoformat() if row[11] else None,
+                        "workspace_id": row[12],
                     }
                 return None
     
@@ -361,11 +395,13 @@ async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any]):
             emit_log(f"[API] Failed to update workflow state after error: {update_exc}")
 
 @api.get("/status/{thread_id}")
-async def get_status(thread_id: str, current_user: AuthenticatedUser):
-    config = {"configurable": {"thread_id": thread_id}}
+async def get_status(thread_id: str, current_user: AuthenticatedUser, workspace_id: Optional[str] = None):
+    workspace_service = get_workspace_service()
+    workspace = await workspace_service.resolve_workspace(current_user.id, workspace_id)
+    config = {"configurable": {"thread_id": thread_id, "workspace_id": workspace.id}}
     
     # Check if user owns this run
-    await _check_run_ownership(thread_id, current_user.id)
+    await _check_run_ownership(thread_id, current_user.id, current_user.is_admin, workspace.id)
     
     state = await app.aget_state(config)
     next_nodes = state.next or []
@@ -393,12 +429,17 @@ async def get_status(thread_id: str, current_user: AuthenticatedUser):
 
 @api.post("/approve/{thread_id}")
 async def approve_step(
-    thread_id: str, current_user: AuthenticatedUser, updated_data: Optional[Dict[str, Any]] = Body(None)
+    thread_id: str,
+    current_user: AuthenticatedUser,
+    updated_data: Optional[Dict[str, Any]] = Body(None),
+    workspace_id: Optional[str] = None,
 ):
-    config = {"configurable": {"thread_id": thread_id}}
+    workspace_service = get_workspace_service()
+    workspace = await workspace_service.resolve_workspace(current_user.id, workspace_id)
+    config = {"configurable": {"thread_id": thread_id, "workspace_id": workspace.id}}
     
     # Check if user owns this run
-    await _check_run_ownership(thread_id, current_user.id)
+    await _check_run_ownership(thread_id, current_user.id, current_user.is_admin, workspace.id)
     
     # Update status to 'running' when resuming from HITL pause
     await _update_run_status(thread_id, "running")
@@ -461,8 +502,12 @@ def _serialize_checkpoint_tuple(cp_tuple):
 
 
 @api.get("/admin/runs")
-async def list_runs(current_user: AuthenticatedUser, limit: int = 50):
+async def list_runs(current_user: AuthenticatedUser, limit: int = 50, workspace_id: Optional[str] = None):
     """List workflow runs with computed status from database view."""
+    workspace_service = get_workspace_service()
+    workspace = await workspace_service.resolve_workspace(current_user.id, workspace_id)
+    workspace_id = workspace.id
+
     # Try to use the database view for better performance
     db_uri = _get_env_value("DATABASE_URL", "")
     
@@ -486,11 +531,13 @@ async def list_runs(current_user: AuthenticatedUser, limit: int = 50):
                                     created_at,
                                     error_message,
                                     failed_skill,
-                                    user_id
+                                    user_id,
+                                    workspace_id
                                 FROM run_metadata
+                                WHERE workspace_id = %s
                                 ORDER BY created_at DESC NULLS LAST
                                 LIMIT %s
-                            """, (limit,))
+                            """, (workspace_id, limit))
                         else:
                             cur.execute("""
                                 SELECT
@@ -502,12 +549,13 @@ async def list_runs(current_user: AuthenticatedUser, limit: int = 50):
                                     created_at,
                                     error_message,
                                     failed_skill,
-                                    user_id
+                                    user_id,
+                                    workspace_id
                                 FROM run_metadata
-                                WHERE user_id = %s
+                                WHERE user_id = %s AND workspace_id = %s
                                 ORDER BY created_at DESC NULLS LAST
                                 LIMIT %s
-                            """, (current_user.id, limit))
+                            """, (current_user.id, workspace_id, limit))
                         
                         rows = cur.fetchall()
                         
@@ -524,6 +572,7 @@ async def list_runs(current_user: AuthenticatedUser, limit: int = 50):
                                 "error_message": row[6],
                                 "failed_skill": row[7],
                                 "user_id": row[8],
+                                "workspace_id": row[9],
                             }
                             for row in rows
                         ]
@@ -553,12 +602,14 @@ async def list_runs(current_user: AuthenticatedUser, limit: int = 50):
 
 
 @api.get("/admin/runs/{thread_id}")
-async def run_detail(thread_id: str, current_user: AuthenticatedUser):
+async def run_detail(thread_id: str, current_user: AuthenticatedUser, workspace_id: Optional[str] = None):
+    workspace_service = get_workspace_service()
+    workspace = await workspace_service.resolve_workspace(current_user.id, workspace_id)
     # Check ownership
-    await _check_run_ownership(thread_id, current_user.id)
+    await _check_run_ownership(thread_id, current_user.id, current_user.is_admin, workspace.id)
     
     cp = checkpointer
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {"configurable": {"thread_id": thread_id, "workspace_id": workspace.id}}
     cp_tuple = None
     try:
         if hasattr(cp, "aget_tuple"):
@@ -573,22 +624,26 @@ async def run_detail(thread_id: str, current_user: AuthenticatedUser):
 
 
 @api.get("/admin/runs/{thread_id}/logs")
-async def get_logs(thread_id: str, current_user: AuthenticatedUser, limit: int = 1000):
+async def get_logs(thread_id: str, current_user: AuthenticatedUser, limit: int = 1000, workspace_id: Optional[str] = None):
     """Retrieve historical logs for a specific thread."""
+    workspace_service = get_workspace_service()
+    workspace = await workspace_service.resolve_workspace(current_user.id, workspace_id)
     # Check ownership
-    await _check_run_ownership(thread_id, current_user.id)
+    await _check_run_ownership(thread_id, current_user.id, current_user.is_admin, workspace.id)
     
     logs = await get_thread_logs(thread_id, limit)
     return {"logs": logs, "count": len(logs)}
 
 
 @api.get("/admin/runs/{thread_id}/metadata")
-async def get_run_metadata_endpoint(thread_id: str, current_user: AuthenticatedUser):
+async def get_run_metadata_endpoint(thread_id: str, current_user: AuthenticatedUser, workspace_id: Optional[str] = None):
     """Get run metadata for a specific thread."""
+    workspace_service = get_workspace_service()
+    workspace = await workspace_service.resolve_workspace(current_user.id, workspace_id)
     # Check ownership
-    await _check_run_ownership(thread_id, current_user.id)
+    await _check_run_ownership(thread_id, current_user.id, current_user.is_admin, workspace.id)
     
-    metadata = await _get_run_metadata(thread_id)
+    metadata = await _get_run_metadata(thread_id, workspace.id)
     if not metadata:
         raise HTTPException(status_code=404, detail="Run metadata not found")
     return metadata
@@ -598,7 +653,7 @@ class RerunRequest(BaseModel):
     ack_key: Optional[str] = None  # Unique key for ACK handshake
 
 @api.post("/rerun/{thread_id}")
-async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: RerunRequest = Body(default=RerunRequest())):
+async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: RerunRequest = Body(default=RerunRequest()), workspace_id: Optional[str] = None):
     """
     Rerun a workflow with ACK handshake for instant UI feedback.
     
@@ -611,13 +666,18 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: R
     import uuid
     import re
     
-    # Check ownership
-    await _check_run_ownership(thread_id, current_user.id)
-    
     # Get the original run metadata
     metadata = await _get_run_metadata(thread_id)
     if not metadata:
         raise HTTPException(status_code=404, detail="Original run not found")
+
+    # Resolve workspace
+    target_workspace_id = metadata.get("workspace_id") or workspace_id
+    workspace_service = get_workspace_service()
+    workspace = await workspace_service.resolve_workspace(current_user.id, target_workspace_id)
+
+    # Check ownership + workspace alignment
+    await _check_run_ownership(thread_id, current_user.id, current_user.is_admin, workspace.id)
     
     # Generate new thread ID with fresh GUID
     new_thread_id = f"thread_{uuid.uuid4()}"
@@ -634,7 +694,8 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: R
         metadata["initial_data"],
         parent_thread_id=thread_id,
         run_name=new_run_name,
-        user_id=current_user.id
+        user_id=current_user.id,
+        workspace_id=workspace.id,
     )
     
     # STEP 2: Send ACK via Pusher (UI will receive and redirect)
@@ -658,12 +719,13 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: R
         })
     
     # STEP 3: Create initial checkpoint
-    config = {"configurable": {"thread_id": new_thread_id}}
+    config = {"configurable": {"thread_id": new_thread_id, "workspace_id": workspace.id}}
     initial_state = {
         "layman_sop": metadata["sop"],
         "data_store": metadata["initial_data"],
         "history": [f"Process Started (Rerun from {base_run_name})"],
         "thread_id": new_thread_id,
+        "workspace_id": workspace.id,
     }
     await app.aupdate_state(config, initial_state)
     

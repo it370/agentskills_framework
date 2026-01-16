@@ -101,7 +101,9 @@ def main():
         (db_dir / "dynamic_skills_schema.sql", "Dynamic skills schema (UI skill builder)", False),
         (db_dir / "add_action_functions_column.sql", "Action functions column (migration)", False),
         (db_dir / "users_schema.sql", "User management schema (authentication)", False),
+        (db_dir / "workspaces_schema.sql", "Workspace schema (per-user isolation)", False),
         (db_dir / "add_user_tracking_migration.sql", "User tracking migration (user_id columns)", False),
+        (db_dir / "add_workspace_columns_migration.sql", "Workspace isolation migration (skills & runs)", False),
         (db_dir / "migrate_to_uuid_and_module_name.sql", "UUID and module_name migration (IMPORTANT: Run manually first for existing DBs)", False),
         (db_dir / "run_list_view.sql", "Run list view with computed status", False),
     ]

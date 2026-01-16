@@ -1,6 +1,7 @@
 import { CheckpointTuple, RunEvent, RunListResponse, RunSummary } from "./types";
 import Pusher from "pusher-js";
 import { getAuthHeaders } from "./auth";
+import { getActiveWorkspaceId } from "./workspaceStorage";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") || "http://localhost:8000";
@@ -9,8 +10,15 @@ const API_BASE =
 const PUSHER_KEY = process.env.NEXT_PUBLIC_PUSHER_KEY || "";
 const PUSHER_CLUSTER = process.env.NEXT_PUBLIC_PUSHER_CLUSTER || "ap2";
 
+function withWorkspace(url: string, workspaceId?: string | null): string {
+  if (!workspaceId) return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}workspace_id=${encodeURIComponent(workspaceId)}`;
+}
+
 export async function fetchRuns(limit = 50): Promise<(CheckpointTuple | RunSummary)[]> {
-  const res = await fetch(`${API_BASE}/admin/runs?limit=${limit}`, {
+  const workspaceId = getActiveWorkspaceId();
+  const res = await fetch(withWorkspace(`${API_BASE}/admin/runs?limit=${limit}`, workspaceId), {
     cache: "no-store",
     headers: getAuthHeaders(),
   });
@@ -24,7 +32,8 @@ export async function fetchRuns(limit = 50): Promise<(CheckpointTuple | RunSumma
 export async function fetchRunDetail(
   threadId: string
 ): Promise<CheckpointTuple> {
-  const res = await fetch(`${API_BASE}/admin/runs/${threadId}`, {
+  const workspaceId = getActiveWorkspaceId();
+  const res = await fetch(withWorkspace(`${API_BASE}/admin/runs/${threadId}`, workspaceId), {
     cache: "no-store",
     headers: getAuthHeaders(),
   });
@@ -38,7 +47,8 @@ export async function fetchThreadLogs(
   threadId: string,
   limit = 1000
 ): Promise<Array<{ id: number; thread_id: string; message: string; created_at: string; level: string }>> {
-  const res = await fetch(`${API_BASE}/admin/runs/${threadId}/logs?limit=${limit}`, {
+  const workspaceId = getActiveWorkspaceId();
+  const res = await fetch(withWorkspace(`${API_BASE}/admin/runs/${threadId}/logs?limit=${limit}`, workspaceId), {
     cache: "no-store",
     headers: getAuthHeaders(),
   });
@@ -53,7 +63,8 @@ export async function approveStep(
   threadId: string,
   updatedData?: Record<string, any>
 ): Promise<{ status: string }> {
-  const res = await fetch(`${API_BASE}/approve/${threadId}`, {
+  const workspaceId = getActiveWorkspaceId();
+  const res = await fetch(withWorkspace(`${API_BASE}/approve/${threadId}`, workspaceId), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -71,7 +82,8 @@ export async function rerunWorkflow(
   threadId: string,
   ackKey?: string
 ): Promise<{ status: string; thread_id: string; parent_thread_id: string; rerun_count: number; run_name?: string }> {
-  const res = await fetch(`${API_BASE}/rerun/${threadId}`, {
+  const workspaceId = getActiveWorkspaceId();
+  const res = await fetch(withWorkspace(`${API_BASE}/rerun/${threadId}`, workspaceId), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -103,8 +115,10 @@ export async function getRunMetadata(
   error_message?: string;
   failed_skill?: string;
   completed_at?: string;
+  workspace_id?: string;
 }> {
-  const res = await fetch(`${API_BASE}/admin/runs/${threadId}/metadata`, {
+  const workspaceId = getActiveWorkspaceId();
+  const res = await fetch(withWorkspace(`${API_BASE}/admin/runs/${threadId}/metadata`, workspaceId), {
     cache: "no-store",
     headers: getAuthHeaders(),
   });
@@ -222,10 +236,14 @@ export interface Skill {
   enabled?: boolean;
   created_at?: string;
   updated_at?: string;
+  workspace_id?: string;
+  owner_id?: string;
+  is_public?: boolean;
 }
 
 export async function fetchSkills(): Promise<{skills: Skill[], count: number}> {
-  const res = await fetch(`${API_BASE}/admin/skills`, {
+  const workspaceId = getActiveWorkspaceId();
+  const res = await fetch(withWorkspace(`${API_BASE}/admin/skills`, workspaceId), {
     cache: "no-store",
     headers: getAuthHeaders(),
   });
@@ -236,7 +254,8 @@ export async function fetchSkills(): Promise<{skills: Skill[], count: number}> {
 }
 
 export async function fetchSkill(name: string): Promise<Skill> {
-  const res = await fetch(`${API_BASE}/admin/skills/${encodeURIComponent(name)}`, {
+  const workspaceId = getActiveWorkspaceId();
+  const res = await fetch(withWorkspace(`${API_BASE}/admin/skills/${encodeURIComponent(name)}`, workspaceId), {
     cache: "no-store",
     headers: getAuthHeaders(),
   });
@@ -247,13 +266,15 @@ export async function fetchSkill(name: string): Promise<Skill> {
 }
 
 export async function createSkill(skill: Skill): Promise<any> {
-  const res = await fetch(`${API_BASE}/admin/skills`, {
+  const workspaceId = getActiveWorkspaceId();
+  const payload = { ...skill, workspace_id: workspaceId };
+  const res = await fetch(withWorkspace(`${API_BASE}/admin/skills`, workspaceId), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...getAuthHeaders(),
     },
-    body: JSON.stringify(skill),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     let errorMessage = `Failed to create skill (${res.status})`;
@@ -281,13 +302,14 @@ export async function createSkill(skill: Skill): Promise<any> {
 }
 
 export async function updateSkill(name: string, updates: Partial<Skill>): Promise<any> {
-  const res = await fetch(`${API_BASE}/admin/skills/${encodeURIComponent(name)}`, {
+  const workspaceId = getActiveWorkspaceId();
+  const res = await fetch(withWorkspace(`${API_BASE}/admin/skills/${encodeURIComponent(name)}`, workspaceId), {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
       ...getAuthHeaders(),
     },
-    body: JSON.stringify(updates),
+    body: JSON.stringify({ ...updates, workspace_id: workspaceId }),
   });
   if (!res.ok) {
     let errorMessage = `Failed to update skill (${res.status})`;
@@ -315,7 +337,8 @@ export async function updateSkill(name: string, updates: Partial<Skill>): Promis
 }
 
 export async function deleteSkill(name: string): Promise<any> {
-  const res = await fetch(`${API_BASE}/admin/skills/${encodeURIComponent(name)}`, {
+  const workspaceId = getActiveWorkspaceId();
+  const res = await fetch(withWorkspace(`${API_BASE}/admin/skills/${encodeURIComponent(name)}`, workspaceId), {
     method: "DELETE",
     headers: getAuthHeaders(),
   });
@@ -327,7 +350,8 @@ export async function deleteSkill(name: string): Promise<any> {
 }
 
 export async function reloadSkills(): Promise<any> {
-  const res = await fetch(`${API_BASE}/admin/skills/reload`, {
+  const workspaceId = getActiveWorkspaceId();
+  const res = await fetch(withWorkspace(`${API_BASE}/admin/skills/reload`, workspaceId), {
     method: "POST",
     headers: getAuthHeaders(),
   });

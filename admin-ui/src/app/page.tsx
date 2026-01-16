@@ -8,6 +8,7 @@ import { CheckpointTuple, RunEvent, RunSummary } from "../lib/types";
 import DashboardLayout from "../components/DashboardLayout";
 import ProtectedRoute from "../components/ProtectedRoute";
 import RerunContextMenu from "../components/RerunContextMenu";
+import { useAppSelector } from "@/store/hooks";
 
 type RunRow = {
   thread_id: string;
@@ -177,9 +178,12 @@ export default function RunsPage() {
   const [itemsPerPage, setItemsPerPage] = useState(10);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [searchTerm, setSearchTerm] = useState("");
+  const { activeWorkspaceId } = useAppSelector((state) => state.workspace);
 
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
+    setRuns({});
     fetchRuns()
       .then((data) => {
         if (cancelled) return;
@@ -195,7 +199,7 @@ export default function RunsPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [activeWorkspaceId]);
 
   useEffect(() => {
     const connection = connectAdminEvents((evt: RunEvent) => {
@@ -247,7 +251,7 @@ export default function RunsPage() {
     return () => {
       connection.disconnect();
     };
-  }, []);
+  }, [activeWorkspaceId]);
 
   const orderedRuns = useMemo(
     () =>

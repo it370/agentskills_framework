@@ -16,6 +16,8 @@ export default function NewSkillPage() {
     produces: [],
     executor: "llm",
     hitl_enabled: false,
+    enabled: true,
+    is_public: false,
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -733,6 +735,40 @@ def format_financial_report(computed_metrics):
             </label>
             <p className="mt-2 text-xs text-gray-600 ml-6">
               Pause workflow for human review after this skill executes
+            </p>
+
+            <label className="flex items-center gap-2 cursor-pointer mt-4">
+              <input
+                type="checkbox"
+                checked={formData.enabled !== false}
+                onChange={(e) =>
+                  setFormData({ ...formData, enabled: e.target.checked })
+                }
+                className="w-4 h-4 text-blue-600 rounded"
+              />
+              <span className="text-sm font-medium text-gray-900">
+                Skill Enabled
+              </span>
+            </label>
+            <p className="mt-2 text-xs text-gray-600 ml-6">
+              Disabled skills will not be available to the planner.
+            </p>
+
+            <label className="flex items-center gap-2 cursor-pointer mt-4">
+              <input
+                type="checkbox"
+                checked={formData.is_public || false}
+                onChange={(e) =>
+                  setFormData({ ...formData, is_public: e.target.checked })
+                }
+                className="w-4 h-4 text-blue-600 rounded"
+              />
+              <span className="text-sm font-medium text-gray-900">
+                Public (visible to all workspaces)
+              </span>
+            </label>
+            <p className="mt-2 text-xs text-gray-600 ml-6">
+              Leave unchecked to keep this skill private to your workspace.
             </p>
           </div>
 

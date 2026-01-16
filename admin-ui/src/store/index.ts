@@ -1,11 +1,13 @@
 import { configureStore } from '@reduxjs/toolkit';
 import runReducer from './slices/runSlice';
 import logsReducer from './slices/logsSlice';
+import workspaceReducer from './slices/workspaceSlice';
 
 export const store = configureStore({
   reducer: {
     run: runReducer,
     logs: logsReducer,
+    workspace: workspaceReducer,
   },
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware({

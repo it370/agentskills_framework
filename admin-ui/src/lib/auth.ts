@@ -3,12 +3,13 @@
  */
 
 export interface User {
-  id: number;
+  id: string;
   username: string;
   email: string;
   is_admin: boolean;
   is_active: boolean;
   created_at: string;
+  default_workspace_id?: string;
 }
 
 export interface AuthResponse {

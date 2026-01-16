@@ -29,6 +29,7 @@ from services.auth_middleware import (
     OptionalUser,
     get_current_user
 )
+from services.workspace_service import get_workspace_service
 
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -162,10 +163,15 @@ async def register(registration: UserRegistration):
             # Log error but don't fail registration
             print(f"[AUTH] Failed to send welcome email: {e}")
     
+    workspace_service = get_workspace_service()
+    default_workspace = await workspace_service.ensure_default(user.id)
+    user_payload = user.to_dict()
+    user_payload["default_workspace_id"] = default_workspace.id
+
     return TokenResponse(
         access_token=token,
         token_type="bearer",
-        user=user.to_dict()
+        user=user_payload
     )
 
 
@@ -191,10 +197,15 @@ async def login(login_data: UserLogin, request: Request):
             headers={"WWW-Authenticate": "Bearer"},
         )
     
+    workspace_service = get_workspace_service()
+    default_workspace = await workspace_service.ensure_default(user.id)
+    user_payload = user.to_dict()
+    user_payload["default_workspace_id"] = default_workspace.id
+
     return TokenResponse(
         access_token=token,
         token_type="bearer",
-        user=user.to_dict()
+        user=user_payload
     )
 
 
@@ -224,7 +235,11 @@ async def get_profile(current_user: AuthenticatedUser):
     """
     Get current user profile
     """
-    return current_user.to_dict()
+    workspace_service = get_workspace_service()
+    default_workspace = await workspace_service.ensure_default(current_user.id)
+    user_payload = current_user.to_dict()
+    user_payload["default_workspace_id"] = default_workspace.id
+    return user_payload
 
 
 @router.post("/password-reset-request", response_model=MessageResponse)
@@ -323,4 +338,8 @@ async def verify_token(current_user: OptionalUser):
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    return current_user.to_dict()
+    workspace_service = get_workspace_service()
+    default_workspace = await workspace_service.ensure_default(current_user.id)
+    user_payload = current_user.to_dict()
+    user_payload["default_workspace_id"] = default_workspace.id
+    return user_payload

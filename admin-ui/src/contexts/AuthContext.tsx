@@ -3,6 +3,7 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { User, getStoredUser, setAuth, clearAuth, getAuthToken } from "@/lib/auth";
+import { setActiveWorkspaceId } from "@/lib/workspaceStorage";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") || "http://localhost:8000";
@@ -100,6 +101,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setAuth(data.access_token, data.user);
     setToken(data.access_token);
     setUser(data.user);
+    if (data.user?.default_workspace_id) {
+      setActiveWorkspaceId(data.user.default_workspace_id);
+    }
     router.push("/");
   }
 
@@ -129,6 +133,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setAuth(data.access_token, data.user);
     setToken(data.access_token);
     setUser(data.user);
+    if (data.user?.default_workspace_id) {
+      setActiveWorkspaceId(data.user.default_workspace_id);
+    }
     router.push("/");
   }
 
@@ -147,6 +154,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     clearAuth();
+    setActiveWorkspaceId(null);
     setToken(null);
     setUser(null);
     router.push("/login");
@@ -167,6 +175,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const userData = await res.json();
       setUser(userData);
       setAuth(token, userData);
+      if (userData?.default_workspace_id) {
+        setActiveWorkspaceId(userData.default_workspace_id);
+      }
     } catch (error) {
       console.error("Failed to refresh user:", error);
       await logout();

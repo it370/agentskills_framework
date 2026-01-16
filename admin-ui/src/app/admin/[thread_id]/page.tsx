@@ -58,6 +58,7 @@ export default function RunDetailPage() {
   const historicalLogsLoaded = useAppSelector(
     (state) => state.logs.historicalLogsLoaded[threadId] || false
   );
+  const { activeWorkspaceId } = useAppSelector((state) => state.workspace);
 
   const threadLogs = useMemo(
     () =>
@@ -116,7 +117,7 @@ export default function RunDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [threadId, initializeRun, loadHistoricalData, initialConfig]);
+  }, [threadId, initializeRun, loadHistoricalData, initialConfig, activeWorkspaceId]);
 
   // If store data arrives via global listeners while loading, stop the spinner
   useEffect(() => {

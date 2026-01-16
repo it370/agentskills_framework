@@ -6,6 +6,7 @@ import Link from "next/link";
 import { fetchSkill, updateSkill, Skill } from "../../../../lib/api";
 import DashboardLayout from "../../../../components/DashboardLayout";
 import PythonEditor from "../../../../components/PythonEditor";
+import { useAppSelector } from "@/store/hooks";
 
 export default function EditSkillPage() {
   const params = useParams();
@@ -39,6 +40,7 @@ export default function EditSkillPage() {
   const [restUrl, setRestUrl] = useState("");
   const [restMethod, setRestMethod] = useState("GET");
   const [restTimeout, setRestTimeout] = useState("30000");
+  const { activeWorkspaceId } = useAppSelector((state) => state.workspace);
 
   useEffect(() => {
     const load = async () => {
@@ -92,7 +94,7 @@ export default function EditSkillPage() {
       }
     };
     load();
-  }, [skillName]);
+  }, [skillName, activeWorkspaceId]);
 
   const handleSubmit = async () => {
     setError(null);
@@ -135,6 +137,7 @@ export default function EditSkillPage() {
         hitl_enabled: formData.hitl_enabled,
         prompt: formData.prompt,
         system_prompt: formData.system_prompt,
+        is_public: formData.is_public,
       };
       
       // Add REST config if REST executor
@@ -846,6 +849,23 @@ def format_financial_report(computed_metrics):
               </label>
               <p className="text-xs text-gray-600 ml-6">
                 Disabled skills are not available in workflows
+              </p>
+
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={formData.is_public || false}
+                  onChange={(e) =>
+                    setFormData({ ...formData, is_public: e.target.checked })
+                  }
+                  className="w-4 h-4 text-blue-600 rounded"
+                />
+                <span className="text-sm font-medium text-gray-900">
+                  Public (visible to all workspaces)
+                </span>
+              </label>
+              <p className="text-xs text-gray-600 ml-6">
+                Public skills can be used outside your workspace.
               </p>
             </div>
           </div>

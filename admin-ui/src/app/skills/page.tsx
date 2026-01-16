@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { fetchSkills, deleteSkill, reloadSkills, Skill } from "../../lib/api";
 import DashboardLayout from "../../components/DashboardLayout";
+import { useAppSelector } from "@/store/hooks";
 
 export default function SkillsPage() {
   const router = useRouter();
@@ -19,6 +20,7 @@ export default function SkillsPage() {
   const [deletingSkill, setDeletingSkill] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(10);
+  const { activeWorkspaceId } = useAppSelector((state) => state.workspace);
 
   const loadSkills = async () => {
     try {
@@ -35,7 +37,7 @@ export default function SkillsPage() {
 
   useEffect(() => {
     loadSkills();
-  }, []);
+  }, [activeWorkspaceId]);
 
   const handleReload = async () => {
     setReloading(true);
@@ -328,6 +330,9 @@ export default function SkillsPage() {
                         Source
                       </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Visibility
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         Actions
                       </th>
                     </tr>
@@ -388,6 +393,17 @@ export default function SkillsPage() {
                             }`}
                           >
                             {skill.source === "database" ? "Database" : "Filesystem"}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span
+                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                              skill.is_public
+                                ? "bg-emerald-100 text-emerald-800"
+                                : "bg-gray-100 text-gray-700"
+                            }`}
+                          >
+                            {skill.is_public ? "Public" : "Workspace-only"}
                           </span>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm">

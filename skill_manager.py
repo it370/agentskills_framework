@@ -24,7 +24,7 @@ def get_db_connection():
     return psycopg.connect(db_uri)
 
 
-def load_skills_from_database() -> List[Dict[str, Any]]:
+def load_skills_from_database(workspace_id: Optional[str] = None, include_public: bool = True) -> List[Dict[str, Any]]:
     """
     Load all enabled skills from the database.
     
@@ -36,21 +36,48 @@ def load_skills_from_database() -> List[Dict[str, Any]]:
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                base_sql = """
                     SELECT 
-                        name, module_name, description, requires, produces, optional_produces,
-                        executor, hitl_enabled, prompt, system_prompt,
-                        rest_config, action_config, action_code, action_functions
+                        name,
+                        module_name,
+                        description,
+                        requires,
+                        produces,
+                        optional_produces,
+                        executor,
+                        hitl_enabled,
+                        prompt,
+                        system_prompt,
+                        rest_config,
+                        action_config,
+                        action_code,
+                        action_functions,
+                        workspace_id::text,
+                        owner_id::text,
+                        is_public
                     FROM dynamic_skills
                     WHERE enabled = true
-                    ORDER BY name
-                """)
+                """
+                params: list[Any] = []
+                if workspace_id:
+                    # Restrict to workspace or public skills
+                    base_sql += " AND (workspace_id = %s"
+                    params.append(workspace_id)
+                    if include_public:
+                        base_sql += " OR is_public = TRUE"
+                    base_sql += ")"
+                elif not include_public:
+                    # If caller explicitly disables public skills, still filter on enabled
+                    base_sql += " AND false"  # No skills returned (safety guard)
+                base_sql += " ORDER BY name"
+                cur.execute(base_sql, params)
                 
                 skills = []
                 for row in cur.fetchall():
                     (name, module_name, description, requires, produces, optional_produces,
                      executor, hitl_enabled, prompt, system_prompt,
-                     rest_config, action_config, action_code, action_functions) = row
+                     rest_config, action_config, action_code, action_functions,
+                     workspace_id, owner_id, is_public) = row
                     
                     try:
                         skill_dict = {
@@ -63,6 +90,9 @@ def load_skills_from_database() -> List[Dict[str, Any]]:
                             "hitl_enabled": hitl_enabled,
                             "prompt": prompt,
                             "system_prompt": system_prompt,
+                            "workspace_id": workspace_id,
+                            "owner_id": owner_id,
+                            "is_public": bool(is_public),
                         }
                         
                         # Add executor-specific config
@@ -263,11 +293,13 @@ def save_skill_to_database(skill_data: Dict[str, Any]) -> str:
                 INSERT INTO dynamic_skills (
                     name, description, requires, produces, optional_produces,
                     executor, hitl_enabled, prompt, system_prompt,
-                    rest_config, action_config, action_code, action_functions, source, enabled
+                    rest_config, action_config, action_code, action_functions,
+                    source, enabled, workspace_id, owner_id, is_public
                 ) VALUES (
                     %(name)s, %(description)s, %(requires)s, %(produces)s, %(optional_produces)s,
                     %(executor)s, %(hitl_enabled)s, %(prompt)s, %(system_prompt)s,
-                    %(rest_config)s, %(action_config)s, %(action_code)s, %(action_functions)s, 'database', %(enabled)s
+                    %(rest_config)s, %(action_config)s, %(action_code)s, %(action_functions)s,
+                    'database', %(enabled)s, %(workspace_id)s, %(owner_id)s, %(is_public)s
                 )
                 ON CONFLICT (name) DO UPDATE SET
                     description = EXCLUDED.description,
@@ -282,7 +314,10 @@ def save_skill_to_database(skill_data: Dict[str, Any]) -> str:
                     action_config = EXCLUDED.action_config,
                     action_code = EXCLUDED.action_code,
                     action_functions = EXCLUDED.action_functions,
-                    enabled = EXCLUDED.enabled
+                    enabled = EXCLUDED.enabled,
+                    workspace_id = EXCLUDED.workspace_id,
+                    owner_id = EXCLUDED.owner_id,
+                    is_public = EXCLUDED.is_public
                 RETURNING id::text
             """, {
                 "name": skill_data["name"],
@@ -299,6 +334,9 @@ def save_skill_to_database(skill_data: Dict[str, Any]) -> str:
                 "action_code": skill_data.get("action_code"),
                 "action_functions": skill_data.get("action_functions"),
                 "enabled": skill_data.get("enabled", True),
+                "workspace_id": skill_data.get("workspace_id"),
+                "owner_id": skill_data.get("owner_id"),
+                "is_public": skill_data.get("is_public", False),
             })
             
             skill_id = cur.fetchone()[0]
@@ -338,7 +376,8 @@ def get_all_skills_metadata() -> List[Dict[str, Any]]:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT name, description, executor, enabled, created_at, updated_at, source, action_config
+                    SELECT name, description, executor, enabled, created_at, updated_at, source, action_config,
+                           workspace_id::text, owner_id::text, is_public
                     FROM dynamic_skills
                     ORDER BY name
                 """)
@@ -352,6 +391,9 @@ def get_all_skills_metadata() -> List[Dict[str, Any]]:
                         "updated_at": row[5].isoformat() if row[5] else None,
                         "source": row[6],
                         "action_config": row[7],  # Add action_config
+                        "workspace_id": row[8],
+                        "owner_id": row[9],
+                        "is_public": bool(row[10]),
                     })
     except Exception as e:
         print(f"[SKILL_DB] Warning: Failed to get database skills: {e}")
@@ -394,7 +436,7 @@ def get_all_skills_metadata() -> List[Dict[str, Any]]:
     return skills
 
 
-def reload_skill_registry():
+def reload_skill_registry(workspace_id: Optional[str] = None, include_public: bool = True):
     """
     Reload the skill registry from both filesystem and database.
     
@@ -407,7 +449,7 @@ def reload_skill_registry():
     filesystem_skills = load_skill_registry()
     
     # Load from database
-    db_skill_dicts = load_skills_from_database()
+    db_skill_dicts = load_skills_from_database(workspace_id=workspace_id, include_public=include_public)
     db_skills = []
     for skill_dict in db_skill_dicts:
         try:
@@ -424,6 +466,7 @@ def reload_skill_registry():
     # Update global registry
     engine.SKILL_REGISTRY = list(skill_map.values())
     
-    print(f"[SKILL_DB] Reloaded {len(engine.SKILL_REGISTRY)} skills ({len(filesystem_skills)} from files, {len(db_skills)} from database)")
+    scope_msg = f" for workspace {workspace_id}" if workspace_id else ""
+    print(f"[SKILL_DB] Reloaded {len(engine.SKILL_REGISTRY)} skills ({len(filesystem_skills)} from files, {len(db_skills)} from database){scope_msg}")
     
     return len(engine.SKILL_REGISTRY)

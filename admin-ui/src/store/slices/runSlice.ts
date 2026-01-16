@@ -12,6 +12,7 @@ export interface RunMetadata {
   user_id?: string;
   parent_thread_id?: string;
   rerun_count?: number;
+  workspace_id?: string;
 }
 
 export interface RunState {

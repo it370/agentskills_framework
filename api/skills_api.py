@@ -11,6 +11,8 @@ import ast
 
 # Get the API instance from main
 from api.main import api
+from services.auth_middleware import AuthenticatedUser
+from services.workspace_service import get_workspace_service
 
 
 def validate_python_code(code: str, field_name: str = "code") -> None:
@@ -64,6 +66,8 @@ class SkillCreateRequest(BaseModel):
     action_config: Optional[Dict[str, Any]] = None
     action_code: Optional[str] = None
     action_functions: Optional[str] = None
+    workspace_id: Optional[str] = None
+    is_public: bool = False
 
 
 class SkillUpdateRequest(BaseModel):
@@ -80,28 +84,46 @@ class SkillUpdateRequest(BaseModel):
     action_config: Optional[Dict[str, Any]] = None
     action_code: Optional[str] = None
     action_functions: Optional[str] = None
+    is_public: Optional[bool] = None
 
 
 @api.get("/admin/skills")
-async def list_skills():
-    """Get all skills (filesystem + database) with metadata."""
+async def list_skills(current_user: AuthenticatedUser, workspace_id: Optional[str] = None):
+    """Get skills visible in the current workspace (filesystem + public + owned)."""
     from skill_manager import get_all_skills_metadata
     
     try:
+        workspace_service = get_workspace_service()
+        workspace = await workspace_service.resolve_workspace(current_user.id, workspace_id)
         skills = get_all_skills_metadata()
-        return {"skills": skills, "count": len(skills)}
+        filtered = []
+        for s in skills:
+            source = s.get("source")
+            skill_ws = s.get("workspace_id")
+            is_public = s.get("is_public", False)
+            if source == "filesystem":
+                filtered.append(s)
+            elif is_public or skill_ws == workspace.id:
+                filtered.append(s)
+        return {"skills": filtered, "count": len(filtered), "workspace_id": workspace.id}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load skills: {str(e)}")
 
 
 @api.get("/admin/skills/{skill_name}")
-async def get_skill(skill_name: str):
+async def get_skill(skill_name: str, current_user: AuthenticatedUser, workspace_id: Optional[str] = None):
     """Get detailed information about a specific skill."""
-    from engine import SKILL_REGISTRY
+    from engine import SKILL_REGISTRY, get_skill_registry_for_workspace
     from skill_manager import get_db_connection
     
-    # First check if skill is in the registry (enabled skills)
-    skill = next((s for s in SKILL_REGISTRY if s.name == skill_name), None)
+    workspace_service = get_workspace_service()
+    workspace = await workspace_service.resolve_workspace(current_user.id, workspace_id)
+    
+    # First check if skill is in the registry (enabled skills) and accessible
+    registry = get_skill_registry_for_workspace(workspace.id)
+    skill = next((s for s in registry if s.name == skill_name), None)
     
     # If not in registry, check database directly (could be disabled)
     if not skill:
@@ -112,13 +134,20 @@ async def get_skill(skill_name: str):
                         SELECT name, module_name, description, requires, produces, optional_produces,
                                executor, hitl_enabled, prompt, system_prompt,
                                rest_config, action_config, action_code, action_functions,
-                               source, enabled, created_at, updated_at
+                               source, enabled, created_at, updated_at,
+                               workspace_id::text, owner_id::text, is_public
                         FROM dynamic_skills
                         WHERE name = %s
                     """, (skill_name,))
                     row = cur.fetchone()
                     
                     if not row:
+                        raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found")
+                    
+                    # Enforce workspace visibility
+                    is_public = bool(row[20])
+                    skill_workspace = row[18]
+                    if not is_public and skill_workspace and skill_workspace != workspace.id:
                         raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found")
                     
                     # Build skill dict from database row
@@ -141,6 +170,9 @@ async def get_skill(skill_name: str):
                         "enabled": row[15],
                         "created_at": row[16].isoformat() if row[16] else None,
                         "updated_at": row[17].isoformat() if row[17] else None,
+                        "workspace_id": skill_workspace,
+                        "owner_id": row[19],
+                        "is_public": is_public,
                     }
                     
                     return skill_dict
@@ -157,12 +189,18 @@ async def get_skill(skill_name: str):
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT source, enabled, created_at, updated_at, action_code, action_functions, module_name
+                    SELECT source, enabled, created_at, updated_at, action_code, action_functions, module_name, workspace_id::text, owner_id::text, is_public
                     FROM dynamic_skills
                     WHERE name = %s
                 """, (skill_name,))
                 row = cur.fetchone()
                 if row:
+                    # Enforce workspace visibility
+                    is_public = bool(row[9])
+                    skill_workspace = row[7]
+                    if not is_public and skill_workspace and skill_workspace != workspace.id:
+                        raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found")
+
                     source = row[0] or "database"
                     db_metadata = {
                         "enabled": row[1],
@@ -171,7 +209,12 @@ async def get_skill(skill_name: str):
                         "action_code": row[4],
                         "action_functions": row[5],
                         "module_name": row[6],
+                        "workspace_id": skill_workspace,
+                        "owner_id": row[8],
+                        "is_public": is_public,
                     }
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"[SKILLS_API] Warning: Failed to check database for skill source: {e}")
     
@@ -187,6 +230,9 @@ async def get_skill(skill_name: str):
         "prompt": skill.prompt,
         "system_prompt": skill.system_prompt,
         "source": source,
+        "workspace_id": getattr(skill, "workspace_id", None),
+        "owner_id": getattr(skill, "owner_id", None),
+        "is_public": getattr(skill, "is_public", False),
     }
     
     # Add database metadata if available
@@ -220,11 +266,14 @@ async def get_skill(skill_name: str):
 
 
 @api.post("/admin/skills")
-async def create_skill(skill: SkillCreateRequest):
+async def create_skill(skill: SkillCreateRequest, current_user: AuthenticatedUser):
     """Create a new skill in the database."""
     from skill_manager import save_skill_to_database, reload_skill_registry
     
     try:
+        workspace_service = get_workspace_service()
+        workspace = await workspace_service.resolve_workspace(current_user.id, skill.workspace_id)
+
         # Validate action_code if it's Python code (for action executor)
         if skill.action_code and skill.executor == "action":
             action_config = skill.action_config or {}
@@ -239,6 +288,9 @@ async def create_skill(skill: SkillCreateRequest):
             validate_python_code(skill.action_functions, "action_functions")
         
         skill_data = skill.dict()
+        skill_data["workspace_id"] = workspace.id
+        skill_data["owner_id"] = current_user.id
+        skill_data["is_public"] = skill.is_public
         skill_id = save_skill_to_database(skill_data)
         
         # Reload registry to include new skill
@@ -258,13 +310,15 @@ async def create_skill(skill: SkillCreateRequest):
 
 
 @api.put("/admin/skills/{skill_name}")
-async def update_skill(skill_name: str, updates: SkillUpdateRequest):
+async def update_skill(skill_name: str, updates: SkillUpdateRequest, current_user: AuthenticatedUser):
     """Update an existing skill in the database."""
     from skill_manager import get_all_skills_metadata, save_skill_to_database, reload_skill_registry
     import psycopg
     from env_loader import load_env_once
     from pathlib import Path
     import os
+    
+    workspace_service = get_workspace_service()
     
     # Check if skill exists and is from database
     all_skills = get_all_skills_metadata()
@@ -278,6 +332,12 @@ async def update_skill(skill_name: str, updates: SkillUpdateRequest):
             status_code=400,
             detail=f"Cannot update filesystem skill '{skill_name}'. Only database skills can be updated via API."
         )
+
+    # Ownership enforcement (unless admin)
+    if not current_user.is_admin:
+        owner_id = skill_meta.get("owner_id")
+        if owner_id and owner_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Not authorized to update this skill")
     
     # Validate action_code if provided
     if updates.action_code is not None and updates.executor == "action":
@@ -302,7 +362,8 @@ async def update_skill(skill_name: str, updates: SkillUpdateRequest):
                 cur.execute("""
                     SELECT name, module_name, description, requires, produces, optional_produces,
                            executor, hitl_enabled, prompt, system_prompt,
-                           rest_config, action_config, action_code, action_functions
+                           rest_config, action_config, action_code, action_functions,
+                           workspace_id::text, owner_id::text, is_public
                     FROM dynamic_skills
                     WHERE name = %s
                 """, (skill_name,))
@@ -327,11 +388,32 @@ async def update_skill(skill_name: str, updates: SkillUpdateRequest):
                     "action_config": row[11],
                     "action_code": row[12],
                     "action_functions": row[13],
+                    "workspace_id": row[14],
+                    "owner_id": row[15],
+                    "is_public": bool(row[16]),
                 }
+
+                # Determine workspace (immutable unless admin explicitly changes via request)
+                target_workspace_id = (
+                    updates.dict(exclude_unset=True).get("workspace_id")
+                    or current_data.get("workspace_id")
+                )
+                if target_workspace_id:
+                    workspace = await workspace_service.resolve_workspace(current_user.id, target_workspace_id)
+                    current_data["workspace_id"] = workspace.id
+                elif current_data.get("workspace_id"):
+                    # Validate existing workspace ownership
+                    await workspace_service.resolve_workspace(current_user.id, current_data["workspace_id"])
+                else:
+                    default_ws = await workspace_service.ensure_default(current_user.id)
+                    current_data["workspace_id"] = default_ws.id
+                current_data["owner_id"] = current_data.get("owner_id") or current_user.id
                 
                 # Apply updates
                 update_dict = updates.dict(exclude_unset=True)
                 current_data.update(update_dict)
+                if updates.is_public is not None:
+                    current_data["is_public"] = updates.is_public
                 
                 # Validate the final merged action_code and action_functions
                 if current_data.get("action_code") and current_data.get("executor") == "action":
@@ -362,9 +444,10 @@ async def update_skill(skill_name: str, updates: SkillUpdateRequest):
 
 
 @api.delete("/admin/skills/{skill_name}")
-async def delete_skill(skill_name: str):
+async def delete_skill(skill_name: str, current_user: AuthenticatedUser):
     """Delete a skill from the database."""
     from skill_manager import delete_skill_from_database, reload_skill_registry, get_all_skills_metadata
+    workspace_service = get_workspace_service()
     
     # Check if skill exists and is from database
     all_skills = get_all_skills_metadata()
@@ -378,6 +461,14 @@ async def delete_skill(skill_name: str):
             status_code=400,
             detail=f"Cannot delete filesystem skill '{skill_name}'. Only database skills can be deleted via API."
         )
+
+    # Ownership enforcement (unless admin)
+    if not current_user.is_admin:
+        owner_id = skill_meta.get("owner_id")
+        if owner_id and owner_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Not authorized to delete this skill")
+    if skill_meta.get("workspace_id"):
+        await workspace_service.resolve_workspace(current_user.id, skill_meta["workspace_id"])
     
     try:
         deleted = delete_skill_from_database(skill_name)
@@ -400,16 +491,21 @@ async def delete_skill(skill_name: str):
 
 
 @api.post("/admin/skills/reload")
-async def reload_skills():
-    """Reload all skills from filesystem and database (hot-reload)."""
+async def reload_skills(current_user: AuthenticatedUser, workspace_id: Optional[str] = None):
+    """Reload skills for the current workspace (hot-reload)."""
     from skill_manager import reload_skill_registry
     
     try:
-        count = reload_skill_registry()
+        workspace_service = get_workspace_service()
+        workspace = await workspace_service.resolve_workspace(current_user.id, workspace_id)
+        count = reload_skill_registry(workspace_id=workspace.id, include_public=True)
         return {
             "status": "reloaded",
             "total_skills": count,
-            "message": f"Successfully reloaded {count} skills"
+            "workspace_id": workspace.id,
+            "message": f"Successfully reloaded {count} skills for workspace {workspace.name}"
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to reload skills: {str(e)}")
