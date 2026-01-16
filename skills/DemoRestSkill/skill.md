@@ -3,11 +3,10 @@ name: DemoRestSkill
 description: Demonstrates a REST-executed skill that resumes after a callback.
 requires: []
 produces:
-  - mock_result
-  - echoed_inputs
+  - system_health_check_report
 executor: rest
 rest:
-  url: http://localhost:8000/demo/rest-task
+  url: http://localhost:8000/health
   method: POST
   timeout: 5
 ---
