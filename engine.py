@@ -1191,6 +1191,198 @@ async def _execute_redis_query(cfg: ActionConfig, inputs: Dict[str, Any]) -> Dic
     raise NotImplementedError("Redis data source not yet implemented")
 
 
+def _get_nested_value(data: Dict[str, Any], path: str) -> Any:
+    """
+    Get value from nested dictionary using dot notation.
+    
+    Examples:
+        _get_nested_value({"a": {"b": 1}}, "a.b") -> 1
+        _get_nested_value({"orders": [{"id": 1}]}, "orders.0.id") -> 1
+    """
+    if not path:
+        return data
+    
+    current = data
+    for part in path.split("."):
+        if current is None:
+            return None
+        
+        # Handle list indexing
+        if isinstance(current, list):
+            try:
+                index = int(part)
+                current = current[index] if index < len(current) else None
+            except (ValueError, IndexError):
+                return None
+        # Handle dict access
+        elif isinstance(current, dict):
+            current = current.get(part)
+        else:
+            return None
+    
+    return current
+
+
+def _evaluate_condition(actual: Any, operator: str, expected: Any) -> bool:
+    """
+    Evaluate a condition using various operators.
+    
+    Operators:
+    - equals, not_equals: Standard equality
+    - contains, not_contains: String/array membership (case-insensitive, expected can be single value or array)
+    - in, not_in: Value in array
+    - gt, gte, lt, lte: Numeric comparison
+    - is_empty, is_not_empty: Emptiness check
+    """
+    try:
+        if operator == "equals":
+            return actual == expected
+        
+        elif operator == "not_equals":
+            return actual != expected
+        
+        elif operator == "contains":
+            # Support single value or array of values (case-insensitive for strings)
+            if isinstance(expected, list):
+                # Check if ANY of the expected values are in actual
+                if isinstance(actual, (list, tuple)):
+                    # For arrays, check each item (case-insensitive for strings)
+                    return any(
+                        str(item).lower() in [str(a).lower() for a in actual]
+                        for item in expected
+                    )
+                else:
+                    # For strings, case-insensitive substring match
+                    actual_lower = str(actual).lower()
+                    return any(str(item).lower() in actual_lower for item in expected)
+            else:
+                # Single value check
+                if isinstance(actual, (list, tuple)):
+                    # Check if expected is in array (case-insensitive for strings)
+                    expected_lower = str(expected).lower()
+                    return any(str(item).lower() == expected_lower for item in actual)
+                else:
+                    # Case-insensitive substring match
+                    return str(expected).lower() in str(actual).lower()
+        
+        elif operator == "not_contains":
+            # Support single value or array of values (case-insensitive for strings)
+            if isinstance(expected, list):
+                # Check if NONE of the expected values are in actual
+                if isinstance(actual, (list, tuple)):
+                    # For arrays, check no items match (case-insensitive for strings)
+                    return not any(
+                        str(item).lower() in [str(a).lower() for a in actual]
+                        for item in expected
+                    )
+                else:
+                    # For strings, case-insensitive substring match
+                    actual_lower = str(actual).lower()
+                    return not any(str(item).lower() in actual_lower for item in expected)
+            else:
+                # Single value check
+                if isinstance(actual, (list, tuple)):
+                    # Check if expected is not in array (case-insensitive for strings)
+                    expected_lower = str(expected).lower()
+                    return not any(str(item).lower() == expected_lower for item in actual)
+                else:
+                    # Case-insensitive substring match
+                    return str(expected).lower() not in str(actual).lower()
+        
+        elif operator == "in":
+            # Value is in array
+            if not isinstance(expected, (list, tuple)):
+                return False
+            return actual in expected
+        
+        elif operator == "not_in":
+            # Value is not in array
+            if not isinstance(expected, (list, tuple)):
+                return True
+            return actual not in expected
+        
+        elif operator == "gt":
+            return float(actual) > float(expected)
+        
+        elif operator == "gte":
+            return float(actual) >= float(expected)
+        
+        elif operator == "lt":
+            return float(actual) < float(expected)
+        
+        elif operator == "lte":
+            return float(actual) <= float(expected)
+        
+        elif operator == "is_empty":
+            if actual is None:
+                return True
+            if isinstance(actual, (list, dict, str)):
+                return len(actual) == 0
+            return not bool(actual)
+        
+        elif operator == "is_not_empty":
+            if actual is None:
+                return False
+            if isinstance(actual, (list, dict, str)):
+                return len(actual) > 0
+            return bool(actual)
+        
+        else:
+            raise ValueError(f"Unknown operator: {operator}")
+    
+    except Exception as e:
+        emit_log(f"[ACTIONS] Condition evaluation error: {e}")
+        return False
+
+
+def _check_step_condition(step: Dict[str, Any], context: Dict[str, Any]) -> bool:
+    """
+    Check if a step should run based on run_if/skip_if conditions.
+    
+    Returns True if step should run, False if it should be skipped.
+    """
+    # Check run_if condition
+    if "run_if" in step:
+        condition = step["run_if"]
+        field_path = condition.get("field")
+        operator = condition.get("operator")
+        expected = condition.get("value")
+        
+        if not field_path or not operator:
+            emit_log(f"[ACTIONS] Warning: Invalid run_if condition, missing field or operator")
+            return True  # Default to running if condition is malformed
+        
+        actual = _get_nested_value(context, field_path)
+        should_run = _evaluate_condition(actual, operator, expected)
+        
+        if not should_run:
+            emit_log(f"[ACTIONS] Step skipped: run_if condition failed ({field_path} {operator} {expected})")
+        
+        return should_run
+    
+    # Check skip_if condition
+    if "skip_if" in step:
+        condition = step["skip_if"]
+        field_path = condition.get("field")
+        operator = condition.get("operator")
+        expected = condition.get("value")
+        
+        if not field_path or not operator:
+            emit_log(f"[ACTIONS] Warning: Invalid skip_if condition, missing field or operator")
+            return True  # Default to running if condition is malformed
+        
+        actual = _get_nested_value(context, field_path)
+        should_skip = _evaluate_condition(actual, operator, expected)
+        
+        if should_skip:
+            emit_log(f"[ACTIONS] Step skipped: skip_if condition met ({field_path} {operator} {expected})")
+        
+        return not should_skip
+    
+    # No conditions, always run
+    return True
+
+
 async def _execute_pipeline_step(
     step: Dict[str, Any],
     context: Dict[str, Any],
@@ -1202,12 +1394,67 @@ async def _execute_pipeline_step(
     """
     Execute a single pipeline step and return the outputs to be merged into context.
     Returns dict with output_key -> value mappings.
+    
+    Supports conditional execution via run_if/skip_if conditions.
     """
     step_type = step.get("type")
     step_name = step.get("name", f"step_{step_idx}")
     error_prefix = f"Pipeline step {step_idx} ({step_name})"
+    
+    # Check if step should run based on conditions
+    if not _check_step_condition(step, context):
+        await publish_log(f"[ACTIONS] Pipeline step {step_idx} ({step_name}): skipped due to condition")
+        return {}  # Return empty dict, don't modify context
 
-    if step_type == "query":
+    if step_type == "conditional":
+        # Execute conditional branching
+        condition = step.get("condition", {})
+        field_path = condition.get("field")
+        operator = condition.get("operator")
+        expected = condition.get("value")
+        
+        if not field_path or not operator:
+            raise ValueError(f"{error_prefix}: 'conditional' type requires 'condition' with 'field' and 'operator'")
+        
+        # Evaluate condition
+        actual = _get_nested_value(context, field_path)
+        condition_met = _evaluate_condition(actual, operator, expected)
+        
+        await publish_log(
+            f"[ACTIONS] Pipeline step {step_idx} ({step_name}): "
+            f"condition {field_path} {operator} {expected} = {condition_met} (actual: {actual})"
+        )
+        
+        # Execute appropriate branch
+        if condition_met:
+            then_step = step.get("then_step")
+            if then_step:
+                await publish_log(f"[ACTIONS] Pipeline step {step_idx} ({step_name}): executing 'then' branch")
+                return await _execute_pipeline_step(
+                    then_step,
+                    context,
+                    f"{step_idx}.then",
+                    default_credential_ref=default_credential_ref,
+                    default_db_config_file=default_db_config_file,
+                    workspace_id=workspace_id,
+                )
+        else:
+            else_step = step.get("else_step")
+            if else_step:
+                await publish_log(f"[ACTIONS] Pipeline step {step_idx} ({step_name}): executing 'else' branch")
+                return await _execute_pipeline_step(
+                    else_step,
+                    context,
+                    f"{step_idx}.else",
+                    default_credential_ref=default_credential_ref,
+                    default_db_config_file=default_db_config_file,
+                    workspace_id=workspace_id,
+                )
+        
+        # No branch to execute or branch was None
+        return {}
+
+    elif step_type == "query":
         # Execute a data query step
         source = step.get("source")
         if not source:
