@@ -19,9 +19,7 @@ function NewRunForm() {
     // "Retrieve order details of given order, if a valid company is obtained run through logbook to find the company's contact details."
     "Just execute Profiler Retriever, display result and end."
   );
-  const [initialData, setInitialData] = useState(
-    JSON.stringify({ order_number: "00000003" }, null, 2)
-  );
+  const [initialData, setInitialData] = useState("");  // Empty by default, use placeholder
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ackUnsubscribe, setAckUnsubscribe] = useState<(() => void) | null>(null);
@@ -87,7 +85,12 @@ function NewRunForm() {
 
     let parsedData;
     try {
-      parsedData = JSON.parse(initialData);
+      // Allow empty string - treat as empty object
+      if (!initialData.trim()) {
+        parsedData = {};
+      } else {
+        parsedData = JSON.parse(initialData);
+      }
     } catch (e) {
       setError("Initial Data must be valid JSON");
       setLoading(false);
@@ -255,10 +258,10 @@ function NewRunForm() {
           <div className="bg-white rounded-lg border border-gray-200 p-6">
             <label className="block mb-2">
               <span className="text-sm font-medium text-gray-900">
-                Initial Data (JSON)
+                Initial Data (JSON) <span className="text-gray-500 font-normal">(Optional)</span>
               </span>
               <p className="mt-1 text-xs text-gray-600">
-                Provide the starting data for the workflow
+                Provide the starting data for the workflow. Leave empty if not needed.
               </p>
             </label>
             <textarea
@@ -266,7 +269,7 @@ function NewRunForm() {
               onChange={(e) => setInitialData(e.target.value)}
               className="w-full h-64 px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
               spellCheck={false}
-              placeholder='{ "key": "value" }'
+              placeholder='{ "order_number": "00000003" }'
             />
           </div>
 

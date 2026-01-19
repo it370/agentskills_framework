@@ -62,7 +62,7 @@ api.include_router(mock_router)
 class StartRequest(BaseModel):
     thread_id: str
     sop: str
-    initial_data: Dict[str, Any]
+    initial_data: Optional[Dict[str, Any]] = None  # Optional initial state
     run_name: Optional[str] = None  # Human-friendly name (optional)
     ack_key: Optional[str] = None  # Unique key for ACK handshake
     workspace_id: Optional[str] = None  # Target workspace (defaults to user's default)
@@ -90,7 +90,7 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
     await _save_run_metadata(
         req.thread_id,
         req.sop,
-        req.initial_data,
+        req.initial_data or {},  # Default to empty dict if None
         run_name=run_name,
         user_id=current_user.id,
         workspace_id=workspace_id,
@@ -115,7 +115,7 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
     config = {"configurable": {"thread_id": req.thread_id, "workspace_id": workspace_id}}
     initial_state = {
         "layman_sop": req.sop,
-        "data_store": req.initial_data,
+        "data_store": req.initial_data or {},  # Default to empty dict if None
         "history": ["Process Started"],
         "thread_id": req.thread_id,
         "workspace_id": workspace_id,
@@ -189,7 +189,7 @@ async def _save_run_metadata(
                         rerun_count = EXCLUDED.rerun_count,
                         user_id = EXCLUDED.user_id,
                         workspace_id = EXCLUDED.workspace_id
-                """, (thread_id, run_name, sop, json.dumps(initial_data), parent_thread_id, rerun_count, user_id, workspace_id))
+                """, (thread_id, run_name, sop, json.dumps(initial_data or {}), parent_thread_id, rerun_count, user_id, workspace_id))
             conn.commit()
         finally:
             pool.putconn(conn)
