@@ -376,7 +376,7 @@ class AgentState(TypedDict):
     history: Annotated[List[str], lambda x, y: x + y]
     thread_id: str
     workspace_id: Optional[str]
-    workspace_id: Optional[str]
+    execution_sequence: Optional[List[str]]  # Track skill execution order for loop detection
 
 
 # --- Utilities ---
@@ -460,6 +460,42 @@ def _completed_skills(history: List[str]) -> Set[str]:
         if entry.startswith("Executed "):
             completed.add(entry.replace("Executed ", "", 1).replace(" (REST callback)", ""))
     return completed
+
+
+def _detect_infinite_loop(execution_sequence: List[str]) -> Optional[str]:
+    """
+    Detect infinite loops in skill execution.
+    
+    Rules:
+    - If the same skill executes 3+ times in a row: LOOP
+    - If pattern A->B->A->B or A->B->C->A->B->C detected: LOOP
+    
+    Returns error message if loop detected, None otherwise.
+    """
+    if not execution_sequence or len(execution_sequence) < 3:
+        return None
+    
+    # Get last 6 executions for pattern detection
+    recent = execution_sequence[-6:]
+    
+    # Rule 1: Same skill executed 3+ times consecutively
+    if len(recent) >= 3:
+        last_three = recent[-3:]
+        if last_three[0] == last_three[1] == last_three[2]:
+            return f"Infinite loop detected: '{last_three[0]}' executed 3 times in a row"
+    
+    # Rule 2: Alternating pattern A->B->A->B (2 skills repeating)
+    if len(recent) >= 4:
+        last_four = recent[-4:]
+        if last_four[0] == last_four[2] and last_four[1] == last_four[3]:
+            return f"Infinite loop detected: alternating pattern '{last_four[0]}' -> '{last_four[1]}' -> '{last_four[0]}' -> '{last_four[1]}'"
+    
+    # Rule 3: Three-skill cycle A->B->C->A->B->C
+    if len(recent) >= 6:
+        if recent[0] == recent[3] and recent[1] == recent[4] and recent[2] == recent[5]:
+            return f"Infinite loop detected: cycle pattern '{recent[0]}' -> '{recent[1]}' -> '{recent[2]}' repeating"
+    
+    return None
 
 
 def _get_path_value(data: Dict[str, Any], path: str) -> Any:
@@ -1526,9 +1562,9 @@ def get_skill_registry_for_workspace(workspace_id: Optional[str]) -> List[Skill]
 async def autonomous_planner(state: AgentState):
     await publish_log(f"\n[PLANNER] Assessing state. Current data: {list(state['data_store'].keys())}")
     
+    workspace_id = state.get("workspace_id")
     current_keys = _available_keys(state["data_store"])
     pending_rest = _rest_pending(state["data_store"])
-    workspace_id = state.get("workspace_id")
     workspace_registry = get_skill_registry_for_workspace(workspace_id)
 
     # Check if workflow has failed - if so, go directly to END
@@ -1538,11 +1574,10 @@ async def autonomous_planner(state: AgentState):
         error = data_store.get("_error", "Unknown error")
         await publish_log(f"[PLANNER] Workflow failed at {failed_skill}: {error}")
         await publish_log(f"[PLANNER] Reached END. Execution failed.")
-        # Explicitly preserve the data_store with failed status when returning END
         return {
             "active_skill": "END",
             "history": [f"Workflow ended due to failure in {failed_skill}"],
-            "data_store": data_store  # Preserve the failed status
+            "data_store": data_store
         }
 
     # Guardrail: if any REST skill is pending, do not plan new work. Wait for callback.
@@ -1842,6 +1877,29 @@ async def skilled_executor(state: AgentState):
     skill_meta = next(s for s in registry if s.name == skill_name)
 
     await publish_log(f"[EXECUTOR] Running {skill_name}...")
+    
+    # Track execution sequence for loop detection
+    execution_sequence = state.get("execution_sequence") or []
+    execution_sequence.append(skill_name)
+    
+    # Check for infinite loops BEFORE executing
+    loop_error = _detect_infinite_loop(execution_sequence)
+    if loop_error:
+        await publish_log(f"[EXECUTOR] 🚨 {loop_error}")
+        await publish_log(f"[EXECUTOR] Execution sequence: {' -> '.join(execution_sequence[-10:])}")
+        
+        # Mark workflow as failed due to infinite loop
+        updated_store = state["data_store"]
+        updated_store["_error"] = loop_error
+        updated_store["_failed_skill"] = skill_name
+        updated_store["_status"] = "failed"
+        
+        return {
+            "data_store": updated_store,
+            "execution_sequence": execution_sequence,
+            "history": [f"INFINITE LOOP DETECTED: {loop_error}"],
+            "active_skill": "END"  # Force workflow to end
+        }
 
     present_keys = _available_keys(state["data_store"])
     missing_inputs = {req for req in skill_meta.requires if req not in present_keys}
@@ -1862,6 +1920,7 @@ async def skilled_executor(state: AgentState):
         
         return {
             "data_store": updated_store,
+            "execution_sequence": execution_sequence,
             "history": [f"Executed {skill_meta.name} ({skill_meta.executor})"],
             "active_skill": None  # Clear active skill to allow planner to continue
         }
@@ -1878,6 +1937,7 @@ async def skilled_executor(state: AgentState):
         
         return {
             "data_store": updated_store,
+            "execution_sequence": execution_sequence,
             "history": [f"Skill {skill_meta.name} failed: {error_msg}"],
             "active_skill": "END"  # Force workflow to end
         }

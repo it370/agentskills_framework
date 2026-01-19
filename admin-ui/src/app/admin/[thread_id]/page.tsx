@@ -160,12 +160,14 @@ export default function RunDetailPage() {
                      (initialDataFromUrl ? (() => { try { return JSON.parse(initialDataFromUrl); } catch { return {}; } })() : {});
   const runName = runMetadata?.run_name || threadId;
 
-  const derivedStatus: "pending" | "running" | "paused" | "completed" | "error" = 
+  const derivedStatus: "pending" | "running" | "paused" | "completed" | "error" | "cancelled" = 
     // If we don't have checkpoint data yet, show as pending/initializing
     !run ? "pending" :
-    // PRIORITY 1: Check if workflow failed
+    // PRIORITY 1: Check for cancelled status
+    dataStore._status === "cancelled" ? "cancelled" :
+    // PRIORITY 2: Check if workflow failed
     isFailedRun ? "error" :
-    // PRIORITY 2: Check for END state
+    // PRIORITY 3: Check for END state
     activeSkill === "END" ? "completed" :
     // Check explicit human review state (most reliable for paused)
     isAtHumanReview ? "paused" :
@@ -177,7 +179,7 @@ export default function RunDetailPage() {
     history.length > 0 ? "completed" :
     "pending";
 
-  const status: "pending" | "running" | "paused" | "completed" | "error" =
+  const status: "pending" | "running" | "paused" | "completed" | "error" | "cancelled" =
     (runMetadata?.status as any) || derivedStatus;
 
   // If we reach a terminal status and are still missing detailed data, fetch once (covers live event after run + hard refresh gaps)
@@ -215,6 +217,8 @@ export default function RunDetailPage() {
         return { bg: "bg-amber-100", text: "text-amber-800", dot: "bg-amber-500 animate-pulse" };
       case "error":
         return { bg: "bg-red-100", text: "text-red-800", dot: "bg-red-500" };
+      case "cancelled":
+        return { bg: "bg-gray-100", text: "text-gray-800", dot: "bg-gray-500" };
       default:
         return { bg: "bg-gray-100", text: "text-gray-700", dot: "bg-gray-400" };
     }
@@ -296,6 +300,24 @@ export default function RunDetailPage() {
     }
   };
 
+  const handleStop = async () => {
+    if (!confirm("Are you sure you want to stop this run? This action cannot be undone.")) {
+      return;
+    }
+    
+    setLoading(true);
+    try {
+      const { stopRun } = await import("../../../lib/api");
+      await stopRun(threadId);
+      await load(); // Refresh to show cancelled status
+      setError(null);
+    } catch (err: any) {
+      setError(err.message || "Failed to stop run");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <DashboardLayout>
       <div className="p-8">
@@ -365,9 +387,23 @@ export default function RunDetailPage() {
                   HITL Review
                 </button>
               )}
+              {(status === "running" || status === "paused") && (
+                <button
+                  onClick={handleStop}
+                  disabled={loading}
+                  className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white border border-red-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Stop this run"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                  Stop Run
+                </button>
+              )}
               <RerunContextMenu
                 threadId={threadId}
                 onError={(err) => setError(err)}
+                runStatus={status}
               />
               <button
                 onClick={() => load()}

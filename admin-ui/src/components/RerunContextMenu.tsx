@@ -8,16 +8,19 @@ interface RerunContextMenuProps {
   threadId: string;
   className?: string;
   onError?: (error: string) => void;
+  runStatus?: "pending" | "running" | "paused" | "completed" | "error" | "cancelled";
 }
 
 export default function RerunContextMenu({
   threadId,
   className = "",
   onError,
+  runStatus,
 }: RerunContextMenuProps) {
   const router = useRouter();
   const [isOpen, setIsOpen] = useState(false);
   const [isRerunning, setIsRerunning] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
 
   const handleRerunAsIs = async (e: React.MouseEvent) => {
     e.preventDefault();
@@ -99,6 +102,36 @@ export default function RerunContextMenu({
     }
   };
 
+  const handleStop = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsOpen(false);
+    
+    if (!confirm('Are you sure you want to stop this run? This action cannot be undone.')) {
+      return;
+    }
+    
+    setIsStopping(true);
+    try {
+      const { stopRun } = await import("../lib/api");
+      await stopRun(threadId);
+      
+      // Reload the page to show updated status
+      if (typeof window !== 'undefined') {
+        window.location.reload();
+      }
+    } catch (err: any) {
+      console.error("[Stop] Error:", err);
+      if (onError) {
+        onError(err.message || "Failed to stop run");
+      } else {
+        alert(`Failed to stop: ${err.message}`);
+      }
+    } finally {
+      setIsStopping(false);
+    }
+  };
+
   return (
     <div className={`relative ${className}`}>
       <button
@@ -137,6 +170,32 @@ export default function RerunContextMenu({
           {/* Menu */}
           <div className="absolute right-0 mt-2 w-56 rounded-lg shadow-lg bg-white ring-1 ring-black ring-opacity-5 z-20">
             <div className="py-1">
+              {(runStatus === "running" || runStatus === "paused") && (
+                <>
+                  <button
+                    onClick={handleStop}
+                    disabled={isStopping}
+                    className="w-full text-left px-4 py-2 text-sm text-red-700 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 font-medium"
+                  >
+                    <svg
+                      className="w-4 h-4"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M6 18L18 6M6 6l12 12"
+                      />
+                    </svg>
+                    {isStopping ? 'Stopping...' : 'Stop Run'}
+                  </button>
+                  <div className="border-t border-gray-200 my-1"></div>
+                </>
+              )}
+              
               <button
                 onClick={handleRerunAsIs}
                 disabled={isRerunning}

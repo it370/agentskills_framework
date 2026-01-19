@@ -30,6 +30,9 @@ ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",
 
 api = FastAPI(title="Agentic SOP Orchestrator")
 
+# Track background workflow tasks so we can cancel them.
+RUN_TASKS: Dict[str, asyncio.Task] = {}
+
 # CORS: allow all for dev, or specific origins from env
 if "*" in ALLOWED_ORIGINS:
     api.add_middleware(
@@ -119,6 +122,7 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
         "history": ["Process Started"],
         "thread_id": req.thread_id,
         "workspace_id": workspace_id,
+        "execution_sequence": [],  # Track skill execution order for loop detection
     }
     
     await app.aupdate_state(config, initial_state)
@@ -137,9 +141,68 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
     # STEP 5: Log start
     emit_log(f"[API] Start requested for thread={req.thread_id} by user={current_user.username}", req.thread_id)
     # STEP 6: Run workflow (will send progress updates via Pusher)
-    asyncio.create_task(_run_workflow(initial_state, config))
+    task = asyncio.create_task(_run_workflow(initial_state, config))
+    RUN_TASKS[req.thread_id] = task
+    task.add_done_callback(lambda t, thread_id=req.thread_id: RUN_TASKS.pop(thread_id, None))
     # STEP 7: Return response
     return {"status": "started", "thread_id": req.thread_id, "run_name": run_name}
+
+
+@api.post("/stop/{thread_id}")
+async def stop_run(thread_id: str, current_user: AuthenticatedUser):
+    """
+    Stop a running workflow by forcing it to END with cancelled status.
+    
+    This will:
+    1. Verify user owns the run
+    2. Update state to force workflow to END
+    3. Mark run as cancelled in database
+    4. Broadcast cancellation event
+    """
+    # Check ownership
+    await _check_run_ownership(thread_id, current_user.id)
+    
+    try:
+        # Cancel the running workflow task if it exists
+        task = RUN_TASKS.get(thread_id)
+        if not task or task.done():
+            raise HTTPException(status_code=400, detail="Run is not active")
+
+        emit_log(f"[API] Cancelling workflow task for thread={thread_id}")
+        task.cancel()
+        try:
+            await asyncio.wait_for(task, timeout=2.0)
+        except asyncio.TimeoutError:
+            emit_log(f"[API] Stop requested for thread={thread_id}, task did not cancel within timeout.")
+        except asyncio.CancelledError:
+            emit_log(f"[API] Workflow task cancelled for thread={thread_id}")
+
+        await publish_log(f"[API] 🛑 STOP signal sent. Workflow task cancelled.", thread_id)
+
+        # Update database status
+        await _update_run_status(thread_id, "cancelled")
+        
+        # Broadcast cancellation event
+        await broadcast_run_event({
+            "type": "run_cancelled",
+            "thread_id": thread_id,
+            "cancelled_by": current_user.username
+        })
+        
+        await publish_log(f"[API] Run {thread_id} cancelled by {current_user.username}", thread_id)
+        
+        return {
+            "status": "cancelled",
+            "thread_id": thread_id,
+            "message": "Run has been stopped"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as exc:
+        emit_log(f"[API] Failed to stop run {thread_id}: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to stop run: {str(exc)}")
+
 
 
 async def _save_run_metadata(
@@ -366,6 +429,10 @@ async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any]):
         else:
             await publish_log(f"[API] Workflow paused at {next_nodes} for thread={thread_id}", thread_id)
             
+    except asyncio.CancelledError:
+        await publish_log(f"[API] Workflow task cancelled for thread={thread_id}", thread_id)
+        await _update_run_status(thread_id, "cancelled")
+        raise
     except Exception as exc:
         # Log the error
         await publish_log(f"[API] Workflow error for thread={thread_id}: {exc}", thread_id)
@@ -393,6 +460,8 @@ async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any]):
             await publish_log(f"[API] Workflow marked as failed and stopped for thread={thread_id}", thread_id)
         except Exception as update_exc:
             emit_log(f"[API] Failed to update workflow state after error: {update_exc}")
+    finally:
+        RUN_TASKS.pop(thread_id, None)
 
 @api.get("/status/{thread_id}")
 async def get_status(thread_id: str, current_user: AuthenticatedUser, workspace_id: Optional[str] = None):
@@ -726,6 +795,7 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: R
         "history": [f"Process Started (Rerun from {base_run_name})"],
         "thread_id": new_thread_id,
         "workspace_id": workspace.id,
+        "execution_sequence": [],
     }
     await app.aupdate_state(config, initial_state)
     
@@ -745,7 +815,9 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: R
     await publish_log(f"[API] Rerun requested from thread={thread_id} -> new thread={new_thread_id} by user={current_user.username}", new_thread_id)
     
     # STEP 6: Run workflow (will send progress updates via Pusher)
-    asyncio.create_task(_run_workflow(initial_state, config))
+    task = asyncio.create_task(_run_workflow(initial_state, config))
+    RUN_TASKS[new_thread_id] = task
+    task.add_done_callback(lambda t, thread_id=new_thread_id: RUN_TASKS.pop(thread_id, None))
     
     # STEP 7: Return response
     return {

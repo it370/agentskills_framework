@@ -57,8 +57,10 @@ function normalizeRun(cp: CheckpointTuple | RunSummary): RunRow {
   // Derive status from data_store._status, active_skill and history
   let status = "pending";
   
-  // PRIORITY 1: Check if explicitly failed in data_store
-  if (dataStore._status === "failed") {
+  // PRIORITY 1: Check if explicitly cancelled/failed in data_store
+  if (dataStore._status === "cancelled") {
+    status = "cancelled";
+  } else if (dataStore._status === "failed") {
     status = "error";
   }
   // PRIORITY 2: Check history for failure markers
@@ -126,6 +128,12 @@ function StatusBadge({ status }: { status?: string }) {
       text: "text-red-800",
       dot: "bg-red-500",
       label: "Error",
+    },
+    cancelled: {
+      bg: "bg-gray-100",
+      text: "text-gray-800",
+      dot: "bg-gray-500",
+      label: "Cancelled",
     },
     pending: {
       bg: "bg-gray-100",

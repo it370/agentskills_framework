@@ -78,6 +78,21 @@ export async function approveStep(
   return await res.json();
 }
 
+export async function stopRun(threadId: string): Promise<{ status: string; message: string }> {
+  const res = await fetch(`${API_BASE}/stop/${threadId}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...getAuthHeaders(),
+    },
+  });
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Failed to stop run: ${errorText}`);
+  }
+  return await res.json();
+}
+
 export async function rerunWorkflow(
   threadId: string,
   ackKey?: string
