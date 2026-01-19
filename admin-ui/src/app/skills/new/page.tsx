@@ -503,13 +503,12 @@ export default function NewSkillPage() {
                               const template = `\n  - type: query
     name: my_query
     source: postgres
-    credential_ref: postgres_aiven_cloud_db
-    query: "SELECT * FROM table WHERE id = {param}"
-    output: query_result\n`;
+    query: "SELECT * FROM customers WHERE id = {order.customer_id}"
+    output: customer\n`;
                               setActionCodeOrQuery(actionCodeOrQuery + template);
                             }}
                             className="px-3 py-1.5 text-xs font-medium bg-blue-100 hover:bg-blue-200 text-blue-700 border border-blue-300 rounded-md transition-colors shadow-sm"
-                            title="Insert Query step"
+                            title="Insert Query step (supports nested placeholders like {order.customer_id})"
                           >
                             + Query
                           </button>
@@ -563,6 +562,54 @@ export default function NewSkillPage() {
                           <button
                             type="button"
                             onClick={() => {
+                              const template = `\n  - type: conditional
+    name: check_condition
+    condition:
+      field: order.status
+      operator: equals
+      value: pending
+    then_step:
+      type: query
+      name: process_pending
+      source: postgres
+      query: "UPDATE orders SET processed = true WHERE id = {order.id}"
+      output: processed
+    else_step:
+      type: query
+      name: log_skip
+      source: postgres
+      query: "INSERT INTO logs (message) VALUES ('Order {order.id} already processed')"
+      output: log_entry\n`;
+                              setActionCodeOrQuery(actionCodeOrQuery + template);
+                            }}
+                            className="px-3 py-1.5 text-xs font-medium bg-yellow-100 hover:bg-yellow-200 text-yellow-700 border border-yellow-300 rounded-md transition-colors shadow-sm"
+                            title="Insert Conditional step (if/else branching)"
+                          >
+                            + Conditional
+                          </button>
+                          
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const template = `\n  - type: query
+    name: my_query
+    source: postgres
+    query: "SELECT * FROM customers WHERE id = {order.customer_id}"
+    output: customer
+    run_if:
+      field: order.customer_id
+      operator: is_not_empty\n`;
+                              setActionCodeOrQuery(actionCodeOrQuery + template);
+                            }}
+                            className="px-3 py-1.5 text-xs font-medium bg-teal-100 hover:bg-teal-200 text-teal-700 border border-teal-300 rounded-md transition-colors shadow-sm"
+                            title="Insert Query with run_if condition"
+                          >
+                            + Run If
+                          </button>
+                          
+                          <button
+                            type="button"
+                            onClick={() => {
                               const template = `\n  - type: parallel
     name: run_in_parallel
     steps:
@@ -602,44 +649,61 @@ export default function NewSkillPage() {
                         onChange={(e) => setActionCodeOrQuery(e.target.value)}
                         placeholder={
                           actionType === "data_query"
-                            ? "SELECT * FROM users WHERE id = {user_id}"
+                            ? "SELECT * FROM customers WHERE id = {order.customer_id}"
                             : `steps:
-  # Parallel execution - both queries run simultaneously!
-  - type: parallel
-    name: fetch_all_financial_data
-    steps:
-      - type: query
-        name: fetch_sales
-        source: postgres
-        credential_ref: postgres_aiven_cloud_db
-        query: "SELECT * FROM sales WHERE date >= {start_date}"
-        output: sales_data
-      
-      - type: query
-        name: fetch_expenses
-        source: postgres
-        credential_ref: postgres_aiven_cloud_db
-        query: "SELECT * FROM expenses WHERE date >= {start_date}"
-        output: expense_data
+  # Example: Order Processing with Conditionals
+  - type: query
+    name: fetch_order
+    source: postgres
+    query: "SELECT * FROM orders WHERE id = {order_id}"
+    output: order
   
-  # Outputs are auto-merged! Both sales_data and expense_data available
+  # Nested access: {order.customer_id}
+  - type: query
+    name: fetch_customer
+    source: postgres
+    query: "SELECT * FROM customers WHERE id = {order.customer_id}"
+    output: customer
   
-  - type: skill
-    name: llm_analysis
-    skill: FinancialAnalyzer
-    inputs: [sales_data, expense_data]
+  # Conditional branching (if/else)
+  - type: conditional
+    name: check_order_value
+    condition:
+      field: order.total
+      operator: gt
+      value: 1000
+    then_step:
+      type: query
+      name: apply_premium_discount
+      source: postgres
+      query: "UPDATE orders SET discount = 0.15 WHERE id = {order.id}"
+      output: discount_applied
+    else_step:
+      type: query
+      name: apply_standard_discount
+      source: postgres
+      query: "UPDATE orders SET discount = 0.05 WHERE id = {order.id}"
+      output: discount_applied
   
+  # Conditional execution (run_if)
+  - type: query
+    name: notify_customer
+    source: postgres
+    query: "INSERT INTO notifications (email, message) VALUES ('{customer.email}', 'Order {order.id} processed')"
+    output: notification
+    run_if:
+      field: customer.email
+      operator: is_not_empty
+  
+  # Array indexing: {items.0.id}
   - type: transform
-    name: compute_metrics
-    function: compute_financial_metrics
-    inputs: [sales_data, expense_data]
-    output: computed_metrics
-  
-  - type: transform
-    name: format_report
-    function: format_financial_report
-    inputs: [computed_metrics]
-    output: final_report`
+    name: process_first_item
+    function: process_item
+    inputs: [order]
+    output: processed_item
+    skip_if:
+      field: order.items
+      operator: is_empty`
                         }
                         className="w-full h-48 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm bg-gray-900 text-gray-100"
                       />
@@ -652,12 +716,13 @@ export default function NewSkillPage() {
                       )}
                       {actionType === "data_query" && (
                         <>
-                          Write SQL with <code className="bg-gray-100 px-1 rounded">{'"{param}"'}</code> placeholders from data_store.
+                          Write SQL with <code className="bg-gray-100 px-1 rounded">{'"{param}"'}</code> placeholders. Supports nested access: <code className="bg-gray-100 px-1 rounded">{'"{order.customer_id}"'}</code>, <code className="bg-gray-100 px-1 rounded">{'"{items.0.id}"'}</code>
                         </>
                       )}
                       {actionType === "data_pipeline" && (
                         <>
-                          Define multi-step pipeline with <code className="bg-gray-100 px-1 rounded">query</code>, <code className="bg-gray-100 px-1 rounded">transform</code>, <code className="bg-gray-100 px-1 rounded">skill</code>, <code className="bg-gray-100 px-1 rounded">merge</code>, and <code className="bg-gray-100 px-1 rounded">parallel</code> steps. Use parallel to run independent steps concurrently for better performance.
+                          Define multi-step pipeline with <code className="bg-gray-100 px-1 rounded">query</code>, <code className="bg-gray-100 px-1 rounded">transform</code>, <code className="bg-gray-100 px-1 rounded">skill</code>, <code className="bg-gray-100 px-1 rounded">conditional</code>, <code className="bg-gray-100 px-1 rounded">merge</code>, and <code className="bg-gray-100 px-1 rounded">parallel</code> steps. 
+                          Supports nested placeholders (<code className="bg-gray-100 px-1 rounded">{'"{order.customer_id}"'}</code>) and conditions (<code className="bg-gray-100 px-1 rounded">run_if</code>, <code className="bg-gray-100 px-1 rounded">skip_if</code>).
                         </>
                       )}
                     </p>
