@@ -1690,7 +1690,7 @@ def _apply_output_spec(output_spec: Any, value: Any, *, error_prefix: str) -> Di
         )
     raise ValueError(f"{error_prefix}: 'output' must be a string or list of strings, got {type(output_spec)}")
 
-async def _execute_data_pipeline(cfg: ActionConfig, inputs: Dict[str, Any]) -> Dict[str, Any]:
+async def _execute_data_pipeline(cfg: ActionConfig, inputs: Dict[str, Any], workspace_id: Optional[str] = None) -> Dict[str, Any]:
     """Execute multi-step data pipeline with support for parallel execution"""
     if not cfg.steps:
         raise ValueError("data_pipeline action requires 'steps' field")
