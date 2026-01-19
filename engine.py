@@ -593,12 +593,58 @@ def _progress_summary(state: AgentState) -> List[str]:
 def _format_with_ctx(template: str, ctx: Dict[str, Any]) -> str:
     """
     Render a string template using values from ctx.
+    Supports nested paths like {order.customer.id} and array indexing like {orders.0.id}.
+    
+    Examples:
+        _format_with_ctx("User: {user_id}", {"user_id": 123}) -> "User: 123"
+        _format_with_ctx("Email: {user.email}", {"user": {"email": "a@b.com"}}) -> "Email: a@b.com"
+        _format_with_ctx("First: {items.0.name}", {"items": [{"name": "X"}]}) -> "First: X"
+    
     Raises a clear error if placeholders are missing.
     """
+    import re
+    
+    def replace_placeholder(match):
+        placeholder = match.group(1)
+        
+        # Try nested path first (if contains dot)
+        if '.' in placeholder:
+            value = _get_nested_value(ctx, placeholder)
+            if value is not None:
+                return str(value)
+            # If nested path returns None, check if it's truly missing or just None value
+            # We'll treat None as a valid value, so only raise error if path doesn't exist
+            # For now, we'll check if the first part exists in context
+            first_key = placeholder.split('.')[0]
+            if first_key not in ctx:
+                available = ', '.join(sorted(ctx.keys())) if ctx else '(none)'
+                raise RuntimeError(
+                    f"Missing placeholder '{placeholder}' in template.\n"
+                    f"First key '{first_key}' not found in context.\n"
+                    f"Available keys: {available}"
+                )
+            # Path exists but value is None, return empty string or 'None'
+            return str(value) if value is not None else ''
+        
+        # Fall back to direct key access for simple keys
+        if placeholder in ctx:
+            value = ctx[placeholder]
+            return str(value) if value is not None else ''
+        
+        # Placeholder not found
+        available = ', '.join(sorted(ctx.keys())) if ctx else '(none)'
+        raise RuntimeError(
+            f"Missing placeholder '{placeholder}' in template.\n"
+            f"Available keys: {available}"
+        )
+    
+    # Replace all {placeholder} patterns
     try:
-        return template.format(**ctx)
-    except KeyError as exc:
-        raise RuntimeError(f"Missing placeholder value for {exc} in template: {template}") from exc
+        return re.sub(r'\{([^}]+)\}', replace_placeholder, template)
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"Error formatting template: {template}. Error: {exc}") from exc
 
 
 def _safe_serialize(obj: Any, limit: int = 3000) -> str:

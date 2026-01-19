@@ -195,35 +195,79 @@ Add conditional execution to **any step type**.
 
 ## 4. Nested Path Access
 
-Access deeply nested values using dot notation.
+Access deeply nested values using dot notation in **all pipeline steps**.
+
+### Syntax
+
+Use dot notation for nested objects and numeric indices for arrays:
+- Simple: `user.name`
+- Deep nesting: `company.department.team.lead`
+- Array indexing: `orders.0.id`
+- Mixed: `company.departments.0.employees.2.email`
+
+### Usage in Pipeline Steps
+
+#### In Conditional Logic
+```json
+{
+  "condition": {
+    "field": "order.customer.email",
+    "operator": "is_not_empty"
+  }
+}
+```
+
+#### In Query Placeholders
+```json
+{
+  "type": "query",
+  "query": "SELECT * FROM customers WHERE id = {order.customer_id}",
+  "credential_ref": "my_db"
+}
+```
+
+#### In Transform Inputs
+Transform steps still use simple keys for `inputs`, but the context can contain nested data.
 
 ### Examples
 
+#### Example 1: Simple Nested Access
 ```json
-// Simple nested object
+// Context: {"user": {"profile": {"name": "John"}}}
 {"field": "user.profile.name"}
-// Context: {"user": {"profile": {"name": "John"}}} → "John"
+// Returns: "John"
+```
 
-// Array indexing
-{"field": "orders.0.id"}
-// Context: {"orders": [{"id": 123}]} → 123
+#### Example 2: Array Indexing
+```json
+// Context: {"orders": [{"id": 123}]}
+"SELECT * FROM orders WHERE id = {orders.0.id}"
+// Becomes: "SELECT * FROM orders WHERE id = 123"
+```
 
-// Deep nesting
-{"field": "company.departments.0.employees.2.email"}
-// Context: {"company": {"departments": [{"employees": [..., {..., {"email": "x@y.com"}}]}]}} → "x@y.com"
+#### Example 3: Deep Nesting with Arrays
+```json
+// Context: {"company": {"departments": [{"employees": [{"email": "x@y.com"}]}]}}
+"INSERT INTO emails VALUES ('{company.departments.0.employees.0.email}')"
+// Becomes: "INSERT INTO emails VALUES ('x@y.com')"
 ```
 
 ### Behavior
 
-- Returns `None` if path doesn't exist
-- Returns `None` if array index out of bounds
-- Returns `None` if accessing property on non-dict/non-list
+- Returns value if path exists
+- Returns empty string (`""`) if:
+  - Path doesn't exist (e.g., `user.email` when user has no email field)
+  - Array index out of bounds (e.g., `items.10` when array has 3 items)
+  - Value is `None`
+- Raises error if:
+  - First key doesn't exist in context (e.g., `missing_key.field`)
+  - Helps catch typos and missing data early
 
 ---
 
 ## Complete Examples
 
-### Example 1: Order Processing Pipeline
+### Example 1: Order Processing Pipeline with Nested Access
 
 ```json
 {
@@ -238,6 +282,14 @@ Access deeply nested values using dot notation.
       "output": "order"
     },
     {
+      "type": "query",
+      "name": "fetch_customer",
+      "source": "postgres",
+      "credential_ref": "main_db",
+      "query": "SELECT * FROM customers WHERE id = {order.customer_id}",
+      "output": "customer"
+    },
+    {
       "type": "conditional",
       "name": "check_order_value",
       "condition": {
@@ -250,7 +302,7 @@ Access deeply nested values using dot notation.
         "name": "apply_premium_discount",
         "source": "postgres",
         "credential_ref": "main_db",
-        "query": "SELECT apply_premium_discount({order.id})",
+        "query": "UPDATE orders SET discount = 0.15 WHERE id = {order.id}",
         "output": "discount_applied"
       },
       "else_step": {
@@ -258,7 +310,7 @@ Access deeply nested values using dot notation.
         "name": "apply_standard_discount",
         "source": "postgres",
         "credential_ref": "main_db",
-        "query": "SELECT apply_standard_discount({order.id})",
+        "query": "UPDATE orders SET discount = 0.05 WHERE id = {order.id}",
         "output": "discount_applied"
       }
     },
@@ -266,17 +318,22 @@ Access deeply nested values using dot notation.
       "type": "query",
       "name": "notify_customer",
       "run_if": {
-        "field": "order.customer.email",
+        "field": "customer.email",
         "operator": "is_not_empty"
       },
       "source": "postgres",
       "credential_ref": "main_db",
-      "query": "INSERT INTO notifications (email, message) VALUES ('{order.customer.email}', 'Order processed')",
+      "query": "INSERT INTO notifications (email, message) VALUES ('{customer.email}', 'Order {order.id} processed')",
       "output": "notification_sent"
     }
   ]
 }
 ```
+
+**Key Features Demonstrated:**
+- ✅ Nested access in queries: `{order.customer_id}`, `{order.id}`
+- ✅ Nested conditions: `order.total`, `customer.email`
+- ✅ Mixed simple and nested: `{order_id}` (simple), `{customer.email}` (nested)
 
 ### Example 2: User Validation Pipeline
 
@@ -480,8 +537,9 @@ All conditional logic is logged:
 ✅ **Conditional branching** with `conditional` step type  
 ✅ **Conditional execution** with `run_if` / `skip_if` on any step  
 ✅ **12 operators** covering equality, comparison, membership, emptiness  
-✅ **Enhanced `contains`** accepts single value or array of values  
-✅ **Nested path access** with dot notation  
+✅ **Enhanced `contains`** accepts single value or array of values (case-insensitive)  
+✅ **Nested path access** with dot notation in conditions AND query placeholders  
+✅ **Array indexing** for accessing items in lists  
 ✅ **Deterministic execution** - no LLM required  
 ✅ **Error-safe** - errors are logged, don't crash pipelines  
 
