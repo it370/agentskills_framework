@@ -1958,9 +1958,15 @@ async def _execute_skill_core(skill_meta: Skill, input_ctx: Dict[str, Any], stat
         # Extract outputs from result for pipeline use
         if "data_store" in result:
             outputs = {}
+            # Extract required produces keys
             for key in skill_meta.produces:
                 if key in result["data_store"]:
                     outputs[key] = result["data_store"][key]
+            # Extract optional_produces keys if present
+            if skill_meta.optional_produces:
+                for key in skill_meta.optional_produces:
+                    if key in result["data_store"] and key not in outputs:
+                        outputs[key] = result["data_store"][key]
             return outputs
         return {}
     
@@ -2009,6 +2015,14 @@ async def _execute_skill_core(skill_meta: Skill, input_ctx: Dict[str, Any], stat
                         f"but action did not return it"
                     )
                     raise ValueError(f"Critical Error: Missing expected key: {produces_list[0]}")
+                
+                # Check for optional_produces keys before returning
+                if skill_meta.optional_produces:
+                    optional_list = list(skill_meta.optional_produces)
+                    for opt_key in optional_list:
+                        if opt_key in result and opt_key not in mapped_result:
+                            mapped_result[opt_key] = result[opt_key]
+                            await publish_log(f"[EXECUTOR] Stored optional output '{opt_key}'")
                 
                 # for pipe_result_key in result.keys():
                 #     # matched_key = pipe_result_key
@@ -2071,6 +2085,15 @@ async def _execute_skill_core(skill_meta: Skill, input_ctx: Dict[str, Any], stat
                         await publish_log(
                             f"[EXECUTOR] Warning: Extra key '{result_key}' not in produces list, ignored."
                         )
+        
+        # After strict validation, check for optional_produces keys
+        # These keys are nice-to-have but don't cause errors if missing
+        if skill_meta.optional_produces:
+            optional_list = list(skill_meta.optional_produces)
+            for opt_key in optional_list:
+                if opt_key in result and opt_key not in mapped_result:
+                    mapped_result[opt_key] = result[opt_key]
+                    await publish_log(f"[EXECUTOR] Stored optional output '{opt_key}'")
         
         await publish_log(f"[EXECUTOR] Action {skill_meta.name} completed. Results: {list(mapped_result.keys())}")
         return mapped_result
