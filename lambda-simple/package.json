@@ -1,0 +1,12 @@
+{
+  "name": "clearstar-websocket-handler",
+  "version": "1.0.0",
+  "description": "Simple WebSocket handler for AWS API Gateway",
+  "main": "handler.js",
+  "dependencies": {
+    "@aws-sdk/client-apigatewaymanagementapi": "^3.600.0"
+  },
+  "devDependencies": {
+    "ws": "^8.19.0"
+  }
+}
