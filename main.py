@@ -69,14 +69,20 @@ def run():
         status = get_broadcaster_status()
         primary = status.get('primary_broadcaster', 'none')
         available = status.get('primary_available', False)
+        broadcast_display = f"{primary.capitalize()} ({'✓' if available else '✗'})"
         
         print(f"[MAIN] Real-time broadcast configured: {primary} ({'available' if available else 'unavailable'})")
         
         if not available:
             print("[MAIN] Warning: Primary broadcaster not available - check configuration")
-            print("[MAIN] Required env vars: PUSHER_APP_ID, PUSHER_KEY, PUSHER_SECRET, PUSHER_CLUSTER")
+            broadcaster_type = os.getenv("BROADCASTER_TYPE", "pusher").lower()
+            if broadcaster_type == "appsync":
+                print("[MAIN] Required env vars: APPSYNC_API_URL, APPSYNC_REGION")
+            else:
+                print("[MAIN] Required env vars: PUSHER_APP_ID, PUSHER_KEY, PUSHER_SECRET, PUSHER_CLUSTER")
     except Exception as e:
         print(f"[MAIN] Warning: Could not configure broadcast integration: {e}")
+        broadcast_display = "Not configured"
     
     # Recover buffered checkpoints from Redis (if any)
     try:
@@ -106,7 +112,7 @@ def run():
 ║           AgentSkills Framework - Starting Services         ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  REST API Server:    {protocol}://{rest_host}:{rest_port:<35}║
-║  Real-time Broadcast: Pusher Channels                        ║
+║  Real-time Broadcast: {broadcast_display:<44}║
 ║  SSL/TLS:            {'Enabled' if use_ssl else 'Disabled':<45}║
 ╚══════════════════════════════════════════════════════════════╝
 """)

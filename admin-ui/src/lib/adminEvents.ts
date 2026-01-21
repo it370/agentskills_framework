@@ -6,10 +6,13 @@
  */
 
 import Pusher from "pusher-js";
+import { getAppSyncClient } from "./realtimeClient";
 
 const PUSHER_KEY = process.env.NEXT_PUBLIC_PUSHER_KEY || "";
 const PUSHER_CLUSTER = process.env.NEXT_PUBLIC_PUSHER_CLUSTER || "ap2";
-const USE_PUSHER = process.env.NEXT_PUBLIC_USE_PUSHER === "true" || !!PUSHER_KEY;
+const BROADCASTER_TYPE = process.env.NEXT_PUBLIC_BROADCASTER_TYPE || "pusher";
+const USE_PUSHER = BROADCASTER_TYPE.toLowerCase() !== "appsync" && (process.env.NEXT_PUBLIC_USE_PUSHER === "true" || !!PUSHER_KEY);
+const APPSYNC_NAMESPACE = process.env.NEXT_PUBLIC_APPSYNC_NAMESPACE || "default";
 
 type EventHandler = (event: any) => void;
 
@@ -18,49 +21,62 @@ class AdminEventsManager {
   private channel: any = null;
   private handlers: Map<string, Set<EventHandler>> = new Map();
   private initialized = false;
+  private appSyncChannel: any = null;
 
   initialize() {
-    if (this.initialized || !USE_PUSHER) return;
+    if (this.initialized) return;
+
+    if (BROADCASTER_TYPE.toLowerCase() === "appsync") {
+      const client = getAppSyncClient();
+      this.appSyncChannel = client.subscribe(`${APPSYNC_NAMESPACE}/admin`);
+
+      this.appSyncChannel.bind("admin_event", (data: any) => {
+        this.handleEvent(data, "AppSync");
+      });
+
+      this.initialized = true;
+      console.log("[AdminEvents] Global AppSync connection initialized");
+      return;
+    }
+
+    if (!USE_PUSHER) return;
 
     this.pusher = new Pusher(PUSHER_KEY, {
       cluster: PUSHER_CLUSTER,
-      enabledTransports: ['ws', 'wss'],
+      enabledTransports: ["ws", "wss"],
       forceTLS: true,
     });
 
-    this.channel = this.pusher.subscribe('admin');
-
-    this.channel.bind('admin_event', (data: any) => {
-      console.log("[AdminEvents] Raw event received:", JSON.stringify(data));
-      
-      // Pusher broadcaster wraps in {type: 'run_event', data: payload}
-      // Unwrap to get the actual event type
-      const actualData = (data.type === 'run_event' && data.data) ? data.data : data;
-      
-      // Backend sends events with either 'type' or 'event' field (inconsistent)
-      // Check both fields for event type
-      const eventType = actualData.type || actualData.event || 'unknown';
-      
-      console.log("[AdminEvents] Unwrapped event type:", eventType, "data:", JSON.stringify(actualData));
-      
-      // Call type-specific handlers
-      const typeHandlers = this.handlers.get(eventType);
-      if (typeHandlers) {
-        console.log(`[AdminEvents] Calling ${typeHandlers.size} handler(s) for type '${eventType}'`);
-        typeHandlers.forEach(handler => handler(actualData));
-      } else {
-        console.log(`[AdminEvents] No handlers registered for type '${eventType}'`);
-      }
-
-      // Call wildcard handlers
-      const wildcardHandlers = this.handlers.get('*');
-      if (wildcardHandlers) {
-        wildcardHandlers.forEach(handler => handler(actualData));
-      }
+    this.channel = this.pusher.subscribe("admin");
+    this.channel.bind("admin_event", (data: any) => {
+      this.handleEvent(data, "Pusher");
     });
 
     this.initialized = true;
     console.log("[AdminEvents] Global Pusher connection initialized");
+  }
+
+  private handleEvent(data: any, source: "Pusher" | "AppSync") {
+    console.log(`[AdminEvents] Raw event received (${source}):`, JSON.stringify(data));
+
+    // Broadcaster wraps in {type: 'run_event', data: payload}
+    const actualData = (data.type === "run_event" && data.data) ? data.data : data;
+    const eventType = actualData.type || actualData.event || "unknown";
+
+    console.log("[AdminEvents] Unwrapped event type:", eventType, "data:", JSON.stringify(actualData));
+
+    const typeHandlers = this.handlers.get(eventType);
+    if (typeHandlers) {
+      console.log(`[AdminEvents] Calling ${typeHandlers.size} handler(s) for type '${eventType}'`);
+      typeHandlers.forEach(handler => handler(actualData));
+    } else {
+      console.log(`[AdminEvents] No handlers registered for type '${eventType}'`);
+    }
+
+    const wildcardHandlers = this.handlers.get("*");
+    if (wildcardHandlers) {
+      wildcardHandlers.forEach(handler => handler(actualData));
+    }
   }
 
   /**
@@ -106,6 +122,12 @@ class AdminEventsManager {
   }
 
   disconnect() {
+    if (this.appSyncChannel) {
+      this.appSyncChannel.unbind_all?.();
+      this.appSyncChannel.unsubscribe?.();
+      this.appSyncChannel = null;
+    }
+
     if (this.pusher) {
       this.pusher.disconnect();
       this.pusher = null;

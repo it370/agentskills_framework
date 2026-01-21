@@ -6,6 +6,7 @@ pydantic
 python-dotenv
 pyyaml
 httpx
+websockets
 pymongo
 cryptography
 langgraph-checkpoint-postgres
