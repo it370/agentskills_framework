@@ -57,13 +57,13 @@ class AdminEventsManager {
   }
 
   private handleEvent(data: any, source: "Pusher" | "AppSync") {
-    console.log(`[AdminEvents] Raw event received (${source}):`, JSON.stringify(data));
+    // console.log(`[AdminEvents] Raw event received (${source}):`, JSON.stringify(data));
 
     // Broadcaster wraps in {type: 'run_event', data: payload}
     const actualData = (data.type === "run_event" && data.data) ? data.data : data;
     const eventType = actualData.type || actualData.event || "unknown";
 
-    console.log("[AdminEvents] Unwrapped event type:", eventType, "data:", JSON.stringify(actualData));
+    // console.log("[AdminEvents] Unwrapped event type:", eventType, "data:", JSON.stringify(actualData));
 
     const typeHandlers = this.handlers.get(eventType);
     if (typeHandlers) {

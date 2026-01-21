@@ -53,7 +53,6 @@ export class AppSyncClient {
   public connection = {
     state: 'initialized',
     bind: (event: string, callback: (data?: any) => void) => {
-      console.log(`[AppSync] Binding connection event: ${event}`);
       // Handle connection-level events
     }
   };
@@ -64,7 +63,6 @@ export class AppSyncClient {
       apiUrl
     };
 
-    console.log(`[AppSync] Client initialized (region: ${config.region})`);
     this.connect();
   }
 
@@ -105,15 +103,10 @@ export class AppSyncClient {
         .replace('.appsync-api.', '.appsync-realtime-api.')
         .replace(/\/event\/?$/, '/event/realtime');
 
-      console.log(`[AppSync] Connecting to AppSync Event API...`);
-      console.log(`[AppSync] Base URL: ${wsBase}`);
-      console.log(`[AppSync] Host: ${host}`);
-
       const authProtocol = `header-${this.toAppSyncB64Url(headerObj)}`;
       this.ws = new WebSocket(wsBase, ['aws-appsync-event-ws', authProtocol]);
 
       this.ws.onopen = () => {
-        console.log('[AppSync] ✅ WebSocket connected');
         this.connection.state = 'connected';
         this.sendHandshake();
 
@@ -140,7 +133,6 @@ export class AppSyncClient {
       };
 
       this.ws.onclose = () => {
-        console.log('[AppSync] WebSocket closed, reconnecting...');
         this.connection.state = 'disconnected';
         this.scheduleReconnect();
       };
@@ -156,16 +148,12 @@ export class AppSyncClient {
       payload: {}
     };
 
-    console.log('[AppSync] Sending connection_init...');
     this.send(handshake);
   }
 
   private handleMessage(message: any) {
-    console.log('[AppSync] Received:', message);
-
     switch (message.type) {
       case 'connection_ack':
-        console.log('[AppSync] ✅ Connection acknowledged');
         this.connectionId = message.payload?.connectionId;
         this.isAcked = true;
 
@@ -199,7 +187,6 @@ export class AppSyncClient {
 
       case 'subscribe_success': {
         const channelName = this.channelBySubscriptionId.get(message.id);
-        console.log(`[AppSync] ✅ Subscribed${channelName ? ` to '${channelName}'` : ''}`);
         const channel = channelName ? this.channels.get(channelName) : undefined;
         if (channel) {
           channel.subscribed = true;
@@ -215,7 +202,6 @@ export class AppSyncClient {
         break;
       }
       case 'unsubscribe_success':
-        console.log(`[AppSync] ✅ Unsubscribed (id: ${message.id})`);
         break;
 
       case 'data': {
@@ -233,7 +219,6 @@ export class AppSyncClient {
             const data = eventPayload?.data;
             if (!eventName) return;
 
-            console.log(`[AppSync] 📩 Event '${eventName}'${channelName ? ` on '${channelName}'` : ''}`);
             const handlers = targetChannel.eventHandlers.get(eventName);
             if (handlers) {
               handlers.forEach(handler => {
@@ -275,7 +260,6 @@ export class AppSyncClient {
     }
 
     this.reconnectTimer = setTimeout(() => {
-      console.log('[AppSync] Attempting reconnect...');
       this.connect();
     }, 3000);
   }
@@ -318,8 +302,6 @@ export class AppSyncClient {
   }
 
   subscribe(channelName: string): AppSyncChannel {
-    console.log(`[AppSync] Subscribing to channel: ${channelName}`);
-
     let channelData = this.channels.get(channelName);
 
     if (!channelData) {
@@ -341,8 +323,6 @@ export class AppSyncClient {
     // Return channel object with Pusher-like API
     const channel: AppSyncChannel = {
       bind: (eventName: string, handler: (data: any) => void) => {
-        console.log(`[AppSync] Binding to event '${eventName}' on channel '${channelName}'`);
-
         if (!data.eventHandlers.has(eventName)) {
           data.eventHandlers.set(eventName, new Set());
         }
@@ -351,8 +331,6 @@ export class AppSyncClient {
       },
 
       unbind: (eventName: string, handler?: (data: any) => void) => {
-        console.log(`[AppSync] Unbinding from event '${eventName}' on channel '${channelName}'`);
-
         if (handler) {
           data.eventHandlers.get(eventName)?.delete(handler);
         } else {
@@ -361,13 +339,10 @@ export class AppSyncClient {
       },
 
       unbind_all: () => {
-        console.log(`[AppSync] Unbinding all events on channel '${channelName}'`);
         data.eventHandlers.clear();
       },
 
       unsubscribe: () => {
-        console.log(`[AppSync] Unsubscribing from channel '${channelName}'`);
-
         const subscriptionId = self.subscriptionIdsByChannel.get(channelName);
         const unsubscribeMessage = {
           type: 'unsubscribe',
@@ -383,8 +358,6 @@ export class AppSyncClient {
   }
 
   disconnect() {
-    console.log('[AppSync] Disconnecting...');
-
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
