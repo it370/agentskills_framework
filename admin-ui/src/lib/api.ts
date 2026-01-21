@@ -1,6 +1,7 @@
 import { CheckpointTuple, RunEvent, RunListResponse, RunSummary } from "./types";
 import Pusher from "pusher-js";
 import { getAppSyncClient } from "./realtimeClient";
+import { adminEvents } from "./adminEvents";
 import { getAuthHeaders } from "./auth";
 import { getActiveWorkspaceId } from "./workspaceStorage";
 
@@ -16,6 +17,9 @@ const PUSHER_CLUSTER = process.env.NEXT_PUBLIC_PUSHER_CLUSTER || "ap2";
 
 // AppSync configuration
 const APPSYNC_NAMESPACE = process.env.NEXT_PUBLIC_APPSYNC_NAMESPACE || "default";
+
+let appSyncLogsChannel: ReturnType<ReturnType<typeof getAppSyncClient>["subscribe"]> | null = null;
+let appSyncLogsHandlers = new Set<(data: any) => void>();
 
 function shouldUseAppSync(): boolean {
   return BROADCASTER_TYPE.toLowerCase() === "appsync";
@@ -160,25 +164,17 @@ export function connectAdminEvents(onEvent: (RunEvent) => void): { disconnect: (
   console.log(`[API] Connecting admin events using ${useAppSync ? 'AppSync' : 'Pusher'}`);
   
   if (useAppSync) {
-    // Use AppSync Event API
-    const client = getAppSyncClient();
-    
-    const channel = client.subscribe(`${APPSYNC_NAMESPACE}/admin`);
-    
-    channel.bind('admin_event', (data: any) => {
+    const unsubscribe = adminEvents.on("*", (event: any) => {
       try {
-        if (data?.type === "run_event" && data.data) {
-          onEvent(data.data as RunEvent);
-        }
+        onEvent(event as RunEvent);
       } catch (e) {
         console.warn("[AppSync] Failed to parse admin event", e);
       }
     });
-    
+
     return {
       disconnect: () => {
-        channel.unbind_all();
-        channel.unsubscribe();
+        unsubscribe();
       }
     };
   } else {
@@ -226,25 +222,37 @@ export function connectLogs(onLog: (line: string, threadId?: string) => void): {
   if (useAppSync) {
     // Use AppSync Event API
     const client = getAppSyncClient();
-    
-    const channel = client.subscribe(`${APPSYNC_NAMESPACE}/logs`);
-    
-    channel.bind('log', (data: any) => {
-      try {
-        if (data.text !== undefined) {
-          onLog(data.text, data.thread_id);
-        } else {
-          console.warn("[AppSync] Message missing 'text' field:", data);
-        }
-      } catch (e) {
-        console.error("[AppSync] Error processing log:", e);
+    if (!appSyncLogsChannel) {
+      appSyncLogsChannel = client.subscribe(`${APPSYNC_NAMESPACE}/logs`);
+      appSyncLogsChannel.bind('log', (data: any) => {
+        appSyncLogsHandlers.forEach((handler) => {
+          try {
+            handler(data);
+          } catch (e) {
+            console.error("[AppSync] Error processing log:", e);
+          }
+        });
+      });
+    }
+
+    const handler = (data: any) => {
+      if (data?.text !== undefined) {
+        onLog(data.text, data.thread_id);
+      } else {
+        console.warn("[AppSync] Message missing 'text' field:", data);
       }
-    });
-    
+    };
+
+    appSyncLogsHandlers.add(handler);
+
     return {
       disconnect: () => {
-        channel.unbind_all();
-        channel.unsubscribe();
+        appSyncLogsHandlers.delete(handler);
+        if (appSyncLogsHandlers.size === 0 && appSyncLogsChannel) {
+          appSyncLogsChannel.unbind_all();
+          appSyncLogsChannel.unsubscribe();
+          appSyncLogsChannel = null;
+        }
       }
     };
   } else {
