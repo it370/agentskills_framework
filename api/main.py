@@ -107,13 +107,7 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
     workspace = await workspace_service.resolve_workspace(current_user.id, req.workspace_id)
     workspace_id = workspace.id
     
-    # Resolve global LLM model (request -> env -> default)
-    try:
-        global_llm_model = _resolve_global_llm_model(req.llm_model)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    # STEP 1: Save metadata FIRST (so it's available when UI fetches after redirect)
+    # STEP 1: Save metadata FIRST (track every run attempt, valid or not)
     await _save_run_metadata(
         req.thread_id,
         req.sop,
@@ -121,12 +115,11 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
         run_name=run_name,
         user_id=current_user.id,
         workspace_id=workspace_id,
-        llm_model=global_llm_model,
+        llm_model=req.llm_model,  # Save as-is, validate next
     )
+    
     # STEP 2: Send ACK via Pusher (UI will receive and redirect)
     if req.ack_key:
-        # await publish_log(f"[API] Sending ACK for thread={req.thread_id} with ack_key={req.ack_key}", req.thread_id)
-        # ticker.settick("Sent ACK")
         await broadcast_run_event({
             "type": "ack",
             "ack_key": req.ack_key,
@@ -134,12 +127,48 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
             "run_name": run_name,
             "status": "accepted"
         })
-        # await publish_log(f"[API] ACK sent successfully", req.thread_id)
-        # ticker.settick("Published ACK")
     else:
         await publish_log(f"[API] No ack_key provided, skipping ACK", req.thread_id)
     
-    # STEP 3: Create initial checkpoint
+    # Set log context so logs are tracked to this run
+    set_log_context(req.thread_id)
+    
+    # STEP 3: Validate LLM model
+    try:
+        global_llm_model = _resolve_global_llm_model(req.llm_model)
+    except ValueError as exc:
+        error_msg = f"Invalid LLM model specified. {exc}"
+        
+        # Log the rejection to this run's log
+        await publish_log(f"[RUN REJECTED] {error_msg}", req.thread_id)
+        
+        # Send rejection event so UI shows the error
+        await broadcast_run_event({
+            "type": "run_rejected",
+            "thread_id": req.thread_id,
+            "run_name": run_name,
+            "error": error_msg,
+            "reason": "invalid_model"
+        })
+        
+        # Update metadata to mark as failed
+        await _update_run_status(req.thread_id, "failed", error_message=error_msg)
+        
+        # Return error to caller
+        raise HTTPException(status_code=400, detail=error_msg) from exc
+    
+    # Update metadata with validated model
+    await _save_run_metadata(
+        req.thread_id,
+        req.sop,
+        req.initial_data or {},
+        run_name=run_name,
+        user_id=current_user.id,
+        workspace_id=workspace_id,
+        llm_model=global_llm_model,  # Save validated model
+    )
+
+    # STEP 4: Create initial checkpoint
     config = {"configurable": {"thread_id": req.thread_id, "workspace_id": workspace_id}}
     initial_state = {
         "layman_sop": req.sop,
@@ -153,7 +182,7 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
     
     await app.aupdate_state(config, initial_state)
     
-    # STEP 4: Broadcast workflow started event
+    # STEP 5: Broadcast workflow started event
     await broadcast_run_event({
         "type": "run_started",
         "thread_id": req.thread_id,
@@ -161,10 +190,7 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
         "user": current_user.username
     })
     
-    # Set log context
-    set_log_context(req.thread_id)
-    
-    # STEP 5: Log start
+    # STEP 6: Log start
     emit_log(f"[API] Start requested for thread={req.thread_id} by user={current_user.username}", req.thread_id)
     await publish_log(f"[API] LLM model selected: {global_llm_model}", req.thread_id)
     # STEP 6: Run workflow (will send progress updates via Pusher)
@@ -781,7 +807,7 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: R
     # Check ownership + workspace alignment
     await _check_run_ownership(thread_id, current_user.id, current_user.is_admin, workspace.id)
     
-    # Generate new thread ID with fresh GUID
+    # Generate new thread ID for this rerun
     new_thread_id = f"thread_{uuid.uuid4()}"
     
     # Generate new run name based on original
@@ -789,7 +815,7 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: R
     base_run_name = re.sub(r'\s*\(Rerun #\d+\)\s*$', '', original_run_name).strip()
     new_run_name = f"{base_run_name} (Rerun #{metadata['rerun_count'] + 1})"
     
-    # STEP 1: Save metadata FIRST (so it's available when UI fetches after redirect)
+    # STEP 1: Save metadata (track every run attempt, valid or not)
     await _save_run_metadata(
         new_thread_id,
         metadata["sop"],
@@ -811,22 +837,37 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: R
             "parent_thread_id": thread_id,
             "status": "accepted"
         })
-    else:
-        # Legacy: Send ACK without ack_key for backward compatibility
-        await broadcast_run_event({
-            "type": "ack",
-            "thread_id": new_thread_id,
-            "run_name": new_run_name,
-            "parent_thread_id": thread_id,
-            "status": "accepted"
-        })
     
-    # STEP 3: Create initial checkpoint
-    config = {"configurable": {"thread_id": new_thread_id, "workspace_id": workspace.id}}
+    # Set log context so logs are tracked to this run
+    set_log_context(new_thread_id)
+    
+    # STEP 3: Validate LLM model
     try:
         global_llm_model = _resolve_global_llm_model(metadata.get("llm_model"))
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid LLM model in original run: {exc}") from exc
+        error_msg = f"Cannot rerun: Original run used model that is no longer valid. {exc}"
+        
+        # Log the rejection to this run's log
+        await publish_log(f"[RERUN REJECTED] {error_msg}", new_thread_id)
+        
+        # Send rejection event so UI shows the error
+        await broadcast_run_event({
+            "type": "run_rejected",
+            "thread_id": new_thread_id,
+            "run_name": new_run_name,
+            "parent_thread_id": thread_id,
+            "error": error_msg,
+            "reason": "invalid_model"
+        })
+        
+        # Update metadata to mark as failed
+        await _update_run_status(new_thread_id, "failed", error_message=error_msg)
+        
+        # Return error to caller
+        raise HTTPException(status_code=400, detail=error_msg) from exc
+    
+    # STEP 4: Model is valid, create initial checkpoint
+    config = {"configurable": {"thread_id": new_thread_id, "workspace_id": workspace.id}}
     initial_state = {
         "layman_sop": metadata["sop"],
         "data_store": metadata["initial_data"],
@@ -838,7 +879,7 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: R
     }
     await app.aupdate_state(config, initial_state)
     
-    # STEP 4: Broadcast workflow started event
+    # STEP 5: Broadcast workflow started event
     await broadcast_run_event({
         "type": "run_started",
         "thread_id": new_thread_id,
@@ -847,14 +888,11 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: R
         "user": current_user.username
     })
     
-    # Set log context
-    set_log_context(new_thread_id)
-    
-    # STEP 5: Log start
+    # STEP 6: Log start
     await publish_log(f"[API] Rerun requested from thread={thread_id} -> new thread={new_thread_id} by user={current_user.username}", new_thread_id)
     await publish_log(f"[API] LLM model selected: {global_llm_model}", new_thread_id)
     
-    # STEP 6: Run workflow (will send progress updates via Pusher)
+    # STEP 7: Run workflow (will send progress updates via Pusher)
     task = asyncio.create_task(_run_workflow(initial_state, config))
     RUN_TASKS[new_thread_id] = task
     task.add_done_callback(lambda t, thread_id=new_thread_id: RUN_TASKS.pop(thread_id, None))
