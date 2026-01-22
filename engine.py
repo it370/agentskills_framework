@@ -919,6 +919,7 @@ async def _run_agent_tools(
         return [], messages
 
     selected_model = _validate_llm_model(llm_model or _default_llm_model())
+    await publish_log(f"[AGENT TOOLS] Using model: {selected_model}")
     api_key = _resolve_llm_api_key(selected_model)
     tool_llm = ChatOpenAI(model=selected_model, temperature=0, api_key=api_key).bind_tools(tools)
     history: List[BaseMessage] = list(messages)
@@ -2134,7 +2135,9 @@ async def autonomous_planner(state: AgentState):
     Pick the next agent. If the goal is met or no further action possible, return 'END'.
     """
     
-    llm = _structured_llm(PlannerDecision, temperature=0, model=_resolve_llm_model(None, state))
+    planner_model = _resolve_llm_model(None, state)
+    await publish_log(f"[PLANNER] Using model: {planner_model} (source: run-level)")
+    llm = _structured_llm(PlannerDecision, temperature=0, model=planner_model)
     decision = await llm.ainvoke(prompt)
     
     allowed_choices = {s.name for s in runnable} | set(unblockers)
@@ -2325,6 +2328,18 @@ async def _execute_skill_core(skill_meta: Skill, input_ctx: Dict[str, Any], stat
     )
 
     selected_model = _resolve_llm_model(skill_meta, state)
+    
+    # Log model selection details
+    model_source = "default"
+    if skill_meta and skill_meta.llm_model:
+        model_source = f"skill-defined ({skill_meta.name})"
+    elif state and state.get("llm_model"):
+        model_source = "run-level"
+    
+    await publish_log(
+        f"[LLM] Using model: {selected_model} (source: {model_source})"
+    )
+    
     llm = _structured_llm(DynamicModel, model=selected_model)
 
     # Simulate processing
