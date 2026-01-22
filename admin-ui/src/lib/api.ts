@@ -1,14 +1,29 @@
 import { CheckpointTuple, RunEvent, RunListResponse, RunSummary } from "./types";
 import Pusher from "pusher-js";
+import { getAppSyncClient } from "./realtimeClient";
+import { adminEvents } from "./adminEvents";
 import { getAuthHeaders } from "./auth";
 import { getActiveWorkspaceId } from "./workspaceStorage";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") || "http://localhost:8000";
 
+// Real-time broadcaster configuration
+const BROADCASTER_TYPE = process.env.NEXT_PUBLIC_BROADCASTER_TYPE || "pusher";
+
 // Pusher configuration
 const PUSHER_KEY = process.env.NEXT_PUBLIC_PUSHER_KEY || "";
 const PUSHER_CLUSTER = process.env.NEXT_PUBLIC_PUSHER_CLUSTER || "ap2";
+
+// AppSync configuration
+const APPSYNC_NAMESPACE = process.env.NEXT_PUBLIC_APPSYNC_NAMESPACE || "default";
+
+let appSyncLogsChannel: ReturnType<ReturnType<typeof getAppSyncClient>["subscribe"]> | null = null;
+let appSyncLogsHandlers = new Set<(data: any) => void>();
+
+function shouldUseAppSync(): boolean {
+  return BROADCASTER_TYPE.toLowerCase() === "appsync";
+}
 
 function withWorkspace(url: string, workspaceId?: string | null): string {
   if (!workspaceId) return url;
@@ -146,79 +161,139 @@ export async function getRunMetadata(
 
 
 export function connectAdminEvents(onEvent: (RunEvent) => void): { disconnect: () => void } {
-  // Use Pusher for real-time admin events
-  const pusher = new Pusher(PUSHER_KEY, {
-    cluster: PUSHER_CLUSTER,
-    enabledTransports: ['ws', 'wss'],
-    forceTLS: true,
-  });
+  const useAppSync = shouldUseAppSync();
+  console.log(`[API] Connecting admin events using ${useAppSync ? 'AppSync' : 'Pusher'}`);
   
-  const channel = pusher.subscribe('admin');
-  
-  channel.bind('admin_event', (data: any) => {
-    try {
-      if (data?.type === "run_event" && data.data) {
-        onEvent(data.data as RunEvent);
+  if (useAppSync) {
+    const unsubscribe = adminEvents.on("*", (event: any) => {
+      try {
+        onEvent(event as RunEvent);
+      } catch (e) {
+        console.warn("[AppSync] Failed to parse admin event", e);
       }
-    } catch (e) {
-      console.warn("[PUSHER] Failed to parse admin event", e);
-    }
-  });
-  
-  channel.bind('pusher:subscription_error', (error: any) => {
-    console.error("[PUSHER] Admin events subscription error:", error);
-  });
-  
-  pusher.connection.bind('error', (err: any) => {
-    console.error("[PUSHER] Connection error:", err);
-  });
-  
-  return {
-    disconnect: () => {
-      channel.unbind_all();
-      channel.unsubscribe();
-      pusher.disconnect();
-    }
-  };
+    });
+
+    return {
+      disconnect: () => {
+        unsubscribe();
+      }
+    };
+  } else {
+    // Use Pusher
+    const pusher = new Pusher(PUSHER_KEY, {
+      cluster: PUSHER_CLUSTER,
+      enabledTransports: ['ws', 'wss'],
+      forceTLS: true,
+    });
+    
+    const channel = pusher.subscribe('admin');
+    
+    channel.bind('admin_event', (data: any) => {
+      try {
+        if (data?.type === "run_event" && data.data) {
+          onEvent(data.data as RunEvent);
+        }
+      } catch (e) {
+        console.warn("[PUSHER] Failed to parse admin event", e);
+      }
+    });
+    
+    channel.bind('pusher:subscription_error', (error: any) => {
+      console.error("[PUSHER] Admin events subscription error:", error);
+    });
+    
+    pusher.connection.bind('error', (err: any) => {
+      console.error("[PUSHER] Connection error:", err);
+    });
+    
+    return {
+      disconnect: () => {
+        channel.unbind_all();
+        channel.unsubscribe();
+        pusher.disconnect();
+      }
+    };
+  }
 }
 
 export function connectLogs(onLog: (line: string, threadId?: string) => void): { disconnect: () => void } {
-  // Use Pusher for real-time logs
-  const pusher = new Pusher(PUSHER_KEY, {
-    cluster: PUSHER_CLUSTER,
-    enabledTransports: ['ws', 'wss'],
-    forceTLS: true,
-  });
+  const useAppSync = shouldUseAppSync();
+  console.log(`[API] Connecting logs using ${useAppSync ? 'AppSync' : 'Pusher'}`);
   
-  const channel = pusher.subscribe('logs');
-  
-  channel.bind('log', (data: any) => {
-    try {
-      if (data.text !== undefined) {
+  if (useAppSync) {
+    // Use AppSync Event API
+    const client = getAppSyncClient();
+    if (!appSyncLogsChannel) {
+      appSyncLogsChannel = client.subscribe(`${APPSYNC_NAMESPACE}/logs`);
+      appSyncLogsChannel.bind('log', (data: any) => {
+        appSyncLogsHandlers.forEach((handler) => {
+          try {
+            handler(data);
+          } catch (e) {
+            console.error("[AppSync] Error processing log:", e);
+          }
+        });
+      });
+    }
+
+    const handler = (data: any) => {
+      if (data?.text !== undefined) {
         onLog(data.text, data.thread_id);
       } else {
-        console.warn("[PUSHER] Message missing 'text' field:", data);
+        console.warn("[AppSync] Message missing 'text' field:", data);
       }
-    } catch (e) {
-      console.error("[PUSHER] Error processing log:", e);
-    }
-  });
-  
-  channel.bind('pusher:subscription_error', (error: any) => {
-    console.error("[PUSHER] Logs subscription error:", error);
-  });
-  
-  pusher.connection.bind('error', (err: any) => {
-    console.error("[PUSHER] Connection error:", err);
-  });
-  
-  return {
-    disconnect: () => {
-      channel.unbind_all();
-      channel.unsubscribe();
-      pusher.disconnect();
-    }
-  };
+    };
+
+    appSyncLogsHandlers.add(handler);
+
+    return {
+      disconnect: () => {
+        appSyncLogsHandlers.delete(handler);
+        if (appSyncLogsHandlers.size === 0 && appSyncLogsChannel) {
+          appSyncLogsChannel.unbind_all();
+          appSyncLogsChannel.unsubscribe();
+          appSyncLogsChannel = null;
+        }
+      }
+    };
+  } else {
+    // Use Pusher
+    const pusher = new Pusher(PUSHER_KEY, {
+      cluster: PUSHER_CLUSTER,
+      enabledTransports: ['ws', 'wss'],
+      forceTLS: true,
+    });
+    
+    const channel = pusher.subscribe('logs');
+    
+    channel.bind('log', (data: any) => {
+      try {
+        if (data.text !== undefined) {
+          onLog(data.text, data.thread_id);
+        } else {
+          console.warn("[PUSHER] Message missing 'text' field:", data);
+        }
+      } catch (e) {
+        console.error("[PUSHER] Error processing log:", e);
+      }
+    });
+    
+    channel.bind('pusher:subscription_error', (error: any) => {
+      console.error("[PUSHER] Logs subscription error:", error);
+    });
+    
+    pusher.connection.bind('error', (err: any) => {
+      console.error("[PUSHER] Connection error:", err);
+    });
+    
+    return {
+      disconnect: () => {
+        channel.unbind_all();
+        channel.unsubscribe();
+        pusher.disconnect();
+      }
+    };
+  }
 }
 
 // --- SKILL MANAGEMENT API ---

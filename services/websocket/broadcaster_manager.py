@@ -234,25 +234,37 @@ def get_broadcaster_manager() -> BroadcasterManager:
 
 def initialize_broadcaster_manager() -> BroadcasterManager:
     """
-    Initialize the broadcaster manager with default configuration.
+    Initialize the broadcaster manager with configuration from environment.
     
-    This creates a manager with Pusher as primary and prepares for future Ably fallback.
+    Supported broadcaster types (via BROADCASTER_TYPE env var):
+    - 'pusher': Pusher Channels (default)
+    - 'appsync': AWS AppSync Event API
     
     Returns:
         Configured BroadcasterManager
     """
-    from .pusher_broadcaster import create_pusher_broadcaster
+    import os
     
     manager = get_broadcaster_manager()
     
-    # Add Pusher as primary
-    pusher = create_pusher_broadcaster()
-    manager.add_broadcaster(pusher, primary=True)
+    # Get broadcaster type from environment
+    broadcaster_type = os.getenv("BROADCASTER_TYPE", "pusher").lower()
     
-    # Future: Add Ably as fallback
-    # ably = create_ably_broadcaster()
-    # manager.add_broadcaster(ably, primary=False)
+    if broadcaster_type == "appsync":
+        from .appsync_broadcaster import create_appsync_broadcaster
+        appsync = create_appsync_broadcaster()
+        manager.add_broadcaster(appsync, primary=True)
+        print("[BROADCASTER_MANAGER] Initialized with AWS AppSync as primary")
+    else:
+        # Default to Pusher
+        from .pusher_broadcaster import create_pusher_broadcaster
+        pusher = create_pusher_broadcaster()
+        manager.add_broadcaster(pusher, primary=True)
+        print("[BROADCASTER_MANAGER] Initialized with Pusher as primary")
     
-    print("[BROADCASTER_MANAGER] Initialized with Pusher as primary")
+    # Future: Add fallback broadcaster
+    # if broadcaster_type != "pusher":
+    #     pusher = create_pusher_broadcaster()
+    #     manager.add_broadcaster(pusher, primary=False)
     
     return manager
