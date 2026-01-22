@@ -78,7 +78,7 @@ async def mock_execute_data_query(cfg, inputs):
     return getattr(cfg, "_mock_result", {"query_result": "data"})
 
 
-async def mock_execute_data_pipeline(cfg, inputs, workspace_id=None):
+async def mock_execute_data_pipeline(cfg, inputs, workspace_id=None, llm_model=None):
     """Mock data pipeline executor"""
     return getattr(cfg, "_mock_result", {"pipeline_output": "data"})
 
@@ -98,7 +98,7 @@ async def mock_execute_http_call(cfg, inputs):
     return getattr(cfg, "_mock_result", {"http_response": "data"})
 
 
-def mock_structured_llm(dynamic_model):
+def mock_structured_llm(dynamic_model, *, temperature: float = 0, model: Optional[str] = None):
     """Mock LLM with structured output"""
     llm_mock = AsyncMock()
     
