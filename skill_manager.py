@@ -97,7 +97,7 @@ def load_skills_from_database(workspace_id: Optional[str] = None, include_public
                         
                         # Add executor-specific config
                         if executor == "rest" and rest_config:
-                            from engine import ActionConfig
+                            from engine import RestConfig
                             skill_dict["rest"] = RestConfig(**rest_config)
                         elif executor == "action" and action_config:
                             from engine import ActionConfig
