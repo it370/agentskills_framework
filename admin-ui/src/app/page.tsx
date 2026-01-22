@@ -25,13 +25,15 @@ function normalizeRun(cp: CheckpointTuple | RunSummary): RunRow {
   // If the API already provided enriched data with status, use it directly
   if ('status' in cp && cp.status) {
     const summary = cp as RunSummary;
+    // Map database "failed" status to UI "error" status
+    const mappedStatus = summary.status === 'failed' ? 'error' : summary.status;
     return {
       thread_id: summary.thread_id,
       checkpoint_id: undefined,
       active_skill: null,
       updated_at: summary.updated_at || summary.created_at,
       history: [],  // Not needed when status is pre-computed
-      status: summary.status,
+      status: mappedStatus,
       sop_preview: summary.sop_preview,
       run_name: summary.run_name,  // Include run_name from API
     };
@@ -128,6 +130,12 @@ function StatusBadge({ status }: { status?: string }) {
       text: "text-red-800",
       dot: "bg-red-500",
       label: "Error",
+    },
+    failed: {
+      bg: "bg-red-100",
+      text: "text-red-800",
+      dot: "bg-red-500",
+      label: "Failed",
     },
     cancelled: {
       bg: "bg-gray-100",
