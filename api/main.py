@@ -87,6 +87,7 @@ class StartRequest(BaseModel):
     ack_key: Optional[str] = None  # Unique key for ACK handshake
     workspace_id: Optional[str] = None  # Target workspace (defaults to user's default)
     llm_model: Optional[str] = None  # Global LLM model (GPT/Grok/Gemini)
+    callback_url: Optional[str] = None  # Webhook URL to call when run completes
 
 @api.post("/start")
 async def start_process(req: StartRequest, current_user: AuthenticatedUser):
@@ -116,6 +117,7 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
         user_id=current_user.id,
         workspace_id=workspace_id,
         llm_model=req.llm_model,  # Save as-is, validate next
+        callback_url=req.callback_url,  # Store callback_url in metadata
     )
     
     # STEP 2: Send ACK via Pusher (UI will receive and redirect)
@@ -166,6 +168,7 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
         user_id=current_user.id,
         workspace_id=workspace_id,
         llm_model=global_llm_model,  # Save validated model
+        callback_url=req.callback_url,  # Store callback_url in metadata
     )
 
     # STEP 4: Create initial checkpoint
@@ -267,6 +270,7 @@ async def _save_run_metadata(
     user_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
     llm_model: Optional[str] = None,
+    callback_url: Optional[str] = None,
 ):
     """Save run metadata to database using connection pool for rerun functionality."""
     try:
@@ -294,10 +298,15 @@ async def _save_run_metadata(
                     if row:
                         rerun_count = row[0] + 1
                 
+                # Build metadata JSONB with callback_url if provided
+                metadata = {}
+                if callback_url:
+                    metadata['callback_url'] = callback_url
+                
                 # Insert run metadata
                 cur.execute("""
-                    INSERT INTO run_metadata (thread_id, run_name, sop, initial_data, parent_thread_id, rerun_count, status, user_id, workspace_id, llm_model)
-                    VALUES (%s, %s, %s, %s, %s, %s, 'running', %s, %s, %s)
+                    INSERT INTO run_metadata (thread_id, run_name, sop, initial_data, parent_thread_id, rerun_count, status, user_id, workspace_id, llm_model, metadata)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'running', %s, %s, %s, %s)
                     ON CONFLICT (thread_id) DO UPDATE
                     SET run_name = EXCLUDED.run_name,
                         sop = EXCLUDED.sop,
@@ -306,8 +315,9 @@ async def _save_run_metadata(
                         rerun_count = EXCLUDED.rerun_count,
                         user_id = EXCLUDED.user_id,
                         workspace_id = EXCLUDED.workspace_id,
-                        llm_model = EXCLUDED.llm_model
-                """, (thread_id, run_name, sop, json.dumps(initial_data or {}), parent_thread_id, rerun_count, user_id, workspace_id, llm_model))
+                        llm_model = EXCLUDED.llm_model,
+                        metadata = EXCLUDED.metadata
+                """, (thread_id, run_name, sop, json.dumps(initial_data or {}), parent_thread_id, rerun_count, user_id, workspace_id, llm_model, json.dumps(metadata)))
             conn.commit()
         finally:
             pool.putconn(conn)
@@ -407,14 +417,16 @@ async def _update_run_status(thread_id: str, status: str, error_message: Optiona
 
 
 async def _get_run_metadata(thread_id: str, workspace_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Retrieve run metadata from database."""
-    db_uri = _get_env_value("DATABASE_URL", "")
-    if not db_uri:
+    """Retrieve run metadata from database using connection pool."""
+    try:
+        pool = get_postgres_pool()
+    except RuntimeError:
+        emit_log("[API] Postgres pool not available, skipping run metadata retrieval")
         return None
     
     def _get_sync():
-        import psycopg
-        with psycopg.connect(db_uri) as conn:
+        conn = pool.getconn()
+        try:
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT thread_id, run_name, sop, initial_data, created_at, parent_thread_id, rerun_count, metadata,
@@ -443,12 +455,100 @@ async def _get_run_metadata(thread_id: str, workspace_id: Optional[str] = None) 
                         "llm_model": row[13],
                     }
                 return None
+        finally:
+            pool.putconn(conn)
     
     try:
         return await asyncio.to_thread(_get_sync)
     except Exception as e:
         emit_log(f"[API] Failed to get run metadata: {e}")
         return None
+
+
+async def _get_run_metadata_for_callback(thread_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve minimal run metadata for callback webhook (optimized query).
+    Only fetches essential fields to reduce query time and payload size.
+    """
+    try:
+        pool = get_postgres_pool()
+    except RuntimeError:
+        emit_log("[API] Postgres pool not available, skipping callback metadata retrieval")
+        return None
+    
+    def _get_sync():
+        conn = pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                # Fetch callback_url and essential run info in one query
+                cur.execute("""
+                    SELECT thread_id, status, error_message, run_name, created_at, 
+                           llm_model, failed_skill, completed_at, metadata
+                    FROM run_metadata
+                    WHERE thread_id = %s
+                """, (thread_id,))
+                row = cur.fetchone()
+                if row:
+                    return {
+                        "thread_id": row[0],
+                        "status": row[1],
+                        "error_message": row[2],
+                        "run_name": row[3] or row[0],  # Default to thread_id if run_name is None
+                        "created_at": row[4].isoformat() if row[4] else None,
+                        "llm_model": row[5],
+                        "failed_skill": row[6],
+                        "completed_at": row[7].isoformat() if row[7] else None,
+                        "callback_url": row[8].get("callback_url") if row[8] else None,
+                    }
+                return None
+        finally:
+            pool.putconn(conn)
+    
+    try:
+        return await asyncio.to_thread(_get_sync)
+    except Exception as e:
+        emit_log(f"[API] Failed to get callback metadata: {e}")
+        return None
+
+
+async def _invoke_callback(thread_id: str):
+    """
+    Invoke the callback URL webhook if configured for this run.
+    Fetches minimal run metadata and sends it as the payload.
+    
+    Optimized for high callback usage - single query fetches everything.
+    """
+    try:
+        # Fetch metadata in single query (optimized for high callback usage)
+        metadata = await _get_run_metadata_for_callback(thread_id)
+        if not metadata:
+            # Run not found in database
+            return
+        
+        # Check if callback_url is configured (in-memory check, no extra query)
+        callback_url = metadata.pop("callback_url", None)
+        if not callback_url:
+            # No callback configured, silently skip
+            return
+        
+        await publish_log(f"[CALLBACK] Invoking webhook: {callback_url}", thread_id)
+        
+        # Send the minimal run metadata as payload (callback_url already removed)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(callback_url, json=metadata)
+            response.raise_for_status()
+            
+        await publish_log(f"[CALLBACK] Webhook invoked successfully (status={response.status_code})", thread_id)
+        emit_log(f"[CALLBACK] Successfully called callback for thread={thread_id}")
+        
+    except httpx.HTTPError as e:
+        error_msg = f"HTTP error calling callback: {e}"
+        await publish_log(f"[CALLBACK] {error_msg}", thread_id)
+        emit_log(f"[CALLBACK] Failed to call callback for thread={thread_id}: {error_msg}")
+    except Exception as e:
+        error_msg = f"Error calling callback: {e}"
+        await publish_log(f"[CALLBACK] {error_msg}", thread_id)
+        emit_log(f"[CALLBACK] Failed to call callback for thread={thread_id}: {error_msg}")
 
 
 async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any]):
@@ -472,10 +572,14 @@ async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any]):
             failed_skill = data_store.get("_failed_skill")
             await _update_run_status(thread_id, "error", error_msg, failed_skill)
             await publish_log(f"[API] Workflow failed for thread={thread_id}", thread_id)
+            # Fire-and-forget callback (don't wait for completion)
+            asyncio.create_task(_invoke_callback(thread_id))
         # Determine if truly completed or paused at an interrupt
         elif not next_nodes or (len(next_nodes) == 1 and next_nodes[0] == "__end__"):
             await _update_run_status(thread_id, "completed")
             await publish_log(f"[API] Workflow completed for thread={thread_id}", thread_id)
+            # Fire-and-forget callback (don't wait for completion)
+            asyncio.create_task(_invoke_callback(thread_id))
         elif "human_review" in next_nodes:
             await _update_run_status(thread_id, "paused")
             await publish_log(f"[API] Workflow paused at human_review (HITL) for thread={thread_id}", thread_id)
@@ -488,6 +592,8 @@ async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any]):
     except asyncio.CancelledError:
         await publish_log(f"[API] Workflow task cancelled for thread={thread_id}", thread_id)
         await _update_run_status(thread_id, "cancelled")
+        # Fire-and-forget callback (don't wait for completion)
+        asyncio.create_task(_invoke_callback(thread_id))
         raise
     except Exception as exc:
         # Log the error
@@ -516,6 +622,9 @@ async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any]):
             await publish_log(f"[API] Workflow marked as failed and stopped for thread={thread_id}", thread_id)
         except Exception as update_exc:
             emit_log(f"[API] Failed to update workflow state after error: {update_exc}")
+        
+        # Fire-and-forget callback (don't wait for completion)
+        asyncio.create_task(_invoke_callback(thread_id))
     finally:
         RUN_TASKS.pop(thread_id, None)
 
@@ -779,6 +888,7 @@ async def get_run_metadata_endpoint(thread_id: str, current_user: AuthenticatedU
 
 class RerunRequest(BaseModel):
     ack_key: Optional[str] = None  # Unique key for ACK handshake
+    callback_url: Optional[str] = None  # Webhook URL to call when run completes
 
 @api.post("/rerun/{thread_id}")
 async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: RerunRequest = Body(default=RerunRequest()), workspace_id: Optional[str] = None):
@@ -825,6 +935,7 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: R
         user_id=current_user.id,
         workspace_id=workspace.id,
         llm_model=metadata.get("llm_model"),
+        callback_url=req.callback_url,  # Use callback_url from rerun request if provided
     )
     
     # STEP 2: Send ACK via Pusher (UI will receive and redirect)
