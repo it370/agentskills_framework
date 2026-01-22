@@ -11,6 +11,7 @@ export type RunSummary = {
   run_name?: string;
   sop?: string;
   initial_data?: Record<string, any>;
+  llm_model?: string | null;
   parent_thread_id?: string;
   rerun_count?: number;
   status?: string;

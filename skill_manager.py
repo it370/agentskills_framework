@@ -48,6 +48,7 @@ def load_skills_from_database(workspace_id: Optional[str] = None, include_public
                         hitl_enabled,
                         prompt,
                         system_prompt,
+                        llm_model,
                         rest_config,
                         action_config,
                         action_code,
@@ -75,7 +76,7 @@ def load_skills_from_database(workspace_id: Optional[str] = None, include_public
                 skills = []
                 for row in cur.fetchall():
                     (name, module_name, description, requires, produces, optional_produces,
-                     executor, hitl_enabled, prompt, system_prompt,
+                     executor, hitl_enabled, prompt, system_prompt, llm_model,
                      rest_config, action_config, action_code, action_functions,
                      workspace_id, owner_id, is_public) = row
                     
@@ -90,6 +91,7 @@ def load_skills_from_database(workspace_id: Optional[str] = None, include_public
                             "hitl_enabled": hitl_enabled,
                             "prompt": prompt,
                             "system_prompt": system_prompt,
+                            "llm_model": llm_model,
                             "workspace_id": workspace_id,
                             "owner_id": owner_id,
                             "is_public": bool(is_public),
@@ -362,6 +364,7 @@ def save_skill_to_database(skill_data: Dict[str, Any]) -> str:
                         hitl_enabled = %(hitl_enabled)s,
                         prompt = %(prompt)s,
                         system_prompt = %(system_prompt)s,
+                        llm_model = %(llm_model)s,
                         rest_config = %(rest_config)s,
                         action_config = %(action_config)s,
                         action_code = %(action_code)s,
@@ -382,6 +385,7 @@ def save_skill_to_database(skill_data: Dict[str, Any]) -> str:
                     "hitl_enabled": skill_data.get("hitl_enabled", False),
                     "prompt": skill_data.get("prompt"),
                     "system_prompt": skill_data.get("system_prompt"),
+                    "llm_model": skill_data.get("llm_model"),
                     "rest_config": json.dumps(skill_data.get("rest_config")) if skill_data.get("rest_config") else None,
                     "action_config": json.dumps(action_config) if action_config else None,
                     "action_code": skill_data.get("action_code"),
@@ -403,12 +407,12 @@ def save_skill_to_database(skill_data: Dict[str, Any]) -> str:
                     INSERT INTO dynamic_skills (
                         name, module_name, description, requires, produces, optional_produces,
                         executor, hitl_enabled, prompt, system_prompt,
-                        rest_config, action_config, action_code, action_functions,
+                        llm_model, rest_config, action_config, action_code, action_functions,
                         source, enabled, workspace_id, owner_id, is_public
                     ) VALUES (
                         %(name)s, %(module_name)s, %(description)s, %(requires)s, %(produces)s, %(optional_produces)s,
                         %(executor)s, %(hitl_enabled)s, %(prompt)s, %(system_prompt)s,
-                        %(rest_config)s, %(action_config)s, %(action_code)s, %(action_functions)s,
+                        %(llm_model)s, %(rest_config)s, %(action_config)s, %(action_code)s, %(action_functions)s,
                         'database', %(enabled)s, %(workspace_id)s, %(owner_id)s, %(is_public)s
                     )
                     RETURNING id::text
@@ -423,6 +427,7 @@ def save_skill_to_database(skill_data: Dict[str, Any]) -> str:
                     "hitl_enabled": skill_data.get("hitl_enabled", False),
                     "prompt": skill_data.get("prompt"),
                     "system_prompt": skill_data.get("system_prompt"),
+                    "llm_model": skill_data.get("llm_model"),
                     "rest_config": json.dumps(skill_data.get("rest_config")) if skill_data.get("rest_config") else None,
                     "action_config": json.dumps(action_config) if action_config else None,
                     "action_code": skill_data.get("action_code"),
@@ -471,7 +476,7 @@ def get_all_skills_metadata() -> List[Dict[str, Any]]:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT id::text, name, description, executor, enabled, created_at, updated_at, source, action_config,
+                    SELECT id::text, name, description, executor, enabled, created_at, updated_at, source, action_config, llm_model,
                            workspace_id::text, owner_id::text, is_public
                     FROM dynamic_skills
                     ORDER BY name
@@ -487,9 +492,10 @@ def get_all_skills_metadata() -> List[Dict[str, Any]]:
                         "updated_at": row[6].isoformat() if row[6] else None,
                         "source": row[7],
                         "action_config": row[8],  # Add action_config
-                        "workspace_id": row[9],
-                        "owner_id": row[10],
-                        "is_public": bool(row[11]),
+                        "llm_model": row[9],
+                        "workspace_id": row[10],
+                        "owner_id": row[11],
+                        "is_public": bool(row[12]),
                     })
     except Exception as e:
         print(f"[SKILL_DB] Warning: Failed to get database skills: {e}")

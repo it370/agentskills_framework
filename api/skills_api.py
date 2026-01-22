@@ -63,6 +63,7 @@ class SkillCreateRequest(BaseModel):
     enabled: bool = True
     prompt: Optional[str] = None
     system_prompt: Optional[str] = None
+    llm_model: Optional[str] = None
     rest_config: Optional[Dict[str, Any]] = None
     action_config: Optional[Dict[str, Any]] = None
     action_code: Optional[str] = None
@@ -83,6 +84,7 @@ class SkillUpdateRequest(BaseModel):
     enabled: Optional[bool] = None
     prompt: Optional[str] = None
     system_prompt: Optional[str] = None
+    llm_model: Optional[str] = None
     rest_config: Optional[Dict[str, Any]] = None
     action_config: Optional[Dict[str, Any]] = None
     action_code: Optional[str] = None
@@ -153,7 +155,7 @@ async def get_skill(skill_identifier: str, current_user: AuthenticatedUser, work
                         # Look up by ID
                         cur.execute("""
                             SELECT id::text, name, module_name, description, requires, produces, optional_produces,
-                                   executor, hitl_enabled, prompt, system_prompt,
+                                   executor, hitl_enabled, prompt, system_prompt, llm_model,
                                    rest_config, action_config, action_code, action_functions,
                                    source, enabled, created_at, updated_at,
                                    workspace_id::text, owner_id::text, is_public
@@ -164,7 +166,7 @@ async def get_skill(skill_identifier: str, current_user: AuthenticatedUser, work
                         # Look up by name
                         cur.execute("""
                             SELECT id::text, name, module_name, description, requires, produces, optional_produces,
-                                   executor, hitl_enabled, prompt, system_prompt,
+                                   executor, hitl_enabled, prompt, system_prompt, llm_model,
                                    rest_config, action_config, action_code, action_functions,
                                    source, enabled, created_at, updated_at,
                                    workspace_id::text, owner_id::text, is_public
@@ -178,8 +180,8 @@ async def get_skill(skill_identifier: str, current_user: AuthenticatedUser, work
                         raise HTTPException(status_code=404, detail=f"Skill not found")
                     
                     # Enforce workspace visibility
-                    is_public = bool(row[21])
-                    skill_workspace = row[19]
+                    is_public = bool(row[22])
+                    skill_workspace = row[20]
                     if not is_public and skill_workspace and skill_workspace != workspace.id:
                         raise HTTPException(status_code=404, detail=f"Skill not found")
                     
@@ -196,16 +198,17 @@ async def get_skill(skill_identifier: str, current_user: AuthenticatedUser, work
                         "hitl_enabled": row[8],
                         "prompt": row[9],
                         "system_prompt": row[10],
-                        "rest_config": row[11],
-                        "action_config": row[12],
-                        "action_code": row[13],
-                        "action_functions": row[14],
-                        "source": row[15] or "database",
-                        "enabled": row[16],
-                        "created_at": row[17].isoformat() if row[17] else None,
-                        "updated_at": row[18].isoformat() if row[18] else None,
+                        "llm_model": row[11],
+                        "rest_config": row[12],
+                        "action_config": row[13],
+                        "action_code": row[14],
+                        "action_functions": row[15],
+                        "source": row[16] or "database",
+                        "enabled": row[17],
+                        "created_at": row[18].isoformat() if row[18] else None,
+                        "updated_at": row[19].isoformat() if row[19] else None,
                         "workspace_id": skill_workspace,
-                        "owner_id": row[20],
+                        "owner_id": row[21],
                         "is_public": is_public,
                     }
                     
@@ -270,6 +273,7 @@ async def get_skill(skill_identifier: str, current_user: AuthenticatedUser, work
         "hitl_enabled": skill.hitl_enabled,
         "prompt": skill.prompt,
         "system_prompt": skill.system_prompt,
+        "llm_model": getattr(skill, "llm_model", None),
         "source": source,
         "workspace_id": getattr(skill, "workspace_id", None),
         "owner_id": getattr(skill, "owner_id", None),
@@ -401,7 +405,7 @@ async def update_skill(skill_id: str, updates: SkillUpdateRequest, current_user:
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT name, module_name, description, requires, produces, optional_produces,
-                           executor, hitl_enabled, prompt, system_prompt,
+                           executor, hitl_enabled, prompt, system_prompt, llm_model,
                            rest_config, action_config, action_code, action_functions,
                            workspace_id::text, owner_id::text, is_public, source
                     FROM dynamic_skills
@@ -424,14 +428,15 @@ async def update_skill(skill_id: str, updates: SkillUpdateRequest, current_user:
                     "hitl_enabled": row[7],
                     "prompt": row[8],
                     "system_prompt": row[9],
-                    "rest_config": row[10],
-                    "action_config": row[11],
-                    "action_code": row[12],
-                    "action_functions": row[13],
-                    "workspace_id": row[14],
-                    "owner_id": row[15],
-                    "is_public": bool(row[16]),
-                    "source": row[17],
+                    "llm_model": row[10],
+                    "rest_config": row[11],
+                    "action_config": row[12],
+                    "action_code": row[13],
+                    "action_functions": row[14],
+                    "workspace_id": row[15],
+                    "owner_id": row[16],
+                    "is_public": bool(row[17]),
+                    "source": row[18],
                 }
                 
                 # Verify it's a database skill

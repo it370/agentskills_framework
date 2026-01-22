@@ -84,10 +84,13 @@ export default function RerunContextMenu({
       const metadata = await getRunMetadata(threadId);
       
       // Store data in sessionStorage to avoid URL length issues
+      // Note: Store llm_model as empty string (not the previous value) so user can choose
+      // to either keep it (by not changing), use server default (by clearing), or select new one
       sessionStorage.setItem('rerun_config', JSON.stringify({
         runName: metadata.run_name || '',
         sop: metadata.sop,
-        initialData: metadata.initial_data
+        initialData: metadata.initial_data,
+        llmModel: metadata.llm_model || '',
       }));
       
       // Navigate to new run page with just a flag

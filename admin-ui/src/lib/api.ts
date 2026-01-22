@@ -122,6 +122,7 @@ export async function getRunMetadata(
   run_name?: string;
   sop: string;
   initial_data: Record<string, any>;
+  llm_model?: string | null;
   created_at: string;
   parent_thread_id?: string;
   rerun_count: number;
@@ -230,6 +231,7 @@ export interface Skill {
   produces: string[];
   optional_produces?: string[];
   executor: "llm" | "rest" | "action";
+  llm_model?: string | null;
   hitl_enabled?: boolean;
   prompt?: string;
   system_prompt?: string;
@@ -256,6 +258,83 @@ export interface Skill {
   workspace_id?: string;
   owner_id?: string;
   is_public?: boolean;
+}
+
+export type LlmModelOption = {
+  model_name: string;
+  provider?: string;
+  is_active?: boolean;
+  is_default?: boolean;
+};
+
+export async function fetchLlmModels(includeInactive = false): Promise<LlmModelOption[]> {
+  const url = includeInactive ? `${API_BASE}/admin/llm-models?include_inactive=true` : `${API_BASE}/admin/llm-models`;
+  const res = await fetch(url, {
+    cache: "no-store",
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch LLM models: ${res.status}`);
+  }
+  const data = await res.json();
+  return data.models || [];
+}
+
+export async function createLlmModel(payload: {
+  provider: string;
+  model_name: string;
+  api_key: string;
+  is_active?: boolean;
+  is_default?: boolean;
+}): Promise<any> {
+  const res = await fetch(`${API_BASE}/admin/llm-models`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...getAuthHeaders(),
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Failed to create LLM model: ${errorText}`);
+  }
+  return await res.json();
+}
+
+export async function updateLlmModel(modelName: string, updates: {
+  provider?: string;
+  api_key?: string;
+  is_active?: boolean;
+  is_default?: boolean;
+}): Promise<any> {
+  const res = await fetch(`${API_BASE}/admin/llm-models/${encodeURIComponent(modelName)}`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      ...getAuthHeaders(),
+    },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Failed to update LLM model: ${errorText}`);
+  }
+  return await res.json();
+}
+
+export async function deleteLlmModel(modelName: string): Promise<any> {
+  const res = await fetch(`${API_BASE}/admin/llm-models/${encodeURIComponent(modelName)}`, {
+    method: "DELETE",
+    headers: {
+      ...getAuthHeaders(),
+    },
+  });
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Failed to delete LLM model: ${errorText}`);
+  }
+  return await res.json();
 }
 
 export async function fetchSkills(): Promise<{skills: Skill[], count: number}> {

@@ -15,14 +15,23 @@ from env_loader import load_env_once
 # Load environment variables before importing other modules
 load_env_once(Path(__file__).resolve().parent.parent)
 
-from engine import AgentState, app, _deep_merge_dict, checkpointer, _safe_serialize, _get_env_value, _AsyncPostgresSaver
+from engine import (
+    AgentState,
+    app,
+    _deep_merge_dict,
+    checkpointer,
+    _safe_serialize,
+    _get_env_value,
+    _AsyncPostgresSaver,
+    _resolve_global_llm_model,
+)
 import log_stream
 from log_stream import publish_log, emit_log, set_log_context, get_thread_logs
 from .mock_api import router as mock_router
 from .auth_api import router as auth_router
 from .workspaces_api import router as workspace_router
 from admin_events import broadcast_run_event
-from services.connection_pool import get_pool_stats, health_check as check_pool_health, get_postgres_pool
+from services.connection_pool import get_pool_stats, health_check as check_pool_health, get_postgres_pool, close_pools
 from services.auth_middleware import AuthenticatedUser, OptionalUser, AdminUser
 from services.workspace_service import get_workspace_service
 
@@ -62,6 +71,14 @@ api.include_router(workspace_router)
 # Mock endpoints for hardcoded data (sandbox/testing)
 api.include_router(mock_router)
 
+@api.on_event("shutdown")
+async def shutdown_cleanup():
+    """Ensure background pools are closed on shutdown."""
+    try:
+        close_pools()
+    except Exception as exc:
+        emit_log(f"[API] Warning: Failed to close connection pools: {exc}")
+
 class StartRequest(BaseModel):
     thread_id: str
     sop: str
@@ -69,6 +86,7 @@ class StartRequest(BaseModel):
     run_name: Optional[str] = None  # Human-friendly name (optional)
     ack_key: Optional[str] = None  # Unique key for ACK handshake
     workspace_id: Optional[str] = None  # Target workspace (defaults to user's default)
+    llm_model: Optional[str] = None  # Global LLM model (GPT/Grok/Gemini)
 
 @api.post("/start")
 async def start_process(req: StartRequest, current_user: AuthenticatedUser):
@@ -89,6 +107,12 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
     workspace = await workspace_service.resolve_workspace(current_user.id, req.workspace_id)
     workspace_id = workspace.id
     
+    # Resolve global LLM model (request -> env -> default)
+    try:
+        global_llm_model = _resolve_global_llm_model(req.llm_model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     # STEP 1: Save metadata FIRST (so it's available when UI fetches after redirect)
     await _save_run_metadata(
         req.thread_id,
@@ -97,6 +121,7 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
         run_name=run_name,
         user_id=current_user.id,
         workspace_id=workspace_id,
+        llm_model=global_llm_model,
     )
     # STEP 2: Send ACK via Pusher (UI will receive and redirect)
     if req.ack_key:
@@ -122,6 +147,7 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
         "history": ["Process Started"],
         "thread_id": req.thread_id,
         "workspace_id": workspace_id,
+        "llm_model": global_llm_model,
         "execution_sequence": [],  # Track skill execution order for loop detection
     }
     
@@ -140,6 +166,7 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
     
     # STEP 5: Log start
     emit_log(f"[API] Start requested for thread={req.thread_id} by user={current_user.username}", req.thread_id)
+    await publish_log(f"[API] LLM model selected: {global_llm_model}", req.thread_id)
     # STEP 6: Run workflow (will send progress updates via Pusher)
     task = asyncio.create_task(_run_workflow(initial_state, config))
     RUN_TASKS[req.thread_id] = task
@@ -213,6 +240,7 @@ async def _save_run_metadata(
     run_name: Optional[str] = None,
     user_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
+    llm_model: Optional[str] = None,
 ):
     """Save run metadata to database using connection pool for rerun functionality."""
     try:
@@ -242,8 +270,8 @@ async def _save_run_metadata(
                 
                 # Insert run metadata
                 cur.execute("""
-                    INSERT INTO run_metadata (thread_id, run_name, sop, initial_data, parent_thread_id, rerun_count, status, user_id, workspace_id)
-                    VALUES (%s, %s, %s, %s, %s, %s, 'running', %s, %s)
+                    INSERT INTO run_metadata (thread_id, run_name, sop, initial_data, parent_thread_id, rerun_count, status, user_id, workspace_id, llm_model)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'running', %s, %s, %s)
                     ON CONFLICT (thread_id) DO UPDATE
                     SET run_name = EXCLUDED.run_name,
                         sop = EXCLUDED.sop,
@@ -251,8 +279,9 @@ async def _save_run_metadata(
                         parent_thread_id = EXCLUDED.parent_thread_id,
                         rerun_count = EXCLUDED.rerun_count,
                         user_id = EXCLUDED.user_id,
-                        workspace_id = EXCLUDED.workspace_id
-                """, (thread_id, run_name, sop, json.dumps(initial_data or {}), parent_thread_id, rerun_count, user_id, workspace_id))
+                        workspace_id = EXCLUDED.workspace_id,
+                        llm_model = EXCLUDED.llm_model
+                """, (thread_id, run_name, sop, json.dumps(initial_data or {}), parent_thread_id, rerun_count, user_id, workspace_id, llm_model))
             conn.commit()
         finally:
             pool.putconn(conn)
@@ -363,7 +392,7 @@ async def _get_run_metadata(thread_id: str, workspace_id: Optional[str] = None) 
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT thread_id, run_name, sop, initial_data, created_at, parent_thread_id, rerun_count, metadata,
-                           status, error_message, failed_skill, completed_at, workspace_id::text
+                           status, error_message, failed_skill, completed_at, workspace_id::text, llm_model
                     FROM run_metadata
                     WHERE thread_id = %s
                 """, (thread_id,))
@@ -385,6 +414,7 @@ async def _get_run_metadata(thread_id: str, workspace_id: Optional[str] = None) 
                         "failed_skill": row[10],
                         "completed_at": row[11].isoformat() if row[11] else None,
                         "workspace_id": row[12],
+                        "llm_model": row[13],
                     }
                 return None
     
@@ -601,7 +631,8 @@ async def list_runs(current_user: AuthenticatedUser, limit: int = 50, workspace_
                                     error_message,
                                     failed_skill,
                                     user_id,
-                                    workspace_id
+                                    workspace_id,
+                                    llm_model
                                 FROM run_metadata
                                 WHERE workspace_id = %s
                                 ORDER BY created_at DESC NULLS LAST
@@ -619,7 +650,8 @@ async def list_runs(current_user: AuthenticatedUser, limit: int = 50, workspace_
                                     error_message,
                                     failed_skill,
                                     user_id,
-                                    workspace_id
+                                    workspace_id,
+                                    llm_model
                                 FROM run_metadata
                                 WHERE user_id = %s AND workspace_id = %s
                                 ORDER BY created_at DESC NULLS LAST
@@ -642,6 +674,7 @@ async def list_runs(current_user: AuthenticatedUser, limit: int = 50, workspace_
                                 "failed_skill": row[7],
                                 "user_id": row[8],
                                 "workspace_id": row[9],
+                                "llm_model": row[10],
                             }
                             for row in rows
                         ]
@@ -765,6 +798,7 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: R
         run_name=new_run_name,
         user_id=current_user.id,
         workspace_id=workspace.id,
+        llm_model=metadata.get("llm_model"),
     )
     
     # STEP 2: Send ACK via Pusher (UI will receive and redirect)
@@ -789,12 +823,17 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: R
     
     # STEP 3: Create initial checkpoint
     config = {"configurable": {"thread_id": new_thread_id, "workspace_id": workspace.id}}
+    try:
+        global_llm_model = _resolve_global_llm_model(metadata.get("llm_model"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid LLM model in original run: {exc}") from exc
     initial_state = {
         "layman_sop": metadata["sop"],
         "data_store": metadata["initial_data"],
         "history": [f"Process Started (Rerun from {base_run_name})"],
         "thread_id": new_thread_id,
         "workspace_id": workspace.id,
+        "llm_model": global_llm_model,
         "execution_sequence": [],
     }
     await app.aupdate_state(config, initial_state)
@@ -813,6 +852,7 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: R
     
     # STEP 5: Log start
     await publish_log(f"[API] Rerun requested from thread={thread_id} -> new thread={new_thread_id} by user={current_user.username}", new_thread_id)
+    await publish_log(f"[API] LLM model selected: {global_llm_model}", new_thread_id)
     
     # STEP 6: Run workflow (will send progress updates via Pusher)
     task = asyncio.create_task(_run_workflow(initial_state, config))
@@ -1044,6 +1084,8 @@ def _get_pool_recommendations(stats: Dict[str, Any]) -> list[str]:
 
 # Import skill management endpoints
 from api.skills_api import *
+# Import LLM model management endpoints
+from api.llm_models_api import *
 
 if __name__ == "__main__":
     import uvicorn

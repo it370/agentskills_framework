@@ -95,10 +95,13 @@ def main():
         (db_dir / "checkpoints_schema.sql", "Checkpoints schema (LangGraph)", True),  # Special handling
         (db_dir / "logs_schema.sql", "Thread logs schema", False),
         (db_dir / "run_metadata_schema.sql", "Run metadata schema (for reruns)", False),
+        (db_dir / "llm_models_schema.sql", "LLM models schema (supported models + keys)", False),
         (db_dir / "add_status_columns_migration.sql", "Status tracking columns (migration)", False),
         (db_dir / "add_run_name_migration.sql", "Run name column (migration)", False),
         (db_dir / "add_paused_status_migration.sql", "Paused status support (migration)", False),
+        (db_dir / "add_llm_model_column_migration.sql", "Run metadata LLM model column (migration)", False),
         (db_dir / "dynamic_skills_schema.sql", "Dynamic skills schema (UI skill builder)", False),
+        (db_dir / "add_llm_model_to_dynamic_skills.sql", "Dynamic skills LLM model column (migration)", False),
         (db_dir / "add_action_functions_column.sql", "Action functions column (migration)", False),
         (db_dir / "users_schema.sql", "User management schema (authentication)", False),
         (db_dir / "workspaces_schema.sql", "Workspace schema (per-user isolation)", False),

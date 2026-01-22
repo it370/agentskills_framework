@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS dynamic_skills (
     -- LLM executor fields
     prompt TEXT,
     system_prompt TEXT,
+    llm_model TEXT,
     
     -- REST executor fields
     rest_config JSONB,  -- {url, method, timeout, headers}

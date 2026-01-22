@@ -6,6 +6,7 @@ export interface RunMetadata {
   run_name: string;
   sop: string;
   initial_data: any;
+  llm_model?: string | null;
   status: 'pending' | 'running' | 'paused' | 'completed' | 'error';
   created_at?: string;
   updated_at?: string;

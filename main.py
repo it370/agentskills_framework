@@ -132,6 +132,11 @@ def run():
     except Exception as e:
         print(f"[MAIN] Error: {e}")
     finally:
+        try:
+            from services.connection_pool import close_pools
+            close_pools()
+        except Exception as e:
+            print(f"[MAIN] Warning: Failed to close connection pools: {e}")
         print("[MAIN] Shutdown complete")
 
 

@@ -137,6 +137,7 @@ class Skill(BaseModel):
     produces: Set[str]
     optional_produces: Set[str] = set()
     hitl_enabled: bool = False
+    llm_model: Optional[str] = None  # "inherit global" when unset
     prompt: Optional[str] = None          # task/user intent prompt
     system_prompt: Optional[str] = None   # business SOPs / policies
     executor: str = "llm"  # "llm" (default), "rest", or "action"
@@ -305,6 +306,7 @@ def load_skill_registry(skills_dir: Optional[Path] = None) -> List[Skill]:
             optional_produces = _coerce_set(meta.get("optional_produces"), "optional_produces")
             hitl_enabled = bool(meta.get("hitl_enabled", False))
             executor = str(meta.get("executor", "llm")).lower()
+            llm_model = _normalize_llm_model_value(meta.get("llm_model"))
 
             rest_cfg = None
             if executor == "rest":
@@ -341,6 +343,7 @@ def load_skill_registry(skills_dir: Optional[Path] = None) -> List[Skill]:
                 produces=produces,
                 optional_produces=optional_produces,
                 hitl_enabled=hitl_enabled,
+                llm_model=llm_model,
                 prompt=prompt_text,
                 system_prompt=system_prompt or None,
                 executor=executor,
@@ -376,6 +379,7 @@ class AgentState(TypedDict):
     history: Annotated[List[str], lambda x, y: x + y]
     thread_id: str
     workspace_id: Optional[str]
+    llm_model: Optional[str]
     execution_sequence: Optional[List[str]]  # Track skill execution order for loop detection
 
 
@@ -398,9 +402,200 @@ def _get_env_value(key: str, default: str = "") -> str:
     return value if value else default
 
 
-def _structured_llm(schema: Type[BaseModel], *, temperature: float = 0):
-    api_key = _require_openai_api_key()
-    return ChatOpenAI(model="gpt-4o", temperature=temperature, api_key=api_key).with_structured_output(
+_LLM_MODEL_PREFIXES = ("gpt-", "grok-", "gemini-")
+
+
+def _default_llm_model() -> str:
+    """
+    Get the default LLM model.
+    
+    Priority:
+    1. Database default (is_default=TRUE in llm_models table)
+    2. Environment variable LLM_DEFAULT_MODEL
+    
+    Returns:
+        The default model name (NOT validated - caller must validate)
+        
+    Raises:
+        ValueError: If no default model is configured anywhere
+    """
+    # Try database default first
+    try:
+        from services.llm_models import get_default_model
+        db_default = get_default_model()
+        if db_default:
+            return db_default
+    except Exception as exc:
+        emit_log(f"[LLM] Warning: Could not fetch default from database: {exc}")
+    
+    # Try environment variable
+    env_default = _get_env_value("LLM_DEFAULT_MODEL", "")
+    if env_default:
+        return env_default
+    
+    # No default configured anywhere
+    raise ValueError(
+        "No default LLM model configured. Please either:\n"
+        "1. Set a default model in database (is_default=TRUE via /admin/llm-models), OR\n"
+        "2. Set LLM_DEFAULT_MODEL environment variable"
+    )
+
+
+def _normalize_llm_model_value(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    lowered = cleaned.lower()
+    if lowered in {"inherit", "inherit_global", "inherit global"}:
+        return None
+    return cleaned
+
+
+def _validate_llm_model(model: str) -> str:
+    """
+    Strictly validate that the model exists in the database.
+    NO fallbacks, NO assumptions.
+    
+    Args:
+        model: The model name to validate (should not be empty - caller handles empty case)
+    
+    Returns:
+        The validated model name
+        
+    Raises:
+        ValueError: If model is not in database or database is unavailable
+    """
+    if not model:
+        raise ValueError("Model name cannot be empty. Use _default_llm_model() for default.")
+    
+    try:
+        from services.llm_models import get_supported_models
+        supported = get_supported_models(include_inactive=False)  # Only active models
+        
+        if not supported:
+            raise ValueError(
+                "No LLM models configured in database. Please configure models via /admin/llm-models"
+            )
+        
+        model_names = [m.get("model_name") for m in supported if m.get("model_name")]
+        
+        if model not in model_names:
+            raise ValueError(
+                f"Model '{model}' is not configured in the database. "
+                f"Available models: {', '.join(sorted(model_names))}. "
+                f"Add models via /admin/llm-models"
+            )
+        
+        return model
+        
+    except ValueError:
+        # Re-raise validation errors
+        raise
+    except Exception as exc:
+        # Database connection or other errors
+        raise ValueError(
+            f"Failed to validate model '{model}': Unable to access model database. "
+            f"Error: {str(exc)}"
+        ) from exc
+
+
+def _resolve_llm_api_key(model: str) -> str:
+    """
+    Strictly resolve API key for the specified model from database.
+    NO fallback to environment variables.
+    
+    Args:
+        model: The model name (must be validated first)
+        
+    Returns:
+        The API key for the model
+        
+    Raises:
+        ValueError: If API key not found in database for the model
+    """
+    try:
+        from services.llm_models import get_model_config
+        config = get_model_config(model)
+        
+        if not config:
+            raise ValueError(
+                f"Model '{model}' configuration not found in database. "
+                f"Please ensure the model is properly configured via /admin/llm-models"
+            )
+        
+        api_key = config.get("api_key")
+        if not api_key or not str(api_key).strip():
+            raise ValueError(
+                f"Model '{model}' is missing API key in database. "
+                f"Please add API key via /admin/llm-models"
+            )
+        
+        return str(api_key)
+        
+    except ValueError:
+        # Re-raise validation errors
+        raise
+    except Exception as exc:
+        # Database connection or other errors
+        raise ValueError(
+            f"Failed to retrieve API key for model '{model}': {str(exc)}"
+        ) from exc
+
+
+def _resolve_llm_model(skill_meta: Optional["Skill"], state: Optional["AgentState"]) -> str:
+    """
+    Resolve the effective LLM model for skill execution.
+    Priority: skill.llm_model > state.llm_model > default from env/DB
+    
+    Empty strings are treated as "not specified" and fall through to next level.
+    """
+    candidate = None
+    if skill_meta:
+        candidate = _normalize_llm_model_value(skill_meta.llm_model)
+    if not candidate and state:
+        candidate = _normalize_llm_model_value(state.get("llm_model"))
+    if not candidate:
+        candidate = _default_llm_model()
+    
+    # Strictly validate the resolved model
+    return _validate_llm_model(candidate)
+
+
+def _resolve_global_llm_model(requested: Optional[str]) -> str:
+    """
+    Resolve the global LLM model for a run.
+    
+    Rules:
+    - If requested model is provided (non-empty after normalization): validate it strictly
+    - If not provided (None or empty): use default from database or env
+    
+    Args:
+        requested: The requested model name (can be None, empty, or a model name)
+        
+    Returns:
+        The validated model name
+        
+    Raises:
+        ValueError: If requested model is invalid or default is not available
+    """
+    normalized = _normalize_llm_model_value(requested)
+    
+    if normalized:
+        # User explicitly specified a model - validate it strictly
+        return _validate_llm_model(normalized)
+    else:
+        # User did not specify a model - use default
+        default = _default_llm_model()
+        # Validate the default too (it should be in database or env)
+        return _validate_llm_model(default)
+
+
+def _structured_llm(schema: Type[BaseModel], *, temperature: float = 0, model: Optional[str] = None):
+    selected_model = _validate_llm_model(model or _default_llm_model())
+    api_key = _resolve_llm_api_key(selected_model)
+    return ChatOpenAI(model=selected_model, temperature=temperature, api_key=api_key).with_structured_output(
         schema, method="function_calling"
     )
 
@@ -712,7 +907,7 @@ def _agent_tools() -> List[Any]:
 
 
 async def _run_agent_tools(
-    messages: List[BaseMessage], *, max_rounds: int = 2
+    messages: List[BaseMessage], *, max_rounds: int = 2, llm_model: Optional[str] = None
 ) -> tuple[List[Dict[str, Any]], List[BaseMessage]]:
     """
     Allow the LLM to invoke agent-level tools (e.g., REST calls) before
@@ -723,8 +918,9 @@ async def _run_agent_tools(
     if not tools:
         return [], messages
 
-    api_key = _require_openai_api_key()
-    tool_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, api_key=api_key).bind_tools(tools)
+    selected_model = _validate_llm_model(llm_model or _default_llm_model())
+    api_key = _resolve_llm_api_key(selected_model)
+    tool_llm = ChatOpenAI(model=selected_model, temperature=0, api_key=api_key).bind_tools(tools)
     history: List[BaseMessage] = list(messages)
     tool_runs: List[Dict[str, Any]] = []
 
@@ -1436,6 +1632,7 @@ async def _execute_pipeline_step(
     default_credential_ref: Optional[str] = None,
     default_db_config_file: Optional[str] = None,
     workspace_id: Optional[str] = None,
+    default_llm_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Execute a single pipeline step and return the outputs to be merged into context.
@@ -1483,6 +1680,7 @@ async def _execute_pipeline_step(
                     default_credential_ref=default_credential_ref,
                     default_db_config_file=default_db_config_file,
                     workspace_id=workspace_id,
+                    default_llm_model=default_llm_model,
                 )
         else:
             else_step = step.get("else_step")
@@ -1495,6 +1693,7 @@ async def _execute_pipeline_step(
                     default_credential_ref=default_credential_ref,
                     default_db_config_file=default_db_config_file,
                     workspace_id=workspace_id,
+                    default_llm_model=default_llm_model,
                 )
         
         # No branch to execute or branch was None
@@ -1605,7 +1804,8 @@ async def _execute_pipeline_step(
             "data_store": context,
             "history": [],
             "active_skill": skill_name,
-            "layman_sop": "Pipeline execution"
+            "layman_sop": "Pipeline execution",
+            "llm_model": default_llm_model,
         }
         skill_result = await _execute_skill_core(skill, skill_inputs, minimal_state)
         
@@ -1634,6 +1834,7 @@ async def _execute_pipeline_step(
                 default_credential_ref=default_credential_ref,
                 default_db_config_file=default_db_config_file,
                 workspace_id=workspace_id,
+                default_llm_model=default_llm_model,
             )
             for sub_idx, substep in enumerate(parallel_steps)
         ]
@@ -1690,7 +1891,12 @@ def _apply_output_spec(output_spec: Any, value: Any, *, error_prefix: str) -> Di
         )
     raise ValueError(f"{error_prefix}: 'output' must be a string or list of strings, got {type(output_spec)}")
 
-async def _execute_data_pipeline(cfg: ActionConfig, inputs: Dict[str, Any], workspace_id: Optional[str] = None) -> Dict[str, Any]:
+async def _execute_data_pipeline(
+    cfg: ActionConfig,
+    inputs: Dict[str, Any],
+    workspace_id: Optional[str] = None,
+    llm_model: Optional[str] = None,
+) -> Dict[str, Any]:
     """Execute multi-step data pipeline with support for parallel execution"""
     if not cfg.steps:
         raise ValueError("data_pipeline action requires 'steps' field")
@@ -1707,6 +1913,7 @@ async def _execute_data_pipeline(cfg: ActionConfig, inputs: Dict[str, Any], work
             default_credential_ref=cfg.credential_ref,
             default_db_config_file=cfg.db_config_file,
             workspace_id=workspace_id,
+            default_llm_model=llm_model,
         )
         
         # Merge outputs into context (auto-merge at top level)
@@ -1927,7 +2134,7 @@ async def autonomous_planner(state: AgentState):
     Pick the next agent. If the goal is met or no further action possible, return 'END'.
     """
     
-    llm = _structured_llm(PlannerDecision, temperature=0)
+    llm = _structured_llm(PlannerDecision, temperature=0, model=_resolve_llm_model(None, state))
     decision = await llm.ainvoke(prompt)
     
     allowed_choices = {s.name for s in runnable} | set(unblockers)
@@ -1985,7 +2192,12 @@ async def _execute_skill_core(skill_meta: Skill, input_ctx: Dict[str, Any], stat
         elif action_cfg.type == ActionType.DATA_QUERY:
             result = await _execute_data_query(action_cfg, input_ctx)
         elif action_cfg.type == ActionType.DATA_PIPELINE:
-            result = await _execute_data_pipeline(action_cfg, input_ctx, workspace_id)
+            result = await _execute_data_pipeline(
+                action_cfg,
+                input_ctx,
+                workspace_id,
+                llm_model=state.get("llm_model") if state else None,
+            )
         elif action_cfg.type == ActionType.SCRIPT:
             result = await _execute_script(action_cfg, input_ctx)
         elif action_cfg.type == ActionType.HTTP_CALL:
@@ -2112,7 +2324,8 @@ async def _execute_skill_core(skill_meta: Skill, input_ctx: Dict[str, Any], stat
         **fields,
     )
 
-    llm = _structured_llm(DynamicModel)
+    selected_model = _resolve_llm_model(skill_meta, state)
+    llm = _structured_llm(DynamicModel, model=selected_model)
 
     # Simulate processing
     await asyncio.sleep(1)
@@ -2151,7 +2364,7 @@ async def _execute_skill_core(skill_meta: Skill, input_ctx: Dict[str, Any], stat
         )
     )
 
-    tool_runs, tool_history = await _run_agent_tools(base_messages)
+    tool_runs, tool_history = await _run_agent_tools(base_messages, llm_model=selected_model)
 
     extraction_prompt = (
         f"Use the available inputs and any tool results to populate the structured outputs "
@@ -2473,22 +2686,22 @@ checkpointer = _build_checkpointer()
 app = workflow.compile(checkpointer=checkpointer, interrupt_before=["human_review", "await_callback"])
 
 
-# --- Register Pipeline Functions ---
-# Auto-discover and register functions from pipeline modules
-try:
-    from skills.FinancialAnalysisPipeline.pipeline_functions import (
-        compute_financial_metrics,
-        format_financial_report,
-        calculate_growth_metrics
-    )
+# # --- Register Pipeline Functions ---
+# # Auto-discover and register functions from pipeline modules
+# try:
+#     from skills.FinancialAnalysisPipeline.pipeline_functions import (
+#         compute_financial_metrics,
+#         format_financial_report,
+#         calculate_growth_metrics
+#     )
     
-    # Register each function
-    register_action_function("compute_financial_metrics", compute_financial_metrics)
-    register_action_function("format_financial_report", format_financial_report)
-    register_action_function("calculate_growth_metrics", calculate_growth_metrics)
+#     # Register each function
+#     register_action_function("compute_financial_metrics", compute_financial_metrics)
+#     register_action_function("format_financial_report", format_financial_report)
+#     register_action_function("calculate_growth_metrics", calculate_growth_metrics)
     
-    emit_log("[ACTIONS] Registered FinancialAnalysisPipeline functions")
-except ImportError as e:
-    emit_log(f"[ACTIONS] Warning: Could not import FinancialAnalysisPipeline functions: {e}")
-except Exception as e:
-    emit_log(f"[ACTIONS] Error registering FinancialAnalysisPipeline functions: {e}")
+#     emit_log("[ACTIONS] Registered FinancialAnalysisPipeline functions")
+# except ImportError as e:
+#     emit_log(f"[ACTIONS] Warning: Could not import FinancialAnalysisPipeline functions: {e}")
+# except Exception as e:
+#     emit_log(f"[ACTIONS] Error registering FinancialAnalysisPipeline functions: {e}")

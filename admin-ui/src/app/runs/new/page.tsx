@@ -5,10 +5,10 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import DashboardLayout from "../../../components/DashboardLayout";
 import { getAuthHeaders } from "../../../lib/auth";
+import { fetchLlmModels, LlmModelOption } from "../../../lib/api";
 import { useRun } from "../../../contexts/RunContext";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
-
 function NewRunForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -20,6 +20,8 @@ function NewRunForm() {
     "Just execute Profiler Retriever, display result and end."
   );
   const [initialData, setInitialData] = useState("");  // Empty by default, use placeholder
+  const [llmModel, setLlmModel] = useState("");
+  const [llmOptions, setLlmOptions] = useState<LlmModelOption[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ackUnsubscribe, setAckUnsubscribe] = useState<(() => void) | null>(null);
@@ -35,6 +37,10 @@ function NewRunForm() {
         if (config.sop) setSop(config.sop);
         if (config.initialData) {
           setInitialData(JSON.stringify(config.initialData, null, 2));
+        }
+        // For llmModel, set it even if empty string (user can clear to use server default)
+        if (config.llmModel !== undefined && config.llmModel !== null) {
+          setLlmModel(config.llmModel);
         }
         // Clear after reading
         sessionStorage.removeItem('rerun_config');
@@ -72,6 +78,24 @@ function NewRunForm() {
     };
   }, [ackUnsubscribe]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const loadModels = async () => {
+      try {
+        const models = await fetchLlmModels();
+        if (!cancelled) {
+          setLlmOptions(models);
+        }
+      } catch (err) {
+        console.warn("[NewRun] Failed to load LLM models:", err);
+      }
+    };
+    loadModels();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const generateThreadId = () => {
     if (typeof window !== "undefined" && window.crypto?.randomUUID) {
       return `thread_${window.crypto.randomUUID()}`;
@@ -106,6 +130,7 @@ function NewRunForm() {
       sop,
       initialData: parsedData,
       runName: runName.trim() || undefined,
+      llmModel: llmModel.trim() || undefined,
     });
 
     // Subscribe to ACK event via global event bus
@@ -136,6 +161,7 @@ function NewRunForm() {
           initial_data: parsedData,
           run_name: runName.trim() || undefined,
           ack_key: ackKey,  // Send ACK key
+          llm_model: llmModel.trim() || undefined,
         }),
       });
 
@@ -253,6 +279,39 @@ function NewRunForm() {
               className="w-full h-32 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
               placeholder="Enter workflow instructions..."
             />
+          </div>
+
+          <div className="bg-white rounded-lg border border-gray-200 p-6">
+            <label className="block mb-2">
+              <span className="text-sm font-medium text-gray-900">
+                LLM Model <span className="text-gray-500 font-normal">(Optional)</span>
+              </span>
+              <p className="mt-1 text-xs text-gray-600">
+                Leave blank to inherit the server default model.
+              </p>
+            </label>
+            <input
+              list="llm-model-options"
+              type="text"
+              value={llmModel}
+              onChange={(e) => setLlmModel(e.target.value)}
+              className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 text-sm ${
+                llmModel && llmOptions.length > 0 && !llmOptions.some(m => m.model_name === llmModel)
+                  ? 'border-red-300 focus:ring-red-500 bg-red-50'
+                  : 'border-gray-300 focus:ring-blue-500'
+              }`}
+              placeholder="e.g., gpt-4o-mini"
+            />
+            <datalist id="llm-model-options">
+              {llmOptions.map((model) => (
+                <option key={model.model_name} value={model.model_name} />
+              ))}
+            </datalist>
+            {llmModel && llmOptions.length > 0 && !llmOptions.some(m => m.model_name === llmModel) && (
+              <p className="mt-1 text-xs text-red-600">
+                ⚠️ Warning: "{llmModel}" is not in the list of configured models. Available models: {llmOptions.map(m => m.model_name).join(', ')}
+              </p>
+            )}
           </div>
 
           <div className="bg-white rounded-lg border border-gray-200 p-6">

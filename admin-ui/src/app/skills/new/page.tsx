@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { createSkill, Skill } from "../../../lib/api";
+import { createSkill, Skill, fetchLlmModels, LlmModelOption } from "../../../lib/api";
 import DashboardLayout from "../../../components/DashboardLayout";
 import PythonEditor from "../../../components/PythonEditor";
 
@@ -34,9 +34,30 @@ export default function NewSkillPage() {
   const [pipelineFunctions, setPipelineFunctions] = useState(""); // For data_pipeline transform functions
   const [functionName, setFunctionName] = useState(""); // Entry function name for python_function
 
+  const [llmModel, setLlmModel] = useState("");
+  const [llmOptions, setLlmOptions] = useState<LlmModelOption[]>([]);
+
   // Validation states
   const [pythonCodeValid, setPythonCodeValid] = useState(true);
   const [pipelineFunctionsValid, setPipelineFunctionsValid] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadModels = async () => {
+      try {
+        const models = await fetchLlmModels();
+        if (!cancelled) {
+          setLlmOptions(models);
+        }
+      } catch (err) {
+        console.warn("[NewSkill] Failed to load LLM models:", err);
+      }
+    };
+    loadModels();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // REST executor fields
   const [restUrl, setRestUrl] = useState("");
@@ -88,6 +109,13 @@ export default function NewSkillPage() {
       requires,
       produces,
     };
+    // Always set llm_model for LLM executor (null clears it)
+    // For non-LLM executors, explicitly set to null
+    if (formData.executor === "llm") {
+      skillData.llm_model = llmModel.trim() || null;
+    } else {
+      skillData.llm_model = null;
+    }
     
     // Add REST config if REST executor
     if (formData.executor === "rest") {
@@ -318,6 +346,36 @@ export default function NewSkillPage() {
               {/* LLM Fields */}
               {formData.executor === "llm" && (
                 <div className="space-y-4 mt-4 p-4 bg-purple-50 rounded-lg">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-900 mb-2">
+                      LLM Model <span className="text-gray-500 font-normal">(Optional)</span>
+                    </label>
+                    <input
+                      list="llm-model-options"
+                      type="text"
+                      value={llmModel}
+                      onChange={(e) => setLlmModel(e.target.value)}
+                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 text-sm ${
+                        llmModel && llmOptions.length > 0 && !llmOptions.some(m => m.model_name === llmModel)
+                          ? 'border-red-300 focus:ring-red-500 bg-red-50'
+                          : 'border-gray-300 focus:ring-blue-500'
+                      }`}
+                      placeholder="inherit global (leave blank)"
+                    />
+                    <datalist id="llm-model-options">
+                      {llmOptions.map((model) => (
+                        <option key={model.model_name} value={model.model_name} />
+                      ))}
+                    </datalist>
+                    {llmModel && llmOptions.length > 0 && !llmOptions.some(m => m.model_name === llmModel) && (
+                      <p className="mt-1 text-xs text-red-600">
+                        ⚠️ "{llmModel}" is not configured. Available: {llmOptions.map(m => m.model_name).join(', ')}
+                      </p>
+                    )}
+                    <p className="mt-1 text-xs text-gray-600">
+                      Leave blank to inherit the global model from the run.
+                    </p>
+                  </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-900 mb-2">
                       Prompt

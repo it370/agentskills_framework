@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS run_metadata (
     run_name TEXT,  -- Human-friendly name (optional, defaults to thread_id)
     sop TEXT NOT NULL,
     initial_data JSONB NOT NULL,
+    llm_model TEXT,  -- Selected LLM model for this run
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     parent_thread_id TEXT,  -- For reruns, tracks the original thread
     rerun_count INTEGER DEFAULT 0,  -- How many times this has been rerun

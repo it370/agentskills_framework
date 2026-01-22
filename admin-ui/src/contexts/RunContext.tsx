@@ -20,7 +20,7 @@ import { connectLogs, getRunMetadata, fetchRunDetail, fetchThreadLogs } from '..
 
 interface RunContextValue {
   // Methods to interact with runs
-  initializeRun: (threadId: string, config?: { sop: string; initialData: any; runName?: string }) => Promise<void>;
+  initializeRun: (threadId: string, config?: { sop: string; initialData: any; runName?: string; llmModel?: string | null }) => Promise<void>;
   loadHistoricalData: (threadId: string) => Promise<void>;
 }
 
@@ -43,7 +43,7 @@ export function RunProvider({ children }: { children: React.ReactNode }) {
   // Initialize a run (called when starting new run or navigating to thread page)
   const initializeRun = async (
     threadId: string,
-    config?: { sop: string; initialData: any; runName?: string }
+    config?: { sop: string; initialData: any; runName?: string; llmModel?: string | null }
   ) => {
     console.log('[RunProvider] Initializing run:', threadId);
     
@@ -59,6 +59,7 @@ export function RunProvider({ children }: { children: React.ReactNode }) {
           run_name: config.runName || threadId,
           sop: config.sop,
           initial_data: config.initialData,
+          llm_model: config.llmModel || null,
           status: 'pending',
           created_at: new Date().toISOString(),
         },

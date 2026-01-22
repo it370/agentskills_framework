@@ -158,6 +158,7 @@ export default function RunDetailPage() {
   const initialData = runMetadata?.initial_data || 
                      initialConfig?.data || 
                      (initialDataFromUrl ? (() => { try { return JSON.parse(initialDataFromUrl); } catch { return {}; } })() : {});
+  const llmModel = runMetadata?.llm_model || "—";
   const runName = runMetadata?.run_name || threadId;
 
   const derivedStatus: "pending" | "running" | "paused" | "completed" | "error" | "cancelled" = 
@@ -508,6 +509,12 @@ export default function RunDetailPage() {
                   <h3 className="text-lg font-semibold text-gray-900 mb-4">Workflow Instructions</h3>
                   <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
                     <p className="text-sm text-gray-700 whitespace-pre-wrap">{laymanSop}</p>
+                  </div>
+                </div>
+                <div className="bg-white rounded-lg border border-gray-200 p-6">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4">LLM Model</h3>
+                  <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                    <p className="text-sm text-gray-700 font-mono">{llmModel}</p>
                   </div>
                 </div>
                 <div className="bg-white rounded-lg border border-gray-200 p-6">
