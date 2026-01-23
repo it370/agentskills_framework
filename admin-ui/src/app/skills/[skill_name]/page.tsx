@@ -96,7 +96,7 @@ export default function ViewSkillPage() {
             <div className="flex items-center gap-3">
               {skill.source === "database" && (
                 <Link
-                  href={`/skills/${encodeURIComponent(skill.name)}/edit`}
+                  href={`/skills/${encodeURIComponent(skill.id || skill.name)}/edit`}
                   className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors"
                 >
                   Edit Skill
