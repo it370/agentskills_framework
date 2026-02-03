@@ -1,0 +1,38 @@
+[Unit]
+Description=AgentSkills Framework - AI Workflow Engine
+After=network.target postgresql.service redis.service
+
+[Service]
+Type=notify
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/agentskills_framework
+Environment="PATH=/opt/conda/envs/clearstar/bin:/usr/local/bin:/usr/bin:/bin"
+EnvironmentFile=/opt/agentskills_framework/.env
+
+# Gunicorn configuration
+ExecStart=/opt/conda/envs/clearstar/bin/gunicorn \
+    --config /opt/agentskills_framework/gunicorn.conf.py \
+    api:api
+
+# Restart policy
+Restart=always
+RestartSec=10
+StartLimitInterval=5min
+StartLimitBurst=5
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=agentskills
+
+# Resource limits (adjust as needed)
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target

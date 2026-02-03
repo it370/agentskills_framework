@@ -1,5 +1,7 @@
 fastapi
 uvicorn[standard]
+gunicorn  # Production server (Linux/Mac only)
+hypercorn  # Production ASGI server (cross-platform)
 langchain-openai
 langgraph
 pydantic
