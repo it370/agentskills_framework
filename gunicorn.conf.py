@@ -51,7 +51,9 @@ group = None
 tmp_upload_dir = None
 
 # Preload app for better memory usage
-preload_app = True
+# NOTE: Set to False if you have issues with class variables/singletons not being
+# properly initialized in worker processes (e.g., AuthContext)
+preload_app = False
 
 # Worker lifecycle hooks
 def on_starting(server):
@@ -95,13 +97,20 @@ def post_fork(server, worker):
     """Called just after a worker has been forked."""
     print(f"[GUNICORN] Worker spawned (pid: {worker.pid})")
     
-    # Initialize auth context per worker
+    # CRITICAL: Reset and re-initialize auth context per worker
+    # Class variables from master process may not carry over properly after fork
     try:
         from services.credentials import AuthContext
+        
+        # Reset the auth context to ensure clean state in worker
+        AuthContext.reset()
+        
+        # Re-initialize for this worker
         auth = AuthContext.initialize_from_env()
         print(f"[WORKER {worker.pid}] Auth context initialized for user: {auth.get_current_user().user_id}")
     except Exception as e:
-        print(f"[WORKER {worker.pid}] Warning: Could not initialize auth context: {e}")
+        print(f"[WORKER {worker.pid}] WARNING: Could not initialize auth context: {e}")
+        print(f"[WORKER {worker.pid}] Credential-based skills may fail without user_context in inputs")
     
     # Configure broadcast integration per worker
     try:

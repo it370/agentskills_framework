@@ -42,6 +42,17 @@ api = FastAPI(title="Agentic SOP Orchestrator")
 # Track background workflow tasks so we can cancel them.
 RUN_TASKS: Dict[str, asyncio.Task] = {}
 
+# Initialize AuthContext on API module load (for Hypercorn/Waitress workers)
+# This ensures each worker process has AuthContext properly initialized
+try:
+    from services.credentials import AuthContext
+    if not AuthContext.is_initialized():
+        auth = AuthContext.initialize_from_env()
+        print(f"[API] Initialized AuthContext for user: {auth.get_current_user().user_id}")
+except Exception as e:
+    print(f"[API] WARNING: Could not initialize AuthContext: {e}")
+    print(f"[API] Credential-based skills may fail without user_context in inputs")
+
 # CORS: allow all for dev, or specific origins from env
 if "*" in ALLOWED_ORIGINS:
     api.add_middleware(

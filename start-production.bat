@@ -4,14 +4,14 @@ REM Uses Waitress WSGI server (Windows-compatible)
 
 cd /d "%~dp0"
 
-REM Activate conda environment
-echo [STARTUP] Activating conda environment: kudos
-call conda activate kudos || (
-    echo [ERROR] Failed to activate conda environment 'kudos'
-    echo [ERROR] Make sure conda is installed and environment exists
-    pause
-    exit /b 1
-)
+@REM REM Activate conda environment
+@REM echo [STARTUP] Activating conda environment: kudos
+@REM call conda activate kudos || (
+@REM     echo [ERROR] Failed to activate conda environment 'kudos'
+@REM     echo [ERROR] Make sure conda is installed and environment exists
+@REM     pause
+@REM     exit /b 1
+@REM )
 
 REM Set default values
 if not defined REST_API_HOST set REST_API_HOST=0.0.0.0
