@@ -104,7 +104,7 @@ async def request_system_password_reset(reset_request: PasswordResetRequest):
     
     if reset_token:
         # Construct reset URL
-        reset_url_base = os.getenv("APP_URL", "http://localhost:3000") + "/reset-password"
+        reset_url_base = os.getenv("UI_APP_URL", "http://localhost:3000") + "/reset-password"
         reset_url = f"{reset_url_base}?token={reset_token}"
         
         try:
@@ -153,7 +153,7 @@ async def register(registration: UserRegistration):
     email_service = get_email_service()
     if email_service:
         try:
-            login_url = os.getenv("APP_URL", "http://localhost:3000") + "/login"
+            login_url = os.getenv("UI_APP_URL", "http://localhost:3000") + "/login"
             await email_service.send_welcome_email(
                 user.email,
                 user.username,
@@ -268,7 +268,7 @@ async def request_password_reset(reset_request: PasswordResetRequest):
     
     # Send reset email
     try:
-        reset_url_base = os.getenv("APP_URL", "http://localhost:3000") + "/reset-password"
+        reset_url_base = os.getenv("UI_APP_URL", "http://localhost:3000") + "/reset-password"
         
         # Get username for email
         # We need to query the user again (inefficient but secure)
