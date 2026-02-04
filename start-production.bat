@@ -5,9 +5,9 @@ REM Uses Waitress WSGI server (Windows-compatible)
 cd /d "%~dp0"
 
 REM Activate conda environment
-echo [STARTUP] Activating conda environment: clearstar
-call conda activate clearstar || (
-    echo [ERROR] Failed to activate conda environment 'clearstar'
+echo [STARTUP] Activating conda environment: kudos
+call conda activate kudos || (
+    echo [ERROR] Failed to activate conda environment 'kudos'
     echo [ERROR] Make sure conda is installed and environment exists
     pause
     exit /b 1
@@ -16,7 +16,7 @@ call conda activate clearstar || (
 REM Set default values
 if not defined REST_API_HOST set REST_API_HOST=0.0.0.0
 if not defined REST_API_PORT set REST_API_PORT=8000
-if not defined WAITRESS_THREADS set WAITRESS_THREADS=8
+if not defined WAITRESS_THREADS set WAITRESS_THREADS=5
 if not defined WAITRESS_CHANNEL_TIMEOUT set WAITRESS_CHANNEL_TIMEOUT=120
 
 echo [STARTUP] Starting AgentSkills Framework (Production)...
