@@ -108,10 +108,10 @@ def main():
         (db_dir / "add_user_tracking_migration.sql", "User tracking migration (user_id columns)", False),
         (db_dir / "add_workspace_columns_migration.sql", "Workspace isolation migration (skills & runs)", False),
         (db_dir / "add_workspace_code_migration.sql", "Workspace code (module namespace) migration", False),
+        (db_dir / "migrate_to_uuid_and_module_name.sql", "UUID and module_name migration (creates auto_generate_module_name function)", False),
         (db_dir / "update_dynamic_skill_module_prefix_migration.sql", "Namespace dynamic skill modules by workspace code", False),
         (db_dir / "fix_skill_name_uniqueness.sql", "CRITICAL: Fix skill name uniqueness per workspace", False),
         (db_dir / "remove_module_name_trigger.sql", "Remove module_name trigger (Python handles naming)", False),
-        (db_dir / "migrate_to_uuid_and_module_name.sql", "UUID and module_name migration (IMPORTANT: Run manually first for existing DBs)", False),
         (db_dir / "run_list_view.sql", "Run list view with computed status", False),
     ]
     
