@@ -200,8 +200,15 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
     task = asyncio.create_task(_run_workflow(initial_state, config))
     RUN_TASKS[req.thread_id] = task
     task.add_done_callback(lambda t, thread_id=req.thread_id: RUN_TASKS.pop(thread_id, None))
-    # STEP 7: Return response
-    return {"status": "started", "thread_id": req.thread_id, "run_name": run_name}
+    
+    # STEP 8: Return response
+    return {
+        "status": "started", 
+        "thread_id": req.thread_id, 
+        "run_name": run_name, 
+        "broadcast": req.broadcast,
+        "workspace_id": workspace_id
+    }
 
 
 @api.post("/stop/{thread_id}")
