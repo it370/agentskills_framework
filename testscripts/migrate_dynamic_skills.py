@@ -5,8 +5,8 @@ Migrates dynamic_skills table from source PostgreSQL database to target database
 This script is for one-time use only - delete after migration is complete.
 
 MODIFICATIONS:
-- Sets workspace_id to: fc72099f-8957-4cd7-b74e-fe5beecb15f6
-- Sets owner_id to: b37928dc-45fc-4342-ad42-e3db6af8f81f
+- Sets workspace_id to: 8162f359-265b-4a45-8b70-f8278a0d39e7
+- Sets owner_id to: f99f1fbb-59c3-429c-8329-5cb08580c4d7
 - All other fields are copied from source database
 
 Nelvin Note:
@@ -37,10 +37,10 @@ TARGET_DB = "postgres://username:password@aiagentic-framework-prod.cvwog2sooqtl.
 # ============================================================
 
 # Workspace ID to assign all migrated skills
-TARGET_WORKSPACE_ID = "fc72099f-8957-4cd7-b74e-fe5beecb15f6"
+TARGET_WORKSPACE_ID = '8162f359-265b-4a45-8b70-f8278a0d39e7'
 
 # Owner ID to assign all migrated skills
-TARGET_OWNER_ID = "b37928dc-45fc-4342-ad42-e3db6af8f81f"
+TARGET_OWNER_ID = "f99f1fbb-59c3-429c-8329-5cb08580c4d7"
 
 # ============================================================
 
@@ -71,7 +71,7 @@ def migrate_dynamic_skills(
         "optional_produces", "executor", "hitl_enabled", "prompt", 
         "system_prompt", "llm_model", "rest_config", "action_config", 
         "action_code", "created_at", "updated_at", "created_by", 
-        "source", "enabled"
+        "source", "enabled", "action_functions"
     ]
     
     # Columns that contain JSON/JSONB data
