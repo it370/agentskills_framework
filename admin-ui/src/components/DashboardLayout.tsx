@@ -16,6 +16,9 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
     { name: "Logs", path: "/logs", icon: TerminalIcon },
     { name: "Workflows", path: "/workflows", icon: WorkflowIcon },
   ];
+  if (user?.is_admin) {
+    navItems.push({ name: "Run Manager", path: "/run-manager", icon: DatabaseIcon });
+  }
   if (user?.username === "system") {
     navItems.push({ name: "LLM Models", path: "/admin/llm-models", icon: SettingsIcon });
   }
@@ -153,6 +156,24 @@ function SettingsIcon({ className }: { className?: string }) {
         strokeLinejoin="round"
         strokeWidth={2}
         d="M12 6.5a5.5 5.5 0 105.5 5.5A5.5 5.5 0 0012 6.5zm9 5.5a7.84 7.84 0 00-.14-1.45l2.05-1.6-2-3.46-2.47 1a8 8 0 00-2.51-1.46l-.38-2.62H9.45l-.38 2.62a8 8 0 00-2.51 1.46l-2.47-1-2 3.46 2.05 1.6A7.84 7.84 0 004 12c0 .49.05.97.14 1.45l-2.05 1.6 2 3.46 2.47-1a8 8 0 002.51 1.46l.38 2.62h4.1l.38-2.62a8 8 0 002.51-1.46l2.47 1 2-3.46-2.05-1.6c.09-.48.14-.96.14-1.45z"
+      />
+    </svg>
+  );
+}
+
+function DatabaseIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M4 7v10c0 2 2 3 8 3s8-1 8-3V7M4 7c0 2 2 3 8 3s8-1 8-3M4 7c0-2 2-3 8-3s8 1 8 3m0 5c0 2-2 3-8 3s-8-1-8-3"
       />
     </svg>
   );

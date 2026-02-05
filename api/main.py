@@ -30,6 +30,7 @@ from log_stream import publish_log, emit_log, set_log_context, get_thread_logs
 from .mock_api import router as mock_router
 from .auth_api import router as auth_router
 from .workspaces_api import router as workspace_router
+from .run_manager_api import router as run_manager_router
 from admin_events import broadcast_run_event
 from services.connection_pool import get_pool_stats, health_check as check_pool_health, get_postgres_pool, close_pools
 from services.auth_middleware import AuthenticatedUser, OptionalUser, AdminUser
@@ -88,6 +89,9 @@ api.include_router(auth_router)
 
 # Workspace endpoints
 api.include_router(workspace_router)
+
+# Run Manager endpoints (admin-only)
+api.include_router(run_manager_router)
 
 # Mock endpoints for hardcoded data (sandbox/testing)
 api.include_router(mock_router)

@@ -546,3 +546,86 @@ export async function reloadSkills(): Promise<any> {
   return await res.json();
 }
 
+// --- RUN MANAGER API ---
+
+export interface RunListItem {
+  id: string;
+  name?: string;
+  result?: string;
+  time?: string;
+  username?: string;
+  workspace?: string;
+  workspace_name?: string;
+}
+
+export interface RunManagerListResponse {
+  runs: RunListItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export async function fetchRunsManager(params: {
+  page?: number;
+  page_size?: number;
+  username?: string;
+  workspace?: string;
+  search?: string;
+}): Promise<RunManagerListResponse> {
+  const searchParams = new URLSearchParams();
+  if (params.page) searchParams.append("page", params.page.toString());
+  if (params.page_size) searchParams.append("page_size", params.page_size.toString());
+  if (params.username) searchParams.append("username", params.username);
+  if (params.workspace) searchParams.append("workspace", params.workspace);
+  if (params.search) searchParams.append("search", params.search);
+
+  const res = await fetch(`${API_BASE}/admin/run-manager/runs?${searchParams.toString()}`, {
+    cache: "no-store",
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to load runs: ${res.status}`);
+  }
+  return await res.json();
+}
+
+export async function deleteRunsBulk(threadIds: string[]): Promise<{ deleted_count: number; failed: Array<{ thread_id: string; error: string }> }> {
+  const res = await fetch(`${API_BASE}/admin/run-manager/runs`, {
+    method: "DELETE",
+    headers: {
+      "Content-Type": "application/json",
+      ...getAuthHeaders(),
+    },
+    body: JSON.stringify({ thread_ids: threadIds }),
+  });
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Failed to delete runs: ${errorText}`);
+  }
+  return await res.json();
+}
+
+export async function fetchRunManagerUsernames(): Promise<string[]> {
+  const res = await fetch(`${API_BASE}/admin/run-manager/usernames`, {
+    cache: "no-store",
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to load usernames: ${res.status}`);
+  }
+  const data = await res.json();
+  return data.usernames || [];
+}
+
+export async function fetchRunManagerWorkspaces(): Promise<Array<{ id: string; name: string; username?: string }>> {
+  const res = await fetch(`${API_BASE}/admin/run-manager/workspaces`, {
+    cache: "no-store",
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to load workspaces: ${res.status}`);
+  }
+  const data = await res.json();
+  return data.workspaces || [];
+}
+
