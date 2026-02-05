@@ -1,9 +1,11 @@
 """
-Production server for Windows using Hypercorn ASGI server
-Hypercorn is a pure-Python production ASGI server that works on Windows
+Production server for Windows using Uvicorn ASGI server
+Optimized for production with proper event loop and connection handling
 """
 import os
 import sys
+import asyncio
+import logging
 from pathlib import Path
 
 # Add project root to path
@@ -11,8 +13,22 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from env_loader import load_env_once
 
+# Suppress Windows ProactorEventLoop connection reset errors
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    
+    class SuppressConnectionErrors(logging.Filter):
+        def filter(self, record):
+            if "ProactorBasePipeTransport" in record.getMessage():
+                return False
+            if "WinError 10054" in record.getMessage():
+                return False
+            return True
+    
+    logging.getLogger("asyncio").addFilter(SuppressConnectionErrors())
+
 def run_production():
-    """Start production server with Hypercorn"""
+    """Start production server with Uvicorn (optimized for production)"""
     
     # Load environment
     load_env_once(Path(__file__).resolve().parent)
@@ -37,7 +53,6 @@ def run_production():
         status = get_broadcaster_status()
         primary = status.get('primary_broadcaster', 'none')
         available = status.get('primary_available', False)
-        # Use ASCII-safe characters for Windows
         broadcast_display = f"{primary.capitalize()} ({'OK' if available else 'FAIL'})"
         
         print(f"[MAIN] Real-time broadcast configured: {primary} ({'available' if available else 'unavailable'})")
@@ -61,7 +76,6 @@ def run_production():
     # Configuration
     host = os.getenv("REST_API_HOST", "0.0.0.0")
     port = int(os.getenv("REST_API_PORT", "8000"))
-    workers = int(os.getenv("HYPERCORN_WORKERS", "4"))
     
     # SSL configuration
     ssl_keyfile = os.getenv("SSL_KEYFILE")
@@ -72,37 +86,37 @@ def run_production():
     print("=" * 66)
     print("  AgentSkills Framework - Production Mode")
     print("=" * 66)
-    print(f"  Server:             Hypercorn ASGI Server")
+    print(f"  Server:             Uvicorn ASGI Server (Production)")
     print(f"  Bind Address:       {protocol}://{host}:{port}")
-    print(f"  Workers:            {workers}")
+    print(f"  Workers:            1 (async, optimized for Windows)")
     print(f"  Real-time Broadcast: {broadcast_display}")
     print(f"  SSL/TLS:            {'Enabled' if use_ssl else 'Disabled'}")
     print("=" * 66)
     print()
     
-    print("[MAIN] Starting production server with Hypercorn...")
+    print("[MAIN] Starting production server with Uvicorn...")
     
-    # Build hypercorn command
-    bind = f"{host}:{port}"
-    cmd_args = [
-        "hypercorn",
-        "api:api",
-        "--bind", bind,
-        "--workers", str(workers),
-        "--access-logfile", "-",  # stdout
-        "--error-logfile", "-",   # stderr
-    ]
-    
-    if use_ssl:
-        cmd_args.extend([
-            "--certfile", ssl_certfile,
-            "--keyfile", ssl_keyfile
-        ])
-    
-    # Run hypercorn
-    import subprocess
+    # Run Uvicorn with production settings
     try:
-        subprocess.run(cmd_args)
+        import uvicorn
+        uvicorn_config = {
+            "app": "api:api",
+            "host": host,
+            "port": port,
+            "reload": False,  # Production: no auto-reload
+            "log_level": "info",
+            "access_log": True,
+            "timeout_graceful_shutdown": 5,
+            "limit_concurrency": 1000,  # Production: handle more concurrent connections
+            "limit_max_requests": None,  # No request limit
+            "timeout_keep_alive": 5,
+        }
+        
+        if use_ssl:
+            uvicorn_config["ssl_keyfile"] = ssl_keyfile
+            uvicorn_config["ssl_certfile"] = ssl_certfile
+        
+        uvicorn.run(**uvicorn_config)
     except KeyboardInterrupt:
         print("\n[MAIN] Shutdown signal received")
     except Exception as e:
