@@ -1355,7 +1355,7 @@ async def _execute_postgres_query(cfg: ActionConfig, inputs: Dict[str, Any]) -> 
         
         try:
             result = await asyncio.to_thread(_execute_sync)
-            await publish_log(f"[ACTIONS] Postgres query executed with custom credentials")
+            # await publish_log(f"[ACTIONS] Postgres query executed with custom credentials")
             return result
         except Exception as e:
             raise RuntimeError(f"Postgres query failed: {e}") from e
@@ -2223,7 +2223,7 @@ async def _execute_skill_core(skill_meta: Skill, input_ctx: Dict[str, Any], stat
                 # matched_key = None
                 if produces_list[0] in result.keys():
                     mapped_result[produces_list[0]] = result[produces_list[0]]
-                    await publish_log(f"[EXECUTOR] Stored entire result under '{produces_list[0]}'")
+                    # await publish_log(f"[EXECUTOR] Stored entire result under '{produces_list[0]}'")
                 else:
                     await publish_log(
                         f"[EXECUTOR] Critical Warning: Skill {skill_meta.name} declares produces '{produces_list[0]}' "
@@ -2260,7 +2260,7 @@ async def _execute_skill_core(skill_meta: Skill, input_ctx: Dict[str, Any], stat
             else:
                 target_key = produces_list[0]
                 mapped_result[target_key] = result
-                await publish_log(f"[EXECUTOR] Stored entire result under '{target_key}'")
+                # await publish_log(f"[EXECUTOR] Stored entire result under '{target_key}'")
                 
         else:
             # Multiple produces keys: map by key (no positional remapping).
@@ -2294,12 +2294,14 @@ async def _execute_skill_core(skill_meta: Skill, input_ctx: Dict[str, Any], stat
                     )
                     
 
+                extra_keys = []
                 for result_key in result_keys:
                     if result_key in remaining_keys:
-                        # mapped_result[result_key] = result[result_key]
-                        await publish_log(
-                            f"[EXECUTOR] Warning: Extra key '{result_key}' not in produces list, ignored."
-                        )
+                        extra_keys.append(result_key)
+                if len(extra_keys) > 0:
+                    await publish_log(
+                        f"[EXECUTOR] Warning: Extra key '{', '.join(extra_keys)}' not in produces list, ignored."
+                    )
         
         # After strict validation, check for optional_produces keys
         # These keys are nice-to-have but don't cause errors if missing
@@ -2420,7 +2422,7 @@ async def skilled_executor(state: AgentState):
     registry = get_skill_registry_for_workspace(workspace_id)
     skill_meta = next(s for s in registry if s.name == skill_name)
 
-    await publish_log(f"[EXECUTOR] Running {skill_name}...")
+    # await publish_log(f"[EXECUTOR] Running {skill_name}...")
     
     # Track execution sequence for loop detection
     execution_sequence = state.get("execution_sequence") or []
