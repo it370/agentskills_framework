@@ -81,7 +81,7 @@ async def root():
     return {
         "status": "ok",
         "service": "AgentSkills Framework",
-        "version": "1.0.0"
+        "version": "1.1.0"
     }
 
 # Authentication endpoints
