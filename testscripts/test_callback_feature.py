@@ -96,7 +96,8 @@ async def start_workflow_with_callback(
                 "sop": sop,
                 "initial_data": initial_data,
                 "callback_url": CALLBACK_URL,
-                "run_name": f"Test Run - {thread_id}"
+                "run_name": f"Test Run - {thread_id}",
+                # "broadcast": true,  # Optional: Enable for real-time UI updates
             },
             timeout=30.0
         )

@@ -162,6 +162,7 @@ function NewRunForm() {
           run_name: runName.trim() || undefined,
           ack_key: ackKey,  // Send ACK key
           llm_model: llmModel.trim() || undefined,
+          broadcast: true,  // Enable real-time broadcasts for UI
         }),
       });
 

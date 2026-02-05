@@ -99,6 +99,7 @@ class StartRequest(BaseModel):
     workspace_id: Optional[str] = None  # Target workspace (defaults to user's default)
     llm_model: Optional[str] = None  # Global LLM model (GPT/Grok/Gemini)
     callback_url: Optional[str] = None  # Webhook URL to call when run completes
+    broadcast: bool = False  # Enable real-time broadcasts (default: False, opt-in)
 
 @api.post("/start")
 async def start_process(req: StartRequest, current_user: AuthenticatedUser):
@@ -140,8 +141,6 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
             "run_name": run_name,
             "status": "accepted"
         })
-    else:
-        await publish_log(f"[API] No ack_key provided, skipping ACK", req.thread_id)
     
     # Set log context so logs are tracked to this run
     set_log_context(req.thread_id)
@@ -192,6 +191,7 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
         "workspace_id": workspace_id,
         "llm_model": global_llm_model,
         "execution_sequence": [],  # Track skill execution order for loop detection
+        "_broadcast": req.broadcast,  # Store broadcast flag in state (controls log streaming only)
     }
     
     await app.aupdate_state(config, initial_state)
@@ -207,8 +207,10 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
     # STEP 6: Log start
     emit_log(f"[API] Start requested for thread={req.thread_id} by user={current_user.username}", req.thread_id)
     await publish_log(f"[API] LLM model selected: {global_llm_model}", req.thread_id)
-    # STEP 6: Run workflow (will send progress updates via Pusher)
-    task = asyncio.create_task(_run_workflow(initial_state, config))
+    await publish_log(f"[API] Log broadcast mode: {'enabled' if req.broadcast else 'disabled'}", req.thread_id)
+    
+    # STEP 7: Run workflow (will send progress updates via Pusher only if broadcast enabled)
+    task = asyncio.create_task(_run_workflow(initial_state, config, broadcast=req.broadcast))
     RUN_TASKS[req.thread_id] = task
     task.add_done_callback(lambda t, thread_id=req.thread_id: RUN_TASKS.pop(thread_id, None))
     
@@ -256,7 +258,7 @@ async def stop_run(thread_id: str, current_user: AuthenticatedUser):
         # Update database status
         await _update_run_status(thread_id, "cancelled")
         
-        # Broadcast cancellation event
+        # Broadcast cancellation event (always sent, admin events are lightweight)
         await broadcast_run_event({
             "type": "run_cancelled",
             "thread_id": thread_id,
@@ -569,8 +571,15 @@ async def _invoke_callback(thread_id: str):
         emit_log(f"[CALLBACK] Failed to call callback for thread={thread_id}: {error_msg}")
 
 
-async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any]):
-    """Run workflow in background without blocking the start endpoint."""
+async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any], broadcast: bool = False):
+    """
+    Run workflow in background without blocking the start endpoint.
+    
+    Args:
+        initial_state: Initial workflow state
+        config: Workflow configuration
+        broadcast: Whether to send real-time broadcast events (default: False)
+    """
     thread_id = config.get("configurable", {}).get("thread_id", "unknown")
     
     # Set the thread context for all logs in this workflow
@@ -907,6 +916,7 @@ async def get_run_metadata_endpoint(thread_id: str, current_user: AuthenticatedU
 class RerunRequest(BaseModel):
     ack_key: Optional[str] = None  # Unique key for ACK handshake
     callback_url: Optional[str] = None  # Webhook URL to call when run completes
+    broadcast: bool = False  # Enable real-time broadcasts (default: False, opt-in)
 
 @api.post("/rerun/{thread_id}")
 async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: RerunRequest = Body(default=RerunRequest()), workspace_id: Optional[str] = None):
@@ -996,7 +1006,7 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: R
         raise HTTPException(status_code=400, detail=error_msg) from exc
     
     # STEP 4: Model is valid, create initial checkpoint
-    config = {"configurable": {"thread_id": new_thread_id, "workspace_id": workspace.id}}
+    config = {"configurable": {"thread_id": new_thread_id, "workspace_id": workspace.id, "broadcast": req.broadcast}}
     initial_state = {
         "layman_sop": metadata["sop"],
         "data_store": metadata["initial_data"],
@@ -1005,6 +1015,7 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: R
         "workspace_id": workspace.id,
         "llm_model": global_llm_model,
         "execution_sequence": [],
+        "_broadcast": req.broadcast,  # Store broadcast flag in state
     }
     await app.aupdate_state(config, initial_state)
     
@@ -1020,19 +1031,21 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: R
     # STEP 6: Log start
     await publish_log(f"[API] Rerun requested from thread={thread_id} -> new thread={new_thread_id} by user={current_user.username}", new_thread_id)
     await publish_log(f"[API] LLM model selected: {global_llm_model}", new_thread_id)
+    await publish_log(f"[API] Broadcast mode: {'enabled' if req.broadcast else 'disabled (logs only)'}", new_thread_id)
     
-    # STEP 7: Run workflow (will send progress updates via Pusher)
-    task = asyncio.create_task(_run_workflow(initial_state, config))
+    # STEP 7: Run workflow (will send progress updates via Pusher only if broadcast enabled)
+    task = asyncio.create_task(_run_workflow(initial_state, config, broadcast=req.broadcast))
     RUN_TASKS[new_thread_id] = task
     task.add_done_callback(lambda t, thread_id=new_thread_id: RUN_TASKS.pop(thread_id, None))
     
-    # STEP 7: Return response
+    # STEP 8: Return response
     return {
         "status": "started",
         "thread_id": new_thread_id,
         "run_name": new_run_name,
         "parent_thread_id": thread_id,
-        "rerun_count": metadata["rerun_count"] + 1
+        "rerun_count": metadata["rerun_count"] + 1,
+        "broadcast": req.broadcast
     }
 
 

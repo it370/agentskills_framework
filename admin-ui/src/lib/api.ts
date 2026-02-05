@@ -121,6 +121,7 @@ export async function rerunWorkflow(
     },
     body: JSON.stringify({
       ack_key: ackKey,
+      broadcast: true,  // Enable real-time broadcasts for UI
     }),
   });
   if (!res.ok) {
