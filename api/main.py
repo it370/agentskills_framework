@@ -73,6 +73,16 @@ else:
         expose_headers=["*"],
     )
 
+# Root endpoint (health check)
+@api.get("/")
+async def root():
+    """Health check endpoint - returns API status"""
+    return {
+        "status": "ok",
+        "service": "AgentSkills Framework",
+        "version": "1.0.0"
+    }
+
 # Authentication endpoints
 api.include_router(auth_router)
 

@@ -119,6 +119,19 @@ def run():
     
     # Start REST API server
     print("[MAIN] Starting REST API server...")
+    
+    # Configure logging to filter out health check requests
+    import logging
+    
+    class HealthCheckFilter(logging.Filter):
+        """Filter out health check requests from access logs"""
+        def filter(self, record: logging.LogRecord) -> bool:
+            # Filter out GET / requests (health checks)
+            return not (record.getMessage().find('GET /') != -1 and record.getMessage().find('HTTP') != -1 and record.getMessage().find('"GET / HTTP') != -1)
+    
+    # Apply filter to uvicorn access logger
+    logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
+    
     try:
         import uvicorn
         uvicorn_config = {
