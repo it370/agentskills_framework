@@ -44,22 +44,8 @@ async def broadcast_log(log_data: dict) -> bool:
     Returns:
         bool: True if successful
     """
-    # Check if broadcast is enabled for this thread (opt-in)
-    thread_id = log_data.get('thread_id')
-    if thread_id:
-        # Import here to avoid circular dependency
-        from engine import app
-        try:
-            config = {"configurable": {"thread_id": thread_id}}
-            state = await app.aget_state(config)
-            if state and state.values:
-                # Check if broadcast is enabled in state (defaults to False for opt-in)
-                if not state.values.get("_broadcast", False):
-                    return False  # Skip broadcast silently
-        except Exception:
-            # If we can't check state, allow broadcast (fail open for safety)
-            pass
-    
+    # Broadcast flag is now controlled at publish_log() level via context vars
+    # No need to check state here (avoids lock contention during workflow execution)
     manager = get_manager()
     return await manager.broadcast_log(log_data)
 

@@ -8,6 +8,7 @@ _external_socketio_broadcast = None  # Will be set to services.websocket.broadca
 
 # Context variable to store current thread_id for log correlation
 _current_thread_id: ContextVar[Optional[str]] = ContextVar("thread_id", default=None)
+_broadcast_enabled: ContextVar[bool] = ContextVar("broadcast_enabled", default=True)  # Default to True for backwards compatibility
 
 # Database connection pool (from services.connection_pool)
 _db_pool = None
@@ -40,14 +41,25 @@ def set_socketio_broadcast(broadcast_func):
     print("[LOG_STREAM] Socket.IO broadcast configured")
 
 
-def set_log_context(thread_id: Optional[str]):
-    """Set the thread_id context for subsequent log calls."""
+def set_log_context(thread_id: Optional[str], broadcast: bool = True):
+    """Set the thread_id and broadcast flag context for subsequent log calls.
+    
+    Args:
+        thread_id: Thread ID for log correlation
+        broadcast: Whether to broadcast logs in real-time (default: True)
+    """
     _current_thread_id.set(thread_id)
+    _broadcast_enabled.set(broadcast)
 
 
 def get_log_context() -> Optional[str]:
     """Get the current thread_id context."""
     return _current_thread_id.get()
+
+
+def is_broadcast_enabled() -> bool:
+    """Get the current broadcast flag context."""
+    return _broadcast_enabled.get()
 
 
 def _persist_log_sync(message: str, thread_id: Optional[str], level: str = "INFO"):
@@ -98,6 +110,10 @@ async def publish_log(message: str, thread_id: Optional[str] = None, level: str 
     # Persist to database asynchronously (in thread to avoid blocking)
     # Connection pool will be fetched inside _persist_log_sync
     asyncio.create_task(_persist_log(message, tid, level))
+    
+    # Check if broadcasting is enabled (from context)
+    if not _broadcast_enabled.get():
+        return  # Skip broadcast, but still persist to DB
     
     # Send structured message to Socket.IO server
     log_data = {

@@ -143,7 +143,7 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
         })
     
     # Set log context so logs are tracked to this run
-    set_log_context(req.thread_id)
+    set_log_context(req.thread_id, broadcast=req.broadcast)
     
     # STEP 3: Validate LLM model
     try:
@@ -583,10 +583,12 @@ async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any], b
     thread_id = config.get("configurable", {}).get("thread_id", "unknown")
     
     # Set the thread context for all logs in this workflow
-    set_log_context(thread_id)
+    set_log_context(thread_id, broadcast=broadcast)
     
     try:
-        await app.ainvoke(initial_state, config)
+        # Use astream to enable real-time log broadcasting during execution
+        async for _ in app.astream(initial_state, config):
+            pass  # Logs are emitted in real-time as workflow executes
         
         # Check the actual state after workflow execution
         state = await app.aget_state(config)
@@ -712,8 +714,9 @@ async def approve_step(
     
     await publish_log(f"[API] Human approval received; resuming thread={thread_id} by user={current_user.username}", thread_id)
     
-    # Resume the graph
-    await app.ainvoke(None, config)
+    # Resume the graph using astream for real-time logs
+    async for _ in app.astream(None, config):
+        pass  # Logs are emitted in real-time as workflow resumes
     
     # Check the state after resuming
     state = await app.aget_state(config)
@@ -978,7 +981,7 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: R
         })
     
     # Set log context so logs are tracked to this run
-    set_log_context(new_thread_id)
+    set_log_context(new_thread_id, broadcast=req.broadcast)
     
     # STEP 3: Validate LLM model
     try:
@@ -1089,8 +1092,9 @@ async def rest_callback(req: CallbackPayload):
         "history": history,
     })
 
-    # Resume the workflow - it will continue from await_callback node
-    await app.ainvoke(None, config)
+    # Resume the workflow - it will continue from await_callback node using astream for real-time logs
+    async for _ in app.astream(None, config):
+        pass  # Logs are emitted in real-time as workflow resumes
     await publish_log(f"[CALLBACK] Applied results and resumed thread={req.thread_id}", req.thread_id)
     return {"status": "resumed"}
 
