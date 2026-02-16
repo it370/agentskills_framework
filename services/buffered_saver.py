@@ -122,9 +122,105 @@ class BufferedCheckpointSaver(MemorySaver):
                 return str(obj)
     
     async def aget_tuple(self, config: Dict[str, Any]) -> Optional[CheckpointTuple]:
-        """Get checkpoint from memory (or Redis if needed)."""
+        """
+        Get checkpoint from memory, Redis, or PostgreSQL (in that order).
+        
+        Read hierarchy:
+        1. Memory (fast, for same-process access during execution)
+        2. Redis (for cross-process/server access during execution)
+        3. PostgreSQL (for completed runs after Redis flush)
+        """
         # Try memory first (fast path)
-        return await super().aget_tuple(config)
+        memory_tuple = await super().aget_tuple(config)
+        if memory_tuple is not None:
+            return memory_tuple
+        
+        thread_id = config.get("configurable", {}).get("thread_id")
+        if not thread_id:
+            return None
+        
+        # Fallback #1: Redis (for active runs on different processes/servers)
+        if self.enabled:
+            try:
+                redis_buffer = self._get_redis_buffer()
+                if redis_buffer:
+                    checkpoints = await redis_buffer.get_all_checkpoints(thread_id)
+                    if checkpoints:
+                        # Get the latest checkpoint (last in list)
+                        latest = checkpoints[-1]
+                        return self._reconstruct_checkpoint_tuple(latest, config)
+            except Exception as e:
+                print(f"[BufferedSaver] ERROR reading from Redis: {e}")
+        
+        # Fallback #2: PostgreSQL (for completed runs)
+        try:
+            import asyncio
+            from engine import _get_env_value
+            
+            db_uri = _get_env_value("DATABASE_URL", "")
+            if not db_uri:
+                return None
+            
+            def _read_from_postgres():
+                import psycopg
+                import json
+                with psycopg.connect(db_uri) as conn:
+                    with conn.cursor() as cur:
+                        # Get the latest checkpoint for this thread
+                        cur.execute("""
+                            SELECT checkpoint, metadata, parent_checkpoint_id
+                            FROM checkpoints
+                            WHERE thread_id = %s
+                            ORDER BY checkpoint_id DESC
+                            LIMIT 1
+                        """, (thread_id,))
+                        row = cur.fetchone()
+                        if row:
+                            return {
+                                "checkpoint": json.loads(row[0]) if isinstance(row[0], str) else row[0],
+                                "metadata": json.loads(row[1]) if isinstance(row[1], str) else row[1],
+                                "parent_config": row[2]
+                            }
+                return None
+            
+            pg_data = await asyncio.to_thread(_read_from_postgres)
+            if pg_data:
+                return self._reconstruct_checkpoint_tuple(pg_data, config)
+                
+        except Exception as e:
+            print(f"[BufferedSaver] ERROR reading from PostgreSQL: {e}")
+        
+        return None
+    
+    def _reconstruct_checkpoint_tuple(self, data: Dict[str, Any], config: Dict[str, Any]) -> CheckpointTuple:
+        """Reconstruct CheckpointTuple from serialized data."""
+        checkpoint_data = data.get("checkpoint", {})
+        metadata = data.get("metadata", {})
+        parent_config = data.get("parent_config")
+        
+        # Convert dict back to Checkpoint object
+        from langgraph.checkpoint.base import Checkpoint
+        checkpoint = Checkpoint(
+            v=checkpoint_data.get("v", 1),
+            id=checkpoint_data.get("id", ""),
+            ts=checkpoint_data.get("ts", ""),
+            channel_values=checkpoint_data.get("channel_values", {}),
+            channel_versions=checkpoint_data.get("channel_versions", {}),
+            versions_seen=checkpoint_data.get("versions_seen", {}),
+            pending_sends=checkpoint_data.get("pending_sends", [])
+        )
+        
+        # Build parent config if available
+        parent_cfg = None
+        if parent_config:
+            parent_cfg = {"configurable": {"checkpoint_id": parent_config}}
+        
+        return CheckpointTuple(
+            config=config,
+            checkpoint=checkpoint,
+            metadata=metadata,
+            parent_config=parent_cfg
+        )
     
     def disable_buffering(self):
         """Disable Redis buffering (for testing or fallback)."""
