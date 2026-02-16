@@ -233,14 +233,14 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
     if req.await_response:
         # Wait for workflow to complete before returning
         try:
-            result = await task
+            data_store = await task
             return {
                 "status": "completed", 
                 "thread_id": req.thread_id, 
                 "run_name": run_name, 
                 "broadcast": req.broadcast,
                 "workspace_id": workspace_id,
-                "result": result
+                "data_store": data_store  # Return final data_store
             }
         except Exception as exc:
             # If workflow failed, return error status
@@ -638,6 +638,9 @@ async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any], b
         initial_state: Initial workflow state
         config: Workflow configuration
         broadcast: Whether to send real-time broadcast events (default: False)
+        
+    Returns:
+        Final data_store if workflow completes, None otherwise
     """
     thread_id = config.get("configurable", {}).get("thread_id", "unknown")
     
@@ -662,20 +665,25 @@ async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any], b
             await publish_log(f"[API] Workflow failed for thread={thread_id}", thread_id)
             # Fire-and-forget callback (don't wait for completion)
             asyncio.create_task(_invoke_callback(thread_id))
+            return data_store  # Return data_store even on failure
         # Determine if truly completed or paused at an interrupt
         elif not next_nodes or (len(next_nodes) == 1 and next_nodes[0] == "__end__"):
             await _update_run_status(thread_id, "completed")
             await publish_log(f"[API] Workflow completed for thread={thread_id}", thread_id)
             # Fire-and-forget callback (don't wait for completion)
             asyncio.create_task(_invoke_callback(thread_id))
+            return data_store  # Return final data_store
         elif "human_review" in next_nodes:
             await _update_run_status(thread_id, "paused")
             await publish_log(f"[API] Workflow paused at human_review (HITL) for thread={thread_id}", thread_id)
+            return data_store  # Return data_store at pause point
         elif "await_callback" in next_nodes:
             await _update_run_status(thread_id, "paused")
             await publish_log(f"[API] Workflow paused awaiting callback for thread={thread_id}", thread_id)
+            return data_store  # Return data_store at pause point
         else:
             await publish_log(f"[API] Workflow paused at {next_nodes} for thread={thread_id}", thread_id)
+            return data_store  # Return data_store at pause point
             
     except asyncio.CancelledError:
         await publish_log(f"[API] Workflow task cancelled for thread={thread_id}", thread_id)
@@ -708,8 +716,13 @@ async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any], b
             })
             
             await publish_log(f"[API] Workflow marked as failed and stopped for thread={thread_id}", thread_id)
+            
+            # Get updated state to return
+            final_state = await app.aget_state(config)
+            return final_state.values.get("data_store", {})
         except Exception as update_exc:
             emit_log(f"[API] Failed to update workflow state after error: {update_exc}")
+            return {"_error": str(exc), "_status": "failed"}
         
         # Fire-and-forget callback (don't wait for completion)
         asyncio.create_task(_invoke_callback(thread_id))
