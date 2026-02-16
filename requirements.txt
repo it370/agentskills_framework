@@ -19,3 +19,8 @@ bcrypt
 pyjwt[crypto]
 pydantic[email]
 redis[hiredis]
+
+# supporting for flood data projects for geometric operations
+pandas>=2.0.0
+geopandas>=0.14.0
+shapely>=2.0.0
