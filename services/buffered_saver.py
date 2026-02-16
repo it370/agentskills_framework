@@ -25,6 +25,9 @@ class BufferedCheckpointSaver(MemorySaver):
     Read path:
         - Read from memory (fast)
         - Fallback to Redis if not in memory (recovery scenarios)
+        - Fallback to PostgreSQL for completed runs
+    
+    Memory is cleared after flush to PostgreSQL to prevent memory leaks.
     """
     
     def __init__(self):
@@ -33,6 +36,41 @@ class BufferedCheckpointSaver(MemorySaver):
         self._redis_buffer = None
         self.enabled = True  # Can be disabled via env var
         print("[BufferedSaver] Initialized (Redis buffering enabled)")
+    
+    def clear_thread_memory(self, thread_id: str):
+        """
+        Clear memory for a SPECIFIC thread after it's been flushed to PostgreSQL.
+        This prevents memory leaks from accumulating completed workflows.
+        
+        SAFETY: Only clears checkpoints for the exact thread_id specified.
+        Does NOT affect other concurrent workflows from other users or threads.
+        """
+        if not thread_id or not isinstance(thread_id, str):
+            print(f"[BufferedSaver] ERROR: Invalid thread_id for memory clear: {thread_id}")
+            return
+        
+        try:
+            # Access the internal storage dict from MemorySaver
+            # MemorySaver stores checkpoints keyed by (thread_id, checkpoint_ns, checkpoint_id)
+            # We ONLY remove keys where key[0] matches the exact thread_id
+            keys_to_remove = []
+            for key in list(self.storage.keys()):  # Create list copy for safe iteration
+                # Verify key structure and match thread_id
+                if isinstance(key, tuple) and len(key) >= 1 and key[0] == thread_id:
+                    keys_to_remove.append(key)
+            
+            # Remove only the matched keys
+            for key in keys_to_remove:
+                del self.storage[key]
+            
+            if keys_to_remove:
+                print(f"[BufferedSaver] ✅ Cleared {len(keys_to_remove)} checkpoint(s) from memory for thread {thread_id}")
+            else:
+                print(f"[BufferedSaver] No checkpoints found in memory for thread {thread_id}")
+        except Exception as e:
+            print(f"[BufferedSaver] ERROR clearing memory for thread {thread_id}: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _get_redis_buffer(self):
         """Lazy-initialize Redis buffer."""

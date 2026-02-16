@@ -476,7 +476,7 @@ async def _update_run_status(thread_id: str, status: str, error_message: Optiona
     if status in ["completed", "error"]:
         try:
             from services.checkpoint_buffer import RedisCheckpointBuffer
-            from engine import _get_env_value
+            from engine import _get_env_value, checkpointer
             
             db_uri = _get_env_value("DATABASE_URL", "")
             if db_uri:
@@ -484,6 +484,12 @@ async def _update_run_status(thread_id: str, status: str, error_message: Optiona
                 success = await buffer.flush_to_postgres(thread_id, db_uri)
                 if success:
                     emit_log(f"[API] Flushed checkpoints to PostgreSQL for {thread_id}")
+                    
+                    # Clear memory to prevent memory leaks (checkpoints now in PostgreSQL)
+                    if hasattr(checkpointer, 'clear_thread_memory'):
+                        checkpointer.clear_thread_memory(thread_id)
+                        emit_log(f"[API] Cleared memory for {thread_id}")
+                
                 await buffer.close()
         except Exception as e:
             emit_log(f"[API] Error flushing checkpoints for {thread_id}: {e}")
