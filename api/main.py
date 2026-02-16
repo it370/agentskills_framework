@@ -114,6 +114,7 @@ class StartRequest(BaseModel):
     llm_model: Optional[str] = None  # Global LLM model (GPT/Grok/Gemini)
     callback_url: Optional[str] = None  # Webhook URL to call when run completes
     broadcast: bool = False  # Enable real-time broadcasts (default: False, opt-in)
+    await_response: bool = False  # Wait for workflow completion before returning (default: False, fire-and-forget)
 
 @api.post("/start")
 async def start_process(req: StartRequest, current_user: AuthenticatedUser):
@@ -228,14 +229,40 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
     RUN_TASKS[req.thread_id] = task
     task.add_done_callback(lambda t, thread_id=req.thread_id: RUN_TASKS.pop(thread_id, None))
     
-    # STEP 8: Return response
-    return {
-        "status": "started", 
-        "thread_id": req.thread_id, 
-        "run_name": run_name, 
-        "broadcast": req.broadcast,
-        "workspace_id": workspace_id
-    }
+    # STEP 8: Return response (await completion if requested)
+    if req.await_response:
+        # Wait for workflow to complete before returning
+        try:
+            result = await task
+            return {
+                "status": "completed", 
+                "thread_id": req.thread_id, 
+                "run_name": run_name, 
+                "broadcast": req.broadcast,
+                "workspace_id": workspace_id,
+                "result": result
+            }
+        except Exception as exc:
+            # If workflow failed, return error status
+            error_msg = str(exc)
+            emit_log(f"[API] Workflow failed for thread={req.thread_id}: {error_msg}", req.thread_id)
+            return {
+                "status": "failed",
+                "thread_id": req.thread_id,
+                "run_name": run_name,
+                "broadcast": req.broadcast,
+                "workspace_id": workspace_id,
+                "error": error_msg
+            }
+    else:
+        # Fire-and-forget: return immediately
+        return {
+            "status": "started", 
+            "thread_id": req.thread_id, 
+            "run_name": run_name, 
+            "broadcast": req.broadcast,
+            "workspace_id": workspace_id
+        }
 
 
 @api.post("/stop/{thread_id}")
