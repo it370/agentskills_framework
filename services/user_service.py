@@ -14,11 +14,11 @@ import secrets
 import hashlib
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
-import psycopg
 import asyncio
 from pydantic import BaseModel, EmailStr, Field, validator
 import jwt
 import bcrypt
+from services.connection_pool import get_postgres_pool
 
 
 class UserRegistration(BaseModel):
@@ -100,8 +100,16 @@ class User(BaseModel):
 class UserService:
     """Service for user management operations"""
     
-    def __init__(self, db_uri: str, jwt_secret: str, jwt_expiry_hours: int = 24):
-        self.db_uri = db_uri
+    def __init__(self, jwt_secret: str, jwt_expiry_hours: int = 24):
+        """
+        Initialize UserService
+        
+        Args:
+            jwt_secret: Secret key for JWT token generation
+            jwt_expiry_hours: JWT token expiry in hours (default: 24)
+        
+        Note: Uses centralized connection pool from connection_pool service
+        """
         self.jwt_secret = jwt_secret
         self.jwt_expiry_hours = jwt_expiry_hours
         self.jwt_algorithm = "HS256"
@@ -162,8 +170,11 @@ class UserService:
         Raises:
             ValueError: If username or email already exists
         """
+        pool = get_postgres_pool()
+        
         def _register_sync():
-            with psycopg.connect(self.db_uri, autocommit=True) as conn:
+            conn = pool.getconn()
+            try:
                 with conn.cursor() as cur:
                     # Check if username exists
                     cur.execute("SELECT id FROM users WHERE username = %s", (registration.username,))
@@ -186,6 +197,8 @@ class UserService:
                     """, (registration.username, registration.email, password_hash, True, False))
                     
                     row = cur.fetchone()
+                    conn.commit()
+                    
                     return User(
                         id=row[0],  # Already text from SQL query
                         username=row[1],
@@ -195,6 +208,8 @@ class UserService:
                         created_at=row[5],
                         last_login_at=row[6]
                     )
+            finally:
+                pool.putconn(conn)
         
         return await asyncio.to_thread(_register_sync)
     
@@ -208,8 +223,11 @@ class UserService:
         Raises:
             ValueError: If credentials are invalid
         """
+        pool = get_postgres_pool()
+        
         def _login_sync():
-            with psycopg.connect(self.db_uri, autocommit=True) as conn:
+            conn = pool.getconn()
+            try:
                 with conn.cursor() as cur:
                     # Get user by username
                     cur.execute("""
@@ -250,6 +268,8 @@ class UserService:
                         VALUES (%s, %s, %s, %s, %s)
                     """, (user_id, jti, expiry, ip_address, user_agent))
                     
+                    conn.commit()
+                    
                     user = User(
                         id=user_id,
                         username=username,
@@ -261,6 +281,8 @@ class UserService:
                     )
                     
                     return token, user
+            finally:
+                pool.putconn(conn)
         
         return await asyncio.to_thread(_login_sync)
     
@@ -275,8 +297,11 @@ class UserService:
         if not payload:
             return None
         
+        pool = get_postgres_pool()
+        
         def _verify_sync():
-            with psycopg.connect(self.db_uri) as conn:
+            conn = pool.getconn()
+            try:
                 with conn.cursor() as cur:
                     # Check if session exists and is not expired
                     cur.execute("""
@@ -290,14 +315,16 @@ class UserService:
                     if not row:
                         return None
                     
+                    session_id = row[0]
+                    
                     # Update last used time
-                    with psycopg.connect(self.db_uri, autocommit=True) as update_conn:
-                        with update_conn.cursor() as update_cur:
-                            update_cur.execute("""
-                                UPDATE user_sessions
-                                SET last_used_at = NOW()
-                                WHERE id = %s
-                            """, (row[0],))
+                    cur.execute("""
+                        UPDATE user_sessions
+                        SET last_used_at = NOW()
+                        WHERE id = %s
+                    """, (session_id,))
+                    
+                    conn.commit()
                     
                     return User(
                         id=row[1],  # Already text from SQL query
@@ -308,6 +335,8 @@ class UserService:
                         created_at=row[6],
                         last_login_at=row[7]
                     )
+            finally:
+                pool.putconn(conn)
         
         return await asyncio.to_thread(_verify_sync)
     
@@ -322,14 +351,21 @@ class UserService:
         if not payload:
             return False
         
+        pool = get_postgres_pool()
+        
         def _logout_sync():
-            with psycopg.connect(self.db_uri, autocommit=True) as conn:
+            conn = pool.getconn()
+            try:
                 with conn.cursor() as cur:
                     cur.execute("""
                         DELETE FROM user_sessions
                         WHERE token_jti = %s
                     """, (payload.get("jti"),))
-                    return cur.rowcount > 0
+                    result = cur.rowcount > 0
+                conn.commit()
+                return result
+            finally:
+                pool.putconn(conn)
         
         return await asyncio.to_thread(_logout_sync)
     
@@ -343,8 +379,11 @@ class UserService:
         Raises:
             ValueError: If email not found
         """
+        pool = get_postgres_pool()
+        
         def _request_sync():
-            with psycopg.connect(self.db_uri, autocommit=True) as conn:
+            conn = pool.getconn()
+            try:
                 with conn.cursor() as cur:
                     # Get user by email
                     cur.execute("SELECT id::text FROM users WHERE email = %s AND is_active = TRUE", (email,))
@@ -365,7 +404,10 @@ class UserService:
                         VALUES (%s, %s, %s)
                     """, (user_id, token, expiry))
                     
+                    conn.commit()
                     return token
+            finally:
+                pool.putconn(conn)
         
         return await asyncio.to_thread(_request_sync)
     
@@ -379,8 +421,11 @@ class UserService:
         Raises:
             ValueError: If token is invalid or expired
         """
+        pool = get_postgres_pool()
+        
         def _reset_sync():
-            with psycopg.connect(self.db_uri, autocommit=True) as conn:
+            conn = pool.getconn()
+            try:
                 with conn.cursor() as cur:
                     # Get token
                     cur.execute("""
@@ -428,14 +473,20 @@ class UserService:
                         WHERE user_id = %s
                     """, (user_id,))
                     
+                    conn.commit()
                     return True
+            finally:
+                pool.putconn(conn)
         
         return await asyncio.to_thread(_reset_sync)
     
     async def get_user_by_id(self, user_id: str) -> Optional[User]:
         """Get user by ID (UUID string)"""
+        pool = get_postgres_pool()
+        
         def _get_sync():
-            with psycopg.connect(self.db_uri) as conn:
+            conn = pool.getconn()
+            try:
                 with conn.cursor() as cur:
                     cur.execute("""
                         SELECT id::text, username, email, is_active, is_admin, created_at, last_login_at
@@ -456,6 +507,8 @@ class UserService:
                         created_at=row[5],
                         last_login_at=row[6]
                     )
+            finally:
+                pool.putconn(conn)
         
         return await asyncio.to_thread(_get_sync)
     
@@ -471,8 +524,11 @@ class UserService:
         """
         from fastapi import HTTPException, status
         
+        pool = get_postgres_pool()
+        
         def _get_user_sync():
-            with psycopg.connect(self.db_uri) as conn:
+            conn = pool.getconn()
+            try:
                 with conn.cursor() as cur:
                     cur.execute("""
                         SELECT id::text, username, email, is_active, is_admin, created_at, last_login_at
@@ -493,6 +549,8 @@ class UserService:
                         created_at=row[5],
                         last_login_at=row[6]
                     )
+            finally:
+                pool.putconn(conn)
         
         user = await asyncio.to_thread(_get_user_sync)
         if not user:
@@ -504,8 +562,11 @@ class UserService:
     
     async def cleanup_expired_sessions(self):
         """Cleanup expired sessions and reset tokens"""
+        pool = get_postgres_pool()
+        
         def _cleanup_sync():
-            with psycopg.connect(self.db_uri, autocommit=True) as conn:
+            conn = pool.getconn()
+            try:
                 with conn.cursor() as cur:
                     # Delete expired sessions
                     cur.execute("DELETE FROM user_sessions WHERE expires_at < NOW()")
@@ -515,7 +576,10 @@ class UserService:
                     cur.execute("DELETE FROM password_reset_tokens WHERE expires_at < NOW()")
                     tokens_deleted = cur.rowcount
                     
+                    conn.commit()
                     return sessions_deleted, tokens_deleted
+            finally:
+                pool.putconn(conn)
         
         return await asyncio.to_thread(_cleanup_sync)
 
@@ -528,16 +592,12 @@ def get_user_service() -> UserService:
     """Get global user service instance"""
     global _user_service
     if _user_service is None:
-        db_uri = os.getenv("DATABASE_URL")
-        if not db_uri:
-            raise RuntimeError("DATABASE_URL not set")
-        
         jwt_secret = os.getenv("JWT_SECRET")
         if not jwt_secret:
             raise RuntimeError("JWT_SECRET not set")
         
         jwt_expiry_hours = int(os.getenv("JWT_EXPIRY_HOURS", "24"))
         
-        _user_service = UserService(db_uri, jwt_secret, jwt_expiry_hours)
+        _user_service = UserService(jwt_secret, jwt_expiry_hours)
     
     return _user_service

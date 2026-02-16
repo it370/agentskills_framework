@@ -396,13 +396,14 @@ async def _check_run_ownership(thread_id: str, user_id: str, is_admin: bool = Fa
     
     Raises HTTPException if not owner or run not found
     """
-    db_uri = _get_env_value("DATABASE_URL", "")
-    if not db_uri:
-        return  # Skip check if DB not configured
+    try:
+        pool = get_postgres_pool()
+    except RuntimeError:
+        return  # Skip check if pool not available
     
     def _check_sync():
-        import psycopg
-        with psycopg.connect(db_uri) as conn:
+        conn = pool.getconn()
+        try:
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT user_id::text, workspace_id::text FROM run_metadata WHERE thread_id = %s
@@ -411,6 +412,8 @@ async def _check_run_ownership(thread_id: str, user_id: str, is_admin: bool = Fa
                 if not row:
                     return None
                 return row
+        finally:
+            pool.putconn(conn)
     
     try:
         owner_workspace = await asyncio.to_thread(_check_sync)
@@ -429,14 +432,16 @@ async def _check_run_ownership(thread_id: str, user_id: str, is_admin: bool = Fa
 
 async def _update_run_status(thread_id: str, status: str, error_message: Optional[str] = None, failed_skill: Optional[str] = None):
     """Update the run status in run_metadata table and flush Redis checkpoints if completed."""
-    db_uri = _get_env_value("DATABASE_URL", "")
-    if not db_uri:
+    try:
+        pool = get_postgres_pool()
+    except RuntimeError:
+        emit_log("[API] Postgres pool not available, skipping run status update")
         return
 
     def _update_sync():
-        import psycopg
         from datetime import datetime
-        with psycopg.connect(db_uri, autocommit=True) as conn:
+        conn = pool.getconn()
+        try:
             with conn.cursor() as cur:
                 cur.execute("""
                     UPDATE run_metadata
@@ -446,6 +451,9 @@ async def _update_run_status(thread_id: str, status: str, error_message: Optiona
                         completed_at = %s
                     WHERE thread_id = %s
                 """, (status, error_message, failed_skill, datetime.utcnow(), thread_id))
+            conn.commit()
+        finally:
+            pool.putconn(conn)
 
     try:
         await asyncio.to_thread(_update_sync)
@@ -468,11 +476,15 @@ async def _update_run_status(thread_id: str, status: str, error_message: Optiona
     if status in ["completed", "error"]:
         try:
             from services.checkpoint_buffer import RedisCheckpointBuffer
-            buffer = RedisCheckpointBuffer()
-            success = await buffer.flush_to_postgres(thread_id, db_uri)
-            if success:
-                emit_log(f"[API] Flushed checkpoints to PostgreSQL for {thread_id}")
-            await buffer.close()
+            from engine import _get_env_value
+            
+            db_uri = _get_env_value("DATABASE_URL", "")
+            if db_uri:
+                buffer = RedisCheckpointBuffer()
+                success = await buffer.flush_to_postgres(thread_id, db_uri)
+                if success:
+                    emit_log(f"[API] Flushed checkpoints to PostgreSQL for {thread_id}")
+                await buffer.close()
         except Exception as e:
             emit_log(f"[API] Error flushing checkpoints for {thread_id}: {e}")
 

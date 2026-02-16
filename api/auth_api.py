@@ -271,11 +271,12 @@ async def request_password_reset(reset_request: PasswordResetRequest):
         reset_url_base = os.getenv("UI_APP_URL", "http://localhost:3000") + "/reset-password"
         
         # Get username for email
-        # We need to query the user again (inefficient but secure)
+        from services.connection_pool import get_postgres_pool
+        
         def _get_username_sync():
-            import psycopg
-            db_uri = os.getenv("DATABASE_URL")
-            with psycopg.connect(db_uri) as conn:
+            pool = get_postgres_pool()
+            conn = pool.getconn()
+            try:
                 with conn.cursor() as cur:
                     cur.execute(
                         "SELECT username FROM users WHERE email = %s",
@@ -283,6 +284,8 @@ async def request_password_reset(reset_request: PasswordResetRequest):
                     )
                     row = cur.fetchone()
                     return row[0] if row else None
+            finally:
+                pool.putconn(conn)
         
         import asyncio
         username = await asyncio.to_thread(_get_username_sync)

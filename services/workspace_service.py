@@ -9,13 +9,13 @@ Provides:
 
 from __future__ import annotations
 
-import psycopg
 import asyncio
 from typing import List, Optional
 from datetime import datetime
 from fastapi import HTTPException, status
 from pydantic import BaseModel, Field, validator
 import os
+from services.connection_pool import get_postgres_pool
 
 
 class Workspace(BaseModel):
@@ -40,19 +40,21 @@ class WorkspaceCreate(BaseModel):
 
 
 class WorkspaceService:
-    def __init__(self, db_uri: str):
-        self.db_uri = db_uri
-
-    def _conn(self):
-        return psycopg.connect(self.db_uri, autocommit=True)
+    """Service for managing user workspaces using centralized connection pool"""
+    
+    def __init__(self):
+        """Initialize WorkspaceService (uses centralized connection pool)"""
+        pass
 
     async def ensure_default(self, user_id: str) -> Workspace:
         """
         Ensure the user has a default workspace and return it.
         """
+        pool = get_postgres_pool()
 
         def _ensure():
-            with self._conn() as conn:
+            conn = pool.getconn()
+            try:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
@@ -86,6 +88,8 @@ class WorkspaceService:
                         (user_id,),
                     )
                     row = cur.fetchone()
+                    conn.commit()
+                    
                     return Workspace(
                         id=row[0],
                         user_id=row[1],
@@ -95,15 +99,20 @@ class WorkspaceService:
                         created_at=row[5],
                         updated_at=row[6],
                     )
+            finally:
+                pool.putconn(conn)
 
         return await asyncio.to_thread(_ensure)
 
     async def list_workspaces(self, user_id: str) -> List[Workspace]:
         """List workspaces owned by the user (ensures default exists)."""
         await self.ensure_default(user_id)
+        
+        pool = get_postgres_pool()
 
         def _list():
-            with self._conn() as conn:
+            conn = pool.getconn()
+            try:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
@@ -126,15 +135,20 @@ class WorkspaceService:
                         )
                         for row in cur.fetchall()
                     ]
+            finally:
+                pool.putconn(conn)
 
         return await asyncio.to_thread(_list)
 
     async def create_workspace(self, user_id: str, name: str) -> Workspace:
         """Create a new workspace for the user."""
         create_req = WorkspaceCreate(name=name)
+        
+        pool = get_postgres_pool()
 
         def _create():
-            with self._conn() as conn:
+            conn = pool.getconn()
+            try:
                 with conn.cursor() as cur:
                     # If this is the first workspace, make it default
                     cur.execute("SELECT COUNT(*) FROM workspaces WHERE user_id = %s", (user_id,))
@@ -162,6 +176,8 @@ class WorkspaceService:
                             "UPDATE workspaces SET is_default = TRUE WHERE id = %s",
                             (row[0],),
                         )
+                    
+                    conn.commit()
 
                     return Workspace(
                         id=row[0],
@@ -172,14 +188,19 @@ class WorkspaceService:
                         created_at=row[5],
                         updated_at=row[6],
                     )
+            finally:
+                pool.putconn(conn)
 
         return await asyncio.to_thread(_create)
 
     async def set_default(self, user_id: str, workspace_id: str) -> Workspace:
         """Mark a workspace as default for the user."""
+        
+        pool = get_postgres_pool()
 
         def _set_default():
-            with self._conn() as conn:
+            conn = pool.getconn()
+            try:
                 with conn.cursor() as cur:
                     cur.execute(
                         "SELECT user_id::text FROM workspaces WHERE id = %s",
@@ -205,6 +226,8 @@ class WorkspaceService:
                         (workspace_id,),
                     )
                     row = cur.fetchone()
+                    conn.commit()
+                    
                     return Workspace(
                         id=row[0],
                         user_id=row[1],
@@ -214,6 +237,8 @@ class WorkspaceService:
                         created_at=row[5],
                         updated_at=row[6],
                     )
+            finally:
+                pool.putconn(conn)
 
         return await asyncio.to_thread(_set_default)
 
@@ -225,9 +250,12 @@ class WorkspaceService:
         """
         if not workspace_id:
             return await self.ensure_default(user_id)
+        
+        pool = get_postgres_pool()
 
         def _resolve():
-            with self._conn() as conn:
+            conn = pool.getconn()
+            try:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
@@ -251,6 +279,8 @@ class WorkspaceService:
                         created_at=row[5],
                         updated_at=row[6],
                     )
+            finally:
+                pool.putconn(conn)
 
         return await asyncio.to_thread(_resolve)
 
@@ -262,8 +292,5 @@ def get_workspace_service() -> WorkspaceService:
     """Get global workspace service instance."""
     global _workspace_service
     if _workspace_service is None:
-        db_uri = os.getenv("DATABASE_URL")
-        if not db_uri:
-            raise RuntimeError("DATABASE_URL not set")
-        _workspace_service = WorkspaceService(db_uri)
+        _workspace_service = WorkspaceService()
     return _workspace_service
