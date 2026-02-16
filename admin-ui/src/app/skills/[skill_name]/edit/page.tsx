@@ -7,10 +7,12 @@ import { fetchSkill, fetchSkillById, updateSkill, Skill, fetchLlmModels, LlmMode
 import DashboardLayout from "../../../../components/DashboardLayout";
 import PythonEditor from "../../../../components/PythonEditor";
 import { useAppSelector } from "@/store/hooks";
+import { useToast } from "@/contexts/ToastContext";
 
 export default function EditSkillPage() {
   const params = useParams();
   const router = useRouter();
+  const { showToast } = useToast();
   // Use skill_id if available (new routing), fallback to skill_name (backward compat)
   const skillId = params.skill_id 
     ? decodeURIComponent(params.skill_id as string) 
@@ -21,7 +23,6 @@ export default function EditSkillPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   // String versions for input fields
   const [requiresStr, setRequiresStr] = useState("");
@@ -124,7 +125,6 @@ export default function EditSkillPage() {
 
   const handleSubmit = async () => {
     setError(null);
-    setSuccessMessage(null);
     setSaving(true);
     
     // Validate Python code before submission
@@ -242,13 +242,11 @@ export default function EditSkillPage() {
       setOriginalSkill(updatedSkill);
       setFormData(updatedSkill);
       
-      // Show success message and stay on page
-      setSuccessMessage("Skill updated successfully!");
-      
-      // Clear success message after 3 seconds
-      setTimeout(() => setSuccessMessage(null), 3000);
+      // Show success notification
+      showToast("Skill updated successfully!", "success");
     } catch (err: any) {
       setError(err.message);
+      showToast(err.message || "Failed to update skill", "error");
     } finally {
       setSaving(false);
     }
@@ -318,31 +316,6 @@ export default function EditSkillPage() {
         {error && (
           <div className="mb-6 rounded-lg bg-red-50 border border-red-200 p-4">
             <p className="text-sm text-red-800">{error}</p>
-          </div>
-        )}
-
-        {/* Success Toast Notification */}
-        {successMessage && (
-          <div className="fixed top-4 right-4 z-50 animate-slide-in-right">
-            <div className="bg-white rounded-lg shadow-lg border border-gray-200 p-4 flex items-start gap-3 min-w-[320px] max-w-md">
-              <div className="flex-shrink-0">
-                <svg className="w-5 h-5 text-green-500" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                </svg>
-              </div>
-              <div className="flex-1">
-                <p className="text-sm font-semibold text-gray-900">Success</p>
-                <p className="text-sm text-gray-600 mt-0.5">{successMessage}</p>
-              </div>
-              <button
-                onClick={() => setSuccessMessage(null)}
-                className="flex-shrink-0 text-gray-400 hover:text-gray-600 transition-colors"
-              >
-                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-                </svg>
-              </button>
-            </div>
           </div>
         )}
 

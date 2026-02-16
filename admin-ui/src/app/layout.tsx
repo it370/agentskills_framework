@@ -4,6 +4,7 @@ import "./globals.css";
 import { ReduxProvider } from "@/contexts/ReduxProvider";
 import { RunProvider } from "@/contexts/RunContext";
 import { AuthProvider } from "@/contexts/AuthContext";
+import { ToastProvider } from "@/contexts/ToastContext";
 
 export default function RootLayout({
   children,
@@ -16,7 +17,9 @@ export default function RootLayout({
         <ReduxProvider>
           <AuthProvider>
             <RunProvider>
-              {children}
+              <ToastProvider>
+                {children}
+              </ToastProvider>
             </RunProvider>
           </AuthProvider>
         </ReduxProvider>
