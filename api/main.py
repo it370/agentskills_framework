@@ -475,6 +475,7 @@ async def _update_run_status(thread_id: str, status: str, error_message: Optiona
     
     # Flush Redis checkpoints to PostgreSQL on completion/error (non-blocking)
     if status in ["completed", "error"]:
+        checkpoint_count = 0
         try:
             from services.checkpoint_buffer import RedisCheckpointBuffer
             from engine import _get_env_value, checkpointer
@@ -482,6 +483,14 @@ async def _update_run_status(thread_id: str, status: str, error_message: Optiona
             db_uri = _get_env_value("DATABASE_URL", "")
             if db_uri:
                 buffer = RedisCheckpointBuffer()
+                
+                # Get checkpoint count for error logging
+                try:
+                    checkpoints = await buffer.get_all_checkpoints(thread_id)
+                    checkpoint_count = len(checkpoints)
+                except:
+                    pass
+                
                 success = await buffer.flush_to_postgres(thread_id, db_uri)
                 if success:
                     emit_log(f"[API] Flushed checkpoints to PostgreSQL for {thread_id}")
@@ -498,6 +507,23 @@ async def _update_run_status(thread_id: str, status: str, error_message: Optiona
                         "Please contact support if you need detailed execution history."
                     )
                     emit_log(f"[API] {error_msg}", thread_id=thread_id, level="ERROR")
+                    
+                    # Log to system_errors table for admin investigation
+                    try:
+                        from services.system_errors import log_system_error
+                        await log_system_error(
+                            error_type="checkpoint_flush_error",
+                            severity="warning",
+                            error_message=f"Checkpoint flush returned False for thread {thread_id}",
+                            thread_id=thread_id,
+                            error_context={
+                                "checkpoint_count": checkpoint_count,
+                                "db_uri_configured": bool(db_uri),
+                                "status": status
+                            }
+                        )
+                    except Exception as log_err:
+                        emit_log(f"[API] Failed to log system error: {log_err}")
                     
                     # Broadcast error notification to user's UI
                     try:
@@ -519,6 +545,18 @@ async def _update_run_status(thread_id: str, status: str, error_message: Optiona
                 f"Logs and execution history may not be saved. Error: {str(e)[:200]}"
             )
             emit_log(f"[API] {error_msg}", thread_id=thread_id, level="ERROR")
+            
+            # Log to system_errors table for admin investigation (with full stack trace)
+            try:
+                from services.system_errors import log_checkpoint_flush_error
+                await log_checkpoint_flush_error(
+                    thread_id=thread_id,
+                    error=e,
+                    checkpoint_count=checkpoint_count,
+                    is_critical=True
+                )
+            except Exception as log_err:
+                emit_log(f"[API] Failed to log system error: {log_err}")
             
             # Broadcast critical error to user's UI
             try:
@@ -1318,6 +1356,98 @@ async def broadcaster_status():
         return get_broadcaster_status()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get broadcaster status: {str(e)}")
+
+
+@api.get("/admin/system-errors")
+async def get_system_errors(
+    error_type: Optional[str] = None,
+    severity: Optional[str] = None,
+    limit: int = 100,
+    current_user: AdminUser = AdminUser
+):
+    """
+    Retrieve unresolved system errors for admin investigation.
+    
+    Query Parameters:
+        - error_type: Filter by error type (e.g., 'checkpoint_flush_error')
+        - severity: Filter by severity ('warning', 'error', 'critical')
+        - limit: Maximum number of errors to retrieve (default: 100, max: 1000)
+    
+    Returns:
+        List of system error records with full details including stack traces
+    """
+    try:
+        from services.system_errors import get_unresolved_errors
+        
+        # Enforce limit bounds
+        limit = min(max(1, limit), 1000)
+        
+        errors = await get_unresolved_errors(
+            error_type=error_type,
+            severity=severity,
+            limit=limit
+        )
+        
+        return {
+            "status": "success",
+            "count": len(errors),
+            "errors": errors,
+            "filters": {
+                "error_type": error_type,
+                "severity": severity,
+                "limit": limit
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve system errors: {str(e)}")
+
+
+@api.post("/admin/system-errors/{error_id}/resolve")
+async def resolve_system_error(
+    error_id: int,
+    resolution_notes: Optional[str] = None,
+    current_user: AdminUser = AdminUser
+):
+    """
+    Mark a system error as resolved.
+    
+    Path Parameters:
+        - error_id: ID of the error to resolve
+    
+    Body (optional):
+        - resolution_notes: Notes about how the error was resolved
+    
+    Returns:
+        Success status
+    """
+    try:
+        from services.system_errors import resolve_error
+        
+        # Get username from current_user (AdminUser dependency)
+        username = getattr(current_user, 'email', 'admin')
+        
+        success = await resolve_error(
+            error_id=error_id,
+            resolved_by=username,
+            resolution_notes=resolution_notes
+        )
+        
+        if success:
+            return {
+                "status": "success",
+                "message": f"Error {error_id} marked as resolved",
+                "error_id": error_id,
+                "resolved_by": username
+            }
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Error {error_id} not found or already resolved"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to resolve error: {str(e)}")
 
 
 @api.get("/admin/pool-stats")

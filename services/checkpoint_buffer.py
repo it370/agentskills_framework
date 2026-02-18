@@ -206,8 +206,10 @@ class RedisCheckpointBuffer:
         Returns:
             bool: True if successful
         """
+        checkpoint_count = 0
         try:
             checkpoints = await self.get_all_checkpoints(thread_id)
+            checkpoint_count = len(checkpoints)
             
             if not checkpoints:
                 print(f"[CheckpointBuffer] No checkpoints to flush for {thread_id}")
@@ -282,6 +284,19 @@ class RedisCheckpointBuffer:
             print(f"[CheckpointBuffer] ERROR: Failed to flush checkpoints for {thread_id}: {e}")
             import traceback
             traceback.print_exc()
+            
+            # Log to database for admin investigation
+            try:
+                from services.system_errors import log_checkpoint_flush_error
+                await log_checkpoint_flush_error(
+                    thread_id=thread_id,
+                    error=e,
+                    checkpoint_count=checkpoint_count,
+                    is_critical=True
+                )
+            except Exception as log_err:
+                print(f"[CheckpointBuffer] Failed to log error to database: {log_err}")
+            
             return False
     
     async def cleanup_thread(self, thread_id: str):
