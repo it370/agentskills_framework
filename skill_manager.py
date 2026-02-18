@@ -83,6 +83,7 @@ def load_skills_from_database(workspace_id: Optional[str] = None, include_public
                     try:
                         skill_dict = {
                             "name": name,
+                            "module_name": module_name,
                             "description": description,
                             "requires": set(requires or []),
                             "produces": set(produces or []),
@@ -560,12 +561,12 @@ def reload_skill_registry(workspace_id: Optional[str] = None, include_public: bo
         except ValidationError as e:
             print(f"[SKILL_DB] Warning: Invalid skill '{skill_dict.get('name')}': {e}")
     
-    # Combine (database skills override filesystem if name conflicts)
-    skill_map = {s.name: s for s in filesystem_skills}
+    # Registry key = module_name only (unique identifier). DB: {code}.{name}; fs: fs.{name}.
+    def _skill_key(s):
+        return getattr(s, "module_name", None) or f"fs.{s.name}"
+    skill_map = {_skill_key(s): s for s in filesystem_skills}
     for db_skill in db_skills:
-        skill_map[db_skill.name] = db_skill  # Database takes precedence
-    
-    # Update global registry
+        skill_map[_skill_key(db_skill)] = db_skill
     engine.SKILL_REGISTRY = list(skill_map.values())
     
     scope_msg = f" for workspace {workspace_id}" if workspace_id else ""

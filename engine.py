@@ -146,9 +146,7 @@ class Skill(BaseModel):
     workspace_id: Optional[str] = None  # Workspace isolation (None = public/filesystem)
     owner_id: Optional[str] = None  # Skill owner
     is_public: bool = False  # Visibility outside workspace
-    workspace_id: Optional[str] = None     # Workspace that owns the skill
-    owner_id: Optional[str] = None         # User who owns the skill
-    is_public: bool = True                 # Public skills are visible across workspaces
+    module_name: Optional[str] = None  # Unique identifier for registry (DB: {code}.{name}; fs: fs.{name})
 
 class PlannerDecision(BaseModel):
     next_agent: str = Field(description="Name of agent or 'END'")
@@ -349,6 +347,7 @@ def load_skill_registry(skills_dir: Optional[Path] = None) -> List[Skill]:
                 executor=executor,
                 rest=rest_cfg,
                 action=action_cfg,
+                module_name=f"fs.{name}",
             )
         )
         seen_names.add(name)
@@ -2033,11 +2032,13 @@ try:
         except ValidationError as e:
             print(f"[SKILL_DB] Warning: Invalid database skill '{skill_dict.get('name')}': {e}")
     
-    # Merge database skills (override filesystem if name conflicts)
+    # Registry key = module_name only (unique identifier). DB: {code}.{name}; fs: fs.{name}.
     if db_skills:
-        skill_map = {s.name: s for s in SKILL_REGISTRY}
+        def _skill_key(s):
+            return getattr(s, "module_name", None) or f"fs.{s.name}"
+        skill_map = {_skill_key(s): s for s in SKILL_REGISTRY}
         for db_skill in db_skills:
-            skill_map[db_skill.name] = db_skill
+            skill_map[_skill_key(db_skill)] = db_skill
         SKILL_REGISTRY = list(skill_map.values())
         print(f"[ENGINE] Loaded {len(SKILL_REGISTRY)} total skills ({len(SKILL_REGISTRY) - len(db_skills)} filesystem, {len(db_skills)} database)")
 except Exception as e:
