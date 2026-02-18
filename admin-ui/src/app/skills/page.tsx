@@ -315,8 +315,11 @@ export default function SkillsPage() {
                 <table className="min-w-full table-auto divide-y divide-gray-200 min-w-[1000px]">
                   <thead className="bg-gray-50">
                     <tr>
-                      <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-[96px]">
+                      <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-[80px]">
                         Actions
+                      </th>
+                      <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-[60px]">
+                        Execution
                       </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-[100px] truncate">
                         Skill Name
@@ -327,9 +330,6 @@ export default function SkillsPage() {
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-[120px]">
                         Meta
                       </th>
-                      <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-[140px]">
-                        Execution
-                      </th>
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
@@ -339,28 +339,7 @@ export default function SkillsPage() {
                           <div className="flex items-center gap-1">
                             {skill.source === "database" && (
                               <>
-                                <Tooltip content="Edit">
-                                  <Link
-                                    href={`/skills/${encodeURIComponent(skill.id || skill.name)}/edit`}
-                                    className="inline-flex items-center justify-center h-8 w-8 rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-900"
-                                    aria-label={`Edit ${skill.name}`}
-                                  >
-                                    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                                      <path
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        strokeWidth={2}
-                                        d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5"
-                                      />
-                                      <path
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        strokeWidth={2}
-                                        d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"
-                                      />
-                                    </svg>
-                                  </Link>
-                                </Tooltip>
+                                
 
                                 <Tooltip content={deletingSkill === (skill.id || skill.name) ? "Deleting..." : "Delete"}>
                                   <button
@@ -391,125 +370,31 @@ export default function SkillsPage() {
                                     )}
                                   </button>
                                 </Tooltip>
+
+                                <Tooltip content="Edit">
+                                  <Link
+                                    href={`/skills/${encodeURIComponent(skill.id || skill.name)}/edit`}
+                                    className="inline-flex items-center justify-center h-8 w-8 rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                                    aria-label={`Edit ${skill.name}`}
+                                  >
+                                    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={2}
+                                        d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5"
+                                      />
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={2}
+                                        d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"
+                                      />
+                                    </svg>
+                                  </Link>
+                                </Tooltip>
                               </>
                             )}
-                          </div>
-                        </td>
-                        <td className="px-6 py-5 w-[150px]">
-                          <div className="text-sm font-medium text-gray-900 w-[220px] truncate">
-                            <Link
-                              href={`/skills/${encodeURIComponent(skill.id || skill.name)}`}
-                              className="hover:underline underline-offset-2"
-                              title="View details"
-                            >
-                              {skill.name}
-                            </Link>
-                          </div>
-                        </td>
-                        <td className="px-6 py-5 w-[320px]">
-                          <div className="text-xs text-gray-600 max-w-[320px] truncate">
-                            {skill.description}
-                          </div>
-                        </td>
-                        <td className="px-6 py-5 whitespace-nowrap">
-                          <div className="flex items-center gap-2">
-                            {/* Source */}
-                            <Tooltip content={skill.source === "database" ? "Database" : "Filesystem"}>
-                              <span
-                                className="inline-flex items-center justify-center h-8 w-8 rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-900"
-                                aria-label={skill.source === "database" ? "Database skill" : "Filesystem skill"}
-                              >
-                                {skill.source === "database" ? (
-                                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth={2}
-                                      d="M4 7c0-2 3.582-3 8-3s8 1 8 3-3.582 3-8 3-8-1-8-3z"
-                                    />
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth={2}
-                                      d="M4 7v10c0 2 3.582 3 8 3s8-1 8-3V7"
-                                    />
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth={2}
-                                      d="M4 12c0 2 3.582 3 8 3s8-1 8-3"
-                                    />
-                                  </svg>
-                                ) : (
-                                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth={2}
-                                      d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z"
-                                    />
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth={2}
-                                      d="M14 2v6h6"
-                                    />
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth={2}
-                                      d="M8 13h8M8 17h8"
-                                    />
-                                  </svg>
-                                )}
-                              </span>
-                            </Tooltip>
-
-                            {/* Visibility */}
-                            <Tooltip content={skill.is_public ? "Public" : "Workspace-only"}>
-                              <span
-                                className="inline-flex items-center justify-center h-8 w-8 rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-900"
-                                aria-label={skill.is_public ? "Public skill" : "Workspace-only skill"}
-                              >
-                                {skill.is_public ? (
-                                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth={2}
-                                      d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                                    />
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth={2}
-                                      d="M3.6 9h16.8M3.6 15h16.8"
-                                    />
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth={2}
-                                      d="M12 3c2.5 2.2 4 5.4 4 9s-1.5 6.8-4 9c-2.5-2.2-4-5.4-4-9s1.5-6.8 4-9z"
-                                    />
-                                  </svg>
-                                ) : (
-                                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth={2}
-                                      d="M12 11V7a4 4 0 00-8 0v4"
-                                    />
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth={2}
-                                      d="M6 11h12a2 2 0 012 2v6a2 2 0 01-2 2H6a2 2 0 01-2-2v-6a2 2 0 012-2z"
-                                    />
-                                  </svg>
-                                )}
-                              </span>
-                            </Tooltip>
                           </div>
                         </td>
                         <td className="px-3 py-5 whitespace-nowrap">
@@ -636,7 +521,124 @@ export default function SkillsPage() {
                               </Tooltip>
                             ) : null}
                           </div>
-                        </td>                        
+                        </td>
+                        <td className="px-6 py-5 w-[150px]">
+                          <div className="text-sm font-medium text-gray-900 w-[220px] truncate">
+                            <Link
+                              href={`/skills/${encodeURIComponent(skill.id || skill.name)}`}
+                              className="hover:underline underline-offset-2"
+                              title="View details"
+                            >
+                              {skill.name}
+                            </Link>
+                          </div>
+                        </td>
+                        <td className="px-6 py-5 w-[320px]">
+                          <div className="text-xs text-gray-600 max-w-[320px] truncate">
+                            {skill.description}
+                          </div>
+                        </td>
+                        <td className="px-6 py-5 whitespace-nowrap">
+                          <div className="flex items-center gap-2">
+                            {/* Source */}
+                            <Tooltip content={skill.source === "database" ? "Database" : "Filesystem"}>
+                              <span
+                                className="inline-flex items-center justify-center h-8 w-8 rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                                aria-label={skill.source === "database" ? "Database skill" : "Filesystem skill"}
+                              >
+                                {skill.source === "database" ? (
+                                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M4 7c0-2 3.582-3 8-3s8 1 8 3-3.582 3-8 3-8-1-8-3z"
+                                    />
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M4 7v10c0 2 3.582 3 8 3s8-1 8-3V7"
+                                    />
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M4 12c0 2 3.582 3 8 3s8-1 8-3"
+                                    />
+                                  </svg>
+                                ) : (
+                                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z"
+                                    />
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M14 2v6h6"
+                                    />
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M8 13h8M8 17h8"
+                                    />
+                                  </svg>
+                                )}
+                              </span>
+                            </Tooltip>
+
+                            {/* Visibility */}
+                            <Tooltip content={skill.is_public ? "Public" : "Workspace-only"}>
+                              <span
+                                className="inline-flex items-center justify-center h-8 w-8 rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                                aria-label={skill.is_public ? "Public skill" : "Workspace-only skill"}
+                              >
+                                {skill.is_public ? (
+                                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                                    />
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M3.6 9h16.8M3.6 15h16.8"
+                                    />
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M12 3c2.5 2.2 4 5.4 4 9s-1.5 6.8-4 9c-2.5-2.2-4-5.4-4-9s1.5-6.8 4-9z"
+                                    />
+                                  </svg>
+                                ) : (
+                                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M12 11V7a4 4 0 00-8 0v4"
+                                    />
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M6 11h12a2 2 0 012 2v6a2 2 0 01-2 2H6a2 2 0 01-2-2v-6a2 2 0 012-2z"
+                                    />
+                                  </svg>
+                                )}
+                              </span>
+                            </Tooltip>
+                          </div>
+                        </td>
                       </tr>
                   ))}
                 </tbody>
