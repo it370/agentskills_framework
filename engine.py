@@ -918,7 +918,7 @@ async def _run_agent_tools(
         return [], messages
 
     selected_model = _validate_llm_model(llm_model or _default_llm_model())
-    await publish_log(f"[AGENT TOOLS] Using model: {selected_model}")
+    # await publish_log(f"[AGENT TOOLS] Using model: {selected_model}")
     api_key = _resolve_llm_api_key(selected_model)
     tool_llm = ChatOpenAI(model=selected_model, temperature=0, api_key=api_key).bind_tools(tools)
     history: List[BaseMessage] = list(messages)
@@ -2137,7 +2137,7 @@ async def autonomous_planner(state: AgentState):
     """
     
     planner_model = _resolve_llm_model(None, state)
-    await publish_log(f"[PLANNER] Using model: {planner_model} (source: run-level)")
+    # await publish_log(f"[PLANNER] Using model: {planner_model} (source: run-level)")
     llm = _structured_llm(PlannerDecision, temperature=0, model=planner_model)
     decision = await llm.ainvoke(prompt)
     
@@ -2469,7 +2469,8 @@ async def skilled_executor(state: AgentState):
             "data_store": updated_store,
             "execution_sequence": execution_sequence,
             "history": [f"Executed {skill_meta.name} ({skill_meta.executor})"],
-            "active_skill": None  # Clear active skill to allow planner to continue
+            # Keep active_skill so route_post_exec can check HITL
+            # Planner will set it to next skill or END
         }
         
     except Exception as exc:
@@ -2501,6 +2502,7 @@ def route_post_exec(state: AgentState):
     # Find the skill metadata safely
     workspace_id = state.get("workspace_id")
     registry = get_skill_registry_for_workspace(workspace_id)
+    
     skill_meta = next((s for s in registry if s.name == skill_name), None)
     if not skill_meta:
         emit_log(f"[ROUTER] Unknown skill '{skill_name}', routing to planner.")

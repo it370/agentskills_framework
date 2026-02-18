@@ -732,8 +732,11 @@ async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any], b
     
     try:
         # Use astream to enable real-time log broadcasting during execution
-        async for _ in app.astream(initial_state, config):
-            pass  # Logs are emitted in real-time as workflow executes
+        async for event in app.astream(initial_state, config):
+            # Check if we hit an interrupt
+            if "__interrupt__" in event:
+                await publish_log(f"[API] Workflow interrupted", thread_id)
+                break
         
         # Check the actual state after workflow execution
         state = await app.aget_state(config)
