@@ -104,12 +104,13 @@ async def startup_event():
     try:
         from services.websocket.log_queue import get_log_queue
         queue = get_log_queue()
-        if queue.is_available():
-            n = await asyncio.to_thread(queue.flush_all_to_db_sync)
-            if n:
-                emit_log(f"[API] Restart recovery: flushed {n} log(s) from Redis to DB")
+        # Always attempt flush: the log queue may be using the in-process fallback buffer
+        # when Redis is unavailable, and those logs still need to be persisted.
+        n = await asyncio.to_thread(queue.flush_all_to_db_sync)
+        if n:
+            print(f"[API] Restart recovery: flushed {n} log(s) to DB")
     except Exception as e:
-        emit_log(f"[API] Restart recovery flush failed: {e}")
+        print(f"[API] Restart recovery flush failed: {e}")
 
 
 @api.on_event("shutdown")
@@ -502,10 +503,11 @@ async def _update_run_status(thread_id: str, status: str, error_message: Optiona
         try:
             from services.websocket.log_queue import get_log_queue
             queue = get_log_queue()
-            if queue.is_available():
-                n = await asyncio.to_thread(queue.flush_thread_to_db_sync, thread_id)
-                if n:
-                    print(f"[API] Flushed {n} log(s) from Redis to DB for thread={thread_id}")
+            # Always attempt flush: even if Redis is unavailable, logs may be in the
+            # in-process fallback buffer and still need persistence.
+            n = await asyncio.to_thread(queue.flush_thread_to_db_sync, thread_id)
+            if n:
+                print(f"[API] Flushed {n} log(s) to DB for thread={thread_id}")
         except Exception as e:
             print(f"[API] Failed to flush Redis logs to DB: {e}")
 
@@ -792,28 +794,29 @@ async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any], b
         if data_store.get("_status") == "failed":
             error_msg = data_store.get("_error", "Unknown error")
             failed_skill = data_store.get("_failed_skill")
-            await _update_run_status(thread_id, "error", error_msg, failed_skill)
             await publish_log(f"❌ Workflow ended with an error.", thread_id)
+            await _update_run_status(thread_id, "error", error_msg, failed_skill)
             # Fire-and-forget callback (don't wait for completion)
             asyncio.create_task(_invoke_callback(thread_id))
             return data_store  # Return data_store even on failure
         # Determine if truly completed or paused at an interrupt
         elif not next_nodes or (len(next_nodes) == 1 and next_nodes[0] == "__end__"):
-            await _update_run_status(thread_id, "completed")
             await publish_log(f"✅ Workflow completed successfully.", thread_id)
+            await _update_run_status(thread_id, "completed")
             # Fire-and-forget callback (don't wait for completion)
             asyncio.create_task(_invoke_callback(thread_id))
             return data_store  # Return final data_store
         elif "human_review" in next_nodes:
-            await _update_run_status(thread_id, "paused")
             await publish_log(f"⏸ Workflow paused — awaiting your review.", thread_id)
+            await _update_run_status(thread_id, "paused")
             return data_store  # Return data_store at pause point
         elif "await_callback" in next_nodes:
-            await _update_run_status(thread_id, "paused")
             await publish_log(f"⏸ Workflow paused — awaiting external service response.", thread_id)
+            await _update_run_status(thread_id, "paused")
             return data_store  # Return data_store at pause point
         else:
             await publish_log(f"⏸ Workflow paused.", thread_id)
+            await _update_run_status(thread_id, "paused")
             return data_store  # Return data_store at pause point
             
     except asyncio.CancelledError:
@@ -949,25 +952,25 @@ async def approve_step(
                 # Check if it failed or completed successfully
                 data_store = state.values.get("data_store", {})
                 if data_store.get("_status") == "failed":
+                    await publish_log(f"❌ Workflow ended with an error.", thread_id)
                     await _update_run_status(
                         thread_id, 
                         "error", 
                         data_store.get("_error", "Workflow failed"),
                         data_store.get("_failed_skill")
                     )
-                    await publish_log(f"❌ Workflow ended with an error.", thread_id)
                 else:
-                    await _update_run_status(thread_id, "completed")
                     await publish_log(f"✅ Workflow completed successfully.", thread_id)
+                    await _update_run_status(thread_id, "completed")
             elif "human_review" in next_nodes:
-                await _update_run_status(thread_id, "paused")
                 await publish_log(f"⏸ Workflow paused — awaiting another review.", thread_id)
+                await _update_run_status(thread_id, "paused")
             elif "await_callback" in next_nodes:
-                await _update_run_status(thread_id, "paused")
                 await publish_log(f"⏸ Workflow paused — awaiting external service response.", thread_id)
-            else:
                 await _update_run_status(thread_id, "paused")
+            else:
                 await publish_log(f"⏸ Workflow paused.", thread_id)
+                await _update_run_status(thread_id, "paused")
             
             # Return final state for await_response
             return state.values.get("data_store", {})
