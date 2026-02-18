@@ -4,13 +4,8 @@ import { useEffect, useState } from "react";
 import { connectLogs } from "../../lib/api";
 import DashboardLayout from "../../components/DashboardLayout";
 
-// Check which broadcaster is being used
-const USE_PUSHER = process.env.NEXT_PUBLIC_USE_PUSHER === "true" || !!process.env.NEXT_PUBLIC_PUSHER_KEY;
-const PUSHER_CLUSTER = process.env.NEXT_PUBLIC_PUSHER_CLUSTER || "ap2";
-const BROADCASTER_NAME = USE_PUSHER ? "Pusher Channels" : "Socket.IO";
-const BROADCASTER_URL = USE_PUSHER 
-  ? `wss://ws-${PUSHER_CLUSTER}.pusher.com (cluster: ${PUSHER_CLUSTER})`
-  : `Socket.IO (default host)`;
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") || "http://localhost:8000";
+const STREAM_URL = `${API_BASE}/api/logs/stream`;
 
 export default function LogsPage() {
   const [lines, setLines] = useState<string[]>([]);
@@ -28,14 +23,8 @@ export default function LogsPage() {
       }
     });
     
-    // Set connected status after a short delay (waiting for Pusher subscription)
-    const timer = setTimeout(() => {
-      setConnectionStatus("Connected");
-    }, 2000);
-    
-    return () => { 
-      clearTimeout(timer);
-      connection.disconnect(); 
+    return () => {
+      connection.disconnect();
     };
   }, []);
 
@@ -104,7 +93,7 @@ export default function LogsPage() {
                 <div className="w-3 h-3 rounded-full bg-green-500"></div>
               </div>
               <span className="text-xs text-gray-400 ml-2">
-                Streaming from {BROADCASTER_NAME} at {BROADCASTER_URL}
+                SSE stream — {STREAM_URL}
               </span>
             </div>
             <div className="flex items-center gap-1">

@@ -41,25 +41,8 @@ def run_production():
     except Exception as e:
         print(f"[AUTH] Warning: Could not initialize auth context: {e}")
     
-    # Configure broadcast integration
-    try:
-        from services.websocket import broadcast_log, broadcast_admin_event, get_broadcaster_status
-        import log_stream
-        import admin_events
-        
-        log_stream.set_socketio_broadcast(broadcast_log)
-        admin_events.set_socketio_broadcast(broadcast_admin_event)
-        
-        status = get_broadcaster_status()
-        primary = status.get('primary_broadcaster', 'none')
-        available = status.get('primary_available', False)
-        broadcast_display = f"{primary.capitalize()} ({'OK' if available else 'FAIL'})"
-        
-        print(f"[MAIN] Real-time broadcast configured: {primary} ({'available' if available else 'unavailable'})")
-    except Exception as e:
-        print(f"[MAIN] Warning: Could not configure broadcast integration: {e}")
-        broadcast_display = "Not configured"
-    
+    broadcast_display = "SSE (Server-Sent Events)"
+
     # Recover buffered checkpoints
     try:
         import asyncio

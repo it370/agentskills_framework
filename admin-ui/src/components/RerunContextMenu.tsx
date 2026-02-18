@@ -50,7 +50,7 @@ export default function RerunContextMenu({
         }
       });
       
-      // Call rerun API with ACK key (backend will send ACK via Pusher)
+      // Call rerun API with ACK key (backend will send ACK via SSE admin stream)
       const result = await rerunWorkflow(threadId, ackKey);
       console.log("[Rerun] HTTP response:", result);
       

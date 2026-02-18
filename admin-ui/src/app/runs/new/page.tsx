@@ -175,7 +175,7 @@ function NewRunForm() {
         throw new Error(`Start failed: ${response.status} - ${errorText}`);
       }
 
-      // Response received, waiting for ACK via global Pusher connection
+      // Response received, waiting for ACK via global SSE admin stream
       const result = await response.json();
       console.log("[NewRun] HTTP response received:", result, "- waiting for ACK...");
       

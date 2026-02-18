@@ -56,34 +56,8 @@ def run():
         print(f"[AUTH] Warning: Could not initialize auth context: {e}")
         print("[AUTH] Credential-based skills may not work without user_context in inputs")
     
-    # Configure real-time broadcast integration (Pusher/Ably)
-    try:
-        from services.websocket import broadcast_log, broadcast_admin_event, get_broadcaster_status
-        import log_stream
-        import admin_events
-        
-        log_stream.set_socketio_broadcast(broadcast_log)
-        admin_events.set_socketio_broadcast(broadcast_admin_event)
-        
-        # Show broadcaster status
-        status = get_broadcaster_status()
-        primary = status.get('primary_broadcaster', 'none')
-        available = status.get('primary_available', False)
-        broadcast_display = f"{primary.capitalize()} ({'✓' if available else '✗'})"
-        
-        print(f"[MAIN] Real-time broadcast configured: {primary} ({'available' if available else 'unavailable'})")
-        
-        if not available:
-            print("[MAIN] Warning: Primary broadcaster not available - check configuration")
-            broadcaster_type = os.getenv("BROADCASTER_TYPE", "pusher").lower()
-            if broadcaster_type == "appsync":
-                print("[MAIN] Required env vars: APPSYNC_API_URL, APPSYNC_REGION")
-            else:
-                print("[MAIN] Required env vars: PUSHER_APP_ID, PUSHER_KEY, PUSHER_SECRET, PUSHER_CLUSTER")
-    except Exception as e:
-        print(f"[MAIN] Warning: Could not configure broadcast integration: {e}")
-        broadcast_display = "Not configured"
-    
+    broadcast_display = "SSE (Server-Sent Events)"
+
     # Recover buffered checkpoints from Redis (if any)
     try:
         import asyncio

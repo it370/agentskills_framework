@@ -112,21 +112,7 @@ def post_fork(server, worker):
         print(f"[WORKER {worker.pid}] WARNING: Could not initialize auth context: {e}")
         print(f"[WORKER {worker.pid}] Credential-based skills may fail without user_context in inputs")
     
-    # Configure broadcast integration per worker
-    try:
-        from services.websocket import broadcast_log, broadcast_admin_event, get_broadcaster_status
-        import log_stream
-        import admin_events
-        
-        log_stream.set_socketio_broadcast(broadcast_log)
-        admin_events.set_socketio_broadcast(broadcast_admin_event)
-        
-        status = get_broadcaster_status()
-        primary = status.get('primary_broadcaster', 'none')
-        available = status.get('primary_available', False)
-        print(f"[WORKER {worker.pid}] Broadcast configured: {primary} ({'available' if available else 'unavailable'})")
-    except Exception as e:
-        print(f"[WORKER {worker.pid}] Warning: Could not configure broadcast: {e}")
+    print(f"[WORKER {worker.pid}] Real-time broadcast: SSE (Server-Sent Events)")
 
 def pre_fork(server, worker):
     """Called just before a worker is forked."""

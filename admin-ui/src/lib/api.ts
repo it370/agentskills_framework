@@ -1,29 +1,10 @@
 import { CheckpointTuple, RunEvent, RunListResponse, RunSummary } from "./types";
-import Pusher from "pusher-js";
-import { getAppSyncClient } from "./realtimeClient";
 import { adminEvents } from "./adminEvents";
 import { getAuthHeaders } from "./auth";
 import { getActiveWorkspaceId } from "./workspaceStorage";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") || "http://localhost:8000";
-
-// Real-time broadcaster configuration
-const BROADCASTER_TYPE = process.env.NEXT_PUBLIC_BROADCASTER_TYPE || "pusher";
-
-// Pusher configuration
-const PUSHER_KEY = process.env.NEXT_PUBLIC_PUSHER_KEY || "";
-const PUSHER_CLUSTER = process.env.NEXT_PUBLIC_PUSHER_CLUSTER || "ap2";
-
-// AppSync configuration
-const APPSYNC_NAMESPACE = process.env.NEXT_PUBLIC_APPSYNC_NAMESPACE || "default";
-
-let appSyncLogsChannel: ReturnType<ReturnType<typeof getAppSyncClient>["subscribe"]> | null = null;
-let appSyncLogsHandlers = new Set<(data: any) => void>();
-
-function shouldUseAppSync(): boolean {
-  return BROADCASTER_TYPE.toLowerCase() === "appsync";
-}
 
 function withWorkspace(url: string, workspaceId?: string | null): string {
   if (!workspaceId) return url;
@@ -168,140 +149,71 @@ export async function getRunMetadata(
 }
 
 
-export function connectAdminEvents(onEvent: (RunEvent) => void): { disconnect: () => void } {
-  const useAppSync = shouldUseAppSync();
-  console.log(`[API] Connecting admin events using ${useAppSync ? 'AppSync' : 'Pusher'}`);
-  
-  if (useAppSync) {
-    const unsubscribe = adminEvents.on("*", (event: any) => {
-      try {
-        onEvent(event as RunEvent);
-      } catch (e) {
-        console.warn("[AppSync] Failed to parse admin event", e);
-      }
-    });
-
-    return {
-      disconnect: () => {
-        unsubscribe();
-      }
-    };
-  } else {
-    // Use Pusher
-    const pusher = new Pusher(PUSHER_KEY, {
-      cluster: PUSHER_CLUSTER,
-      enabledTransports: ['ws', 'wss'],
-      forceTLS: true,
-    });
-    
-    const channel = pusher.subscribe('admin');
-    
-    channel.bind('admin_event', (data: any) => {
-      try {
-        if (data?.type === "run_event" && data.data) {
-          onEvent(data.data as RunEvent);
-        }
-      } catch (e) {
-        console.warn("[PUSHER] Failed to parse admin event", e);
-      }
-    });
-    
-    channel.bind('pusher:subscription_error', (error: any) => {
-      console.error("[PUSHER] Admin events subscription error:", error);
-    });
-    
-    pusher.connection.bind('error', (err: any) => {
-      console.error("[PUSHER] Connection error:", err);
-    });
-    
-    return {
-      disconnect: () => {
-        channel.unbind_all();
-        channel.unsubscribe();
-        pusher.disconnect();
-      }
-    };
-  }
+/** Subscribe to admin run events via the shared SSE admin stream. */
+export function connectAdminEvents(onEvent: (event: RunEvent) => void): { disconnect: () => void } {
+  const unsubscribe = adminEvents.on("*", (event: any) => {
+    try {
+      onEvent(event as RunEvent);
+    } catch (e) {
+      console.warn("[SSE] Failed to handle admin event", e);
+    }
+  });
+  return { disconnect: unsubscribe };
 }
 
-export function connectLogs(onLog: (line: string, threadId?: string) => void): { disconnect: () => void } {
-  const useAppSync = shouldUseAppSync();
-  console.log(`[API] Connecting logs using ${useAppSync ? 'AppSync' : 'Pusher'}`);
-  
-  if (useAppSync) {
-    // Use AppSync Event API
-    const client = getAppSyncClient();
-    if (!appSyncLogsChannel) {
-      appSyncLogsChannel = client.subscribe(`${APPSYNC_NAMESPACE}/logs`);
-      appSyncLogsChannel.bind('log', (data: any) => {
-        appSyncLogsHandlers.forEach((handler) => {
-          try {
-            handler(data);
-          } catch (e) {
-            console.error("[AppSync] Error processing log:", e);
-          }
-        });
-      });
-    }
+/**
+ * Connect to the live log SSE stream.
+ *
+ * @param onLog - Called with each log line and its thread_id.
+ * @param threadId - Optional: subscribe to a per-thread stream. Omit for the global stream.
+ */
+export function connectLogs(
+  onLog: (line: string, threadId?: string) => void,
+  threadId?: string
+): { disconnect: () => void } {
+  const url = threadId
+    ? `${API_BASE}/api/runs/${encodeURIComponent(threadId)}/logs/stream`
+    : `${API_BASE}/api/logs/stream`;
+  const abort = new AbortController();
 
-    const handler = (data: any) => {
-      if (data?.text !== undefined) {
-        onLog(data.text, data.thread_id);
-      } else {
-        console.warn("[AppSync] Message missing 'text' field:", data);
-      }
-    };
-
-    appSyncLogsHandlers.add(handler);
-
-    return {
-      disconnect: () => {
-        appSyncLogsHandlers.delete(handler);
-        if (appSyncLogsHandlers.size === 0 && appSyncLogsChannel) {
-          appSyncLogsChannel.unbind_all();
-          appSyncLogsChannel.unsubscribe();
-          appSyncLogsChannel = null;
-        }
-      }
-    };
-  } else {
-    // Use Pusher
-    const pusher = new Pusher(PUSHER_KEY, {
-      cluster: PUSHER_CLUSTER,
-      enabledTransports: ['ws', 'wss'],
-      forceTLS: true,
-    });
-    
-    const channel = pusher.subscribe('logs');
-    
-    channel.bind('log', (data: any) => {
+  (async () => {
+    while (!abort.signal.aborted) {
       try {
-        if (data.text !== undefined) {
-          onLog(data.text, data.thread_id);
-        } else {
-          console.warn("[PUSHER] Message missing 'text' field:", data);
+        const res = await fetch(url, {
+          headers: getAuthHeaders(),
+          signal: abort.signal,
+        });
+        if (!res.ok || !res.body) {
+          await new Promise((r) => setTimeout(r, 3000));
+          continue;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() ?? "";
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (data?.text !== undefined) onLog(data.text, data.thread_id);
+              } catch (_) {}
+            }
+          }
         }
       } catch (e) {
-        console.error("[PUSHER] Error processing log:", e);
+        if ((e as Error).name === "AbortError") return;
+        console.warn("[SSE] Log stream error, reconnecting in 3s:", e);
+        await new Promise((r) => setTimeout(r, 3000));
       }
-    });
-    
-    channel.bind('pusher:subscription_error', (error: any) => {
-      console.error("[PUSHER] Logs subscription error:", error);
-    });
-    
-    pusher.connection.bind('error', (err: any) => {
-      console.error("[PUSHER] Connection error:", err);
-    });
-    
-    return {
-      disconnect: () => {
-        channel.unbind_all();
-        channel.unsubscribe();
-        pusher.disconnect();
-      }
-    };
-  }
+    }
+  })();
+
+  return { disconnect: () => abort.abort() };
 }
 
 // --- SKILL MANAGEMENT API ---

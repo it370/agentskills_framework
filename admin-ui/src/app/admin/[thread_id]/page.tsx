@@ -93,23 +93,14 @@ export default function RunDetailPage() {
             ? { sop: initialConfig.sop, initialData: initialConfig.data, runName: threadId }
             : undefined
         );
-
-        // If we don't already have data in the store (e.g., hard refresh), hydrate once
         if (!hasRunData) {
           await loadHistoricalData(threadId);
         }
-
-        if (!cancelled) {
-          setError(null);
-        }
+        if (!cancelled) setError(null);
       } catch (err: any) {
-        if (!cancelled) {
-          setError(err.message || "Failed to load run");
-        }
+        if (!cancelled) setError(err.message || "Failed to load run");
       } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        if (!cancelled) setLoading(false);
       }
     };
 
@@ -117,7 +108,7 @@ export default function RunDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [threadId, initializeRun, loadHistoricalData, initialConfig, activeWorkspaceId]);
+  }, [threadId, initializeRun, loadHistoricalData, initialConfig, activeWorkspaceId, hasRunData]);
 
   // If store data arrives via global listeners while loading, stop the spinner
   useEffect(() => {
@@ -252,18 +243,16 @@ export default function RunDetailPage() {
   //   });
   // }, [isPaused, showHitlModal, awaitingSkill, loading]);
 
-  // Update HITL data when dataStore changes
+  // Update HITL data and auto-open modal when paused. dataStore omitted from deps (new object ref every render → max update depth).
   useEffect(() => {
-    if (isPaused) {
-      setHitlData(JSON.stringify(dataStore, null, 2));
-      
-      // Auto-open modal on initial mount if paused
-      if (!hasCheckedInitialState.current && !loading) {
-        hasCheckedInitialState.current = true;
-        setShowHitlModal(true);
-      }
+    if (!isPaused) return;
+    setHitlData(JSON.stringify(dataStore, null, 2));
+    if (!hasCheckedInitialState.current && !loading) {
+      hasCheckedInitialState.current = true;
+      setShowHitlModal(true);
     }
-  }, [isPaused, dataStore, loading]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- dataStore omitted to avoid loop
+  }, [isPaused, loading]);
 
   const load = async () => {
     if (!threadId) return;
@@ -293,7 +282,8 @@ export default function RunDetailPage() {
       }
       await approveStep(threadId, updatedData);
       setShowHitlModal(false);
-      await load();
+      // Do NOT call load() here — it would wipe live SSE logs by dispatching setHistoricalLogs
+      // before the run completes. SSE admin events will update status/checkpoint reactively.
     } catch (err: any) {
       setError(err.message || "Failed to approve step");
     } finally {

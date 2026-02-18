@@ -17,6 +17,7 @@ import {
 } from '../store/slices/logsSlice';
 import { adminEvents } from '../lib/adminEvents';
 import { connectLogs, getRunMetadata, fetchRunDetail, fetchThreadLogs } from '../lib/api';
+import { store } from '../store';
 
 interface RunContextValue {
   // Methods to interact with runs
@@ -36,7 +37,6 @@ export const useRun = () => {
 
 export function RunProvider({ children }: { children: React.ReactNode }) {
   const dispatch = useAppDispatch();
-  const { currentThreadId } = useAppSelector((state) => state.run);
   const logsConnectionRef = useRef<{ disconnect: () => void } | null>(null);
   const adminEventsUnsubscribeRef = useRef<(() => void) | null>(null);
 
@@ -46,11 +46,7 @@ export function RunProvider({ children }: { children: React.ReactNode }) {
     config?: { sop: string; initialData: any; runName?: string; llmModel?: string | null }
   ) => {
     console.log('[RunProvider] Initializing run:', threadId);
-    
-    // Set as current thread
     dispatch(setCurrentThread(threadId));
-    
-    // If config provided (new run), set initial metadata
     if (config) {
       dispatch(setRunMetadata({
         threadId,
@@ -89,9 +85,11 @@ export function RunProvider({ children }: { children: React.ReactNode }) {
         console.log('[RunProvider] Checkpoint not available yet');
       }
       
-      // Load historical logs only if run is not active
-      const isActive = metadata.status === 'running' || metadata.status === 'pending';
-      if (!isActive) {
+      // Load historical logs only for terminal runs (completed/error/cancelled).
+      // Active and paused runs receive live logs via SSE — don't replace them with
+      // a DB snapshot that may lag behind what the stream has already delivered.
+      const isLive = metadata.status === 'running' || metadata.status === 'pending' || metadata.status === 'paused';
+      if (!isLive) {
         const logs = await fetchThreadLogs(threadId);
         dispatch(setHistoricalLogs({ thread_id: threadId, logs }));
       } else {
@@ -148,16 +146,27 @@ export function RunProvider({ children }: { children: React.ReactNode }) {
             dispatch(setRunStatus({ threadId, status: event.status }));
           }
           
-          // If completed/error, load historical logs
           if (event.status === 'completed' || event.status === 'error') {
-            console.log('[RunProvider] Run completed, loading historical logs');
-            fetchThreadLogs(threadId)
-              .then((logs) => {
-                dispatch(setHistoricalLogs({ thread_id: threadId, logs }));
-              })
-              .catch((err) => {
-                console.error('[RunProvider] Failed to load historical logs:', err);
-              });
+            // Only replace logs with DB copy when there are NO live SSE logs in the
+            // store for this thread. If logs are already present they came from the
+            // active SSE stream and are already complete (and more up-to-date than
+            // the DB, which may still be catching up from the Redis flush).
+            const existingLogs = (store.getState() as any).logs?.logsByThread?.[threadId];
+            const hasLiveLogs = existingLogs && existingLogs.length > 0;
+            if (!hasLiveLogs) {
+              console.log('[RunProvider] Run completed, no live logs – fetching from DB');
+              fetchThreadLogs(threadId)
+                .then((logs) => {
+                  dispatch(setHistoricalLogs({ thread_id: threadId, logs }));
+                })
+                .catch((err) => {
+                  console.error('[RunProvider] Failed to load historical logs:', err);
+                });
+            } else {
+              console.log(`[RunProvider] Run completed, keeping ${existingLogs.length} live SSE logs`);
+              // Mark as loaded so the "loading" spinner doesn't persist
+              dispatch(markHistoricalLogsLoaded(threadId));
+            }
           }
           break;
           
@@ -182,25 +191,17 @@ export function RunProvider({ children }: { children: React.ReactNode }) {
     };
   }, [dispatch]);
 
-  // Set up logs connection (runs once on mount)
+  // Global SSE logs connection (/api/logs/stream)
   useEffect(() => {
-    console.log('[RunProvider] Setting up logs connection');
-    
     const logsConnection = connectLogs((message, threadId) => {
-      // Add log to store
       dispatch(addLog({
         thread_id: threadId || 'unknown',
         message,
         level: 'INFO',
       }));
     });
-    
     logsConnectionRef.current = logsConnection;
-    
-    return () => {
-      console.log('[RunProvider] Cleaning up logs connection');
-      logsConnection.disconnect();
-    };
+    return () => logsConnection.disconnect();
   }, [dispatch]);
 
   const value: RunContextValue = {

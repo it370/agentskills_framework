@@ -9,6 +9,7 @@ from datetime import datetime
 import httpx
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from psycopg import Connection as SyncConnection
 from env_loader import load_env_once
@@ -97,6 +98,20 @@ api.include_router(run_manager_router)
 # Mock endpoints for hardcoded data (sandbox/testing)
 api.include_router(mock_router)
 
+@api.on_event("startup")
+async def startup_event():
+    """Flush any Redis-buffered logs from a previous run to the DB on restart."""
+    try:
+        from services.websocket.log_queue import get_log_queue
+        queue = get_log_queue()
+        if queue.is_available():
+            n = await asyncio.to_thread(queue.flush_all_to_db_sync)
+            if n:
+                emit_log(f"[API] Restart recovery: flushed {n} log(s) from Redis to DB")
+    except Exception as e:
+        emit_log(f"[API] Restart recovery flush failed: {e}")
+
+
 @api.on_event("shutdown")
 async def shutdown_cleanup():
     """Ensure background pools are closed on shutdown."""
@@ -121,11 +136,11 @@ class StartRequest(BaseModel):
 async def start_process(req: StartRequest, current_user: AuthenticatedUser):
     """
     Start a workflow with ACK handshake for instant UI feedback.
-    
+
     Flow:
-    1. Send ACK via Pusher immediately (UI can redirect)
+    1. Send ACK via SSE admin stream immediately (UI can redirect)
     2. Save metadata and create checkpoint
-    3. Run workflow (sends progress updates via Pusher)
+    3. Run workflow (sends progress updates via SSE)
     4. Return response
     """
     # Use run_name if provided, otherwise default to thread_id
@@ -151,7 +166,7 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
         ack_key=req.ack_key,
     )
     
-    # STEP 2: Send ACK via Pusher (UI will receive and redirect)
+    # STEP 2: Send ACK via SSE admin stream (UI will receive and redirect)
     if req.ack_key:
         await broadcast_run_event({
             "type": "ack",
@@ -227,11 +242,10 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
     })
     
     # STEP 6: Log start
-    emit_log(f"[API] Start requested for thread={req.thread_id} by user={current_user.username}", req.thread_id)
-    await publish_log(f"[API] LLM model selected: {global_llm_model}", req.thread_id)
-    await publish_log(f"[API] Log broadcast mode: {'enabled' if req.broadcast else 'disabled'}", req.thread_id)
+    print(f"[API] Start requested for thread={req.thread_id} by user={current_user.username}")
+    await publish_log(f"Run started by {current_user.username}. Using AI model: {global_llm_model}.", req.thread_id)
     
-    # STEP 7: Run workflow (will send progress updates via Pusher only if broadcast enabled)
+    # STEP 7: Run workflow (sends progress updates via SSE)
     task = asyncio.create_task(_run_workflow(initial_state, config, broadcast=req.broadcast))
     RUN_TASKS[req.thread_id] = task
     task.add_done_callback(lambda t, thread_id=req.thread_id: RUN_TASKS.pop(thread_id, None))
@@ -257,7 +271,7 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
         except Exception as exc:
             # If workflow failed, return error status
             error_msg = str(exc)
-            emit_log(f"[API] Workflow failed for thread={req.thread_id}: {error_msg}", req.thread_id)
+            print(f"[API] Workflow failed for thread={req.thread_id}: {error_msg}")
             return {
                 "status": "failed",
                 "thread_id": req.thread_id,
@@ -297,16 +311,16 @@ async def stop_run(thread_id: str, current_user: AuthenticatedUser):
         if not task or task.done():
             raise HTTPException(status_code=400, detail="Run is not active")
 
-        emit_log(f"[API] Cancelling workflow task for thread={thread_id}")
+        print(f"[API] Cancelling workflow task for thread={thread_id}")
         task.cancel()
         try:
             await asyncio.wait_for(task, timeout=2.0)
         except asyncio.TimeoutError:
-            emit_log(f"[API] Stop requested for thread={thread_id}, task did not cancel within timeout.")
+            print(f"[API] Stop: task did not cancel within timeout for thread={thread_id}")
         except asyncio.CancelledError:
-            emit_log(f"[API] Workflow task cancelled for thread={thread_id}")
+            print(f"[API] Workflow task cancelled for thread={thread_id}")
 
-        await publish_log(f"[API] 🛑 STOP signal sent. Workflow task cancelled.", thread_id)
+        await publish_log(f"🛑 Run stopped by {current_user.username}.", thread_id)
 
         # Update database status
         await _update_run_status(thread_id, "cancelled")
@@ -317,8 +331,6 @@ async def stop_run(thread_id: str, current_user: AuthenticatedUser):
             "thread_id": thread_id,
             "cancelled_by": current_user.username
         })
-        
-        await publish_log(f"[API] Run {thread_id} cancelled by {current_user.username}", thread_id)
         
         return {
             "status": "cancelled",
@@ -476,12 +488,28 @@ async def _update_run_status(thread_id: str, status: str, error_message: Optiona
 
     try:
         await asyncio.to_thread(_update_sync)
-        emit_log(f"[API] Updated run status to '{status}' for thread={thread_id}")
+        print(f"[API] Updated run status to '{status}' for thread={thread_id}")
     except Exception as e:
-        emit_log(f"[API] Failed to update run status: {e}")
+        print(f"[API] Failed to update run status: {e}")
         return
     
-    # ALWAYS broadcast status update, regardless of checkpoint flush
+    # Flush Redis log queue to DB BEFORE broadcasting status_updated so the
+    # frontend's fetchThreadLogs call sees a complete log set in the DB.
+    # Flush on every meaningful state change so logs are always persisted for
+    # audit/T&S – including cancelled runs and HITL pauses (which may wait a
+    # long time and the app could restart before the run resumes).
+    if status in ["completed", "error", "cancelled", "paused"]:
+        try:
+            from services.websocket.log_queue import get_log_queue
+            queue = get_log_queue()
+            if queue.is_available():
+                n = await asyncio.to_thread(queue.flush_thread_to_db_sync, thread_id)
+                if n:
+                    print(f"[API] Flushed {n} log(s) from Redis to DB for thread={thread_id}")
+        except Exception as e:
+            print(f"[API] Failed to flush Redis logs to DB: {e}")
+
+    # Broadcast status update after logs are persisted
     try:
         await broadcast_run_event({
             "thread_id": thread_id,
@@ -489,7 +517,7 @@ async def _update_run_status(thread_id: str, status: str, error_message: Optiona
             "type": "status_updated",
         })
     except Exception as e:
-        emit_log(f"[API] Failed to broadcast status update: {e}")
+        emit_log(f"[API] Failed to broadcast status update: {e}", thread_id)
     
     # Flush Redis checkpoints to PostgreSQL on completion/error (non-blocking)
     if status in ["completed", "error"]:
@@ -511,12 +539,12 @@ async def _update_run_status(thread_id: str, status: str, error_message: Optiona
                 
                 success = await buffer.flush_to_postgres(thread_id, db_uri)
                 if success:
-                    emit_log(f"[API] Flushed checkpoints to PostgreSQL for {thread_id}")
+                    print(f"[API] Flushed checkpoints to PostgreSQL for {thread_id}")
                     
-                    # Clear memory to prevent memory leaks (checkpoints now in PostgreSQL)
+                    # Clear in-process memory to prevent leaks (checkpoints are now in PostgreSQL)
                     if hasattr(checkpointer, 'clear_thread_memory'):
                         checkpointer.clear_thread_memory(thread_id)
-                        emit_log(f"[API] Cleared memory for {thread_id}")
+                        print(f"[API] Cleared memory for {thread_id}")
                 else:
                     # CRITICAL: Notify user about checkpoint flush failure
                     error_msg = (
@@ -753,7 +781,6 @@ async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any], b
         async for event in app.astream(initial_state, config):
             # Check if we hit an interrupt
             if "__interrupt__" in event:
-                await publish_log(f"[API] Workflow interrupted", thread_id)
                 break
         
         # Check the actual state after workflow execution
@@ -766,38 +793,38 @@ async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any], b
             error_msg = data_store.get("_error", "Unknown error")
             failed_skill = data_store.get("_failed_skill")
             await _update_run_status(thread_id, "error", error_msg, failed_skill)
-            await publish_log(f"[API] Workflow failed for thread={thread_id}", thread_id)
+            await publish_log(f"❌ Workflow ended with an error.", thread_id)
             # Fire-and-forget callback (don't wait for completion)
             asyncio.create_task(_invoke_callback(thread_id))
             return data_store  # Return data_store even on failure
         # Determine if truly completed or paused at an interrupt
         elif not next_nodes or (len(next_nodes) == 1 and next_nodes[0] == "__end__"):
             await _update_run_status(thread_id, "completed")
-            await publish_log(f"[API] Workflow completed for thread={thread_id}", thread_id)
+            await publish_log(f"✅ Workflow completed successfully.", thread_id)
             # Fire-and-forget callback (don't wait for completion)
             asyncio.create_task(_invoke_callback(thread_id))
             return data_store  # Return final data_store
         elif "human_review" in next_nodes:
             await _update_run_status(thread_id, "paused")
-            await publish_log(f"[API] Workflow paused at human_review (HITL) for thread={thread_id}", thread_id)
+            await publish_log(f"⏸ Workflow paused — awaiting your review.", thread_id)
             return data_store  # Return data_store at pause point
         elif "await_callback" in next_nodes:
             await _update_run_status(thread_id, "paused")
-            await publish_log(f"[API] Workflow paused awaiting callback for thread={thread_id}", thread_id)
+            await publish_log(f"⏸ Workflow paused — awaiting external service response.", thread_id)
             return data_store  # Return data_store at pause point
         else:
-            await publish_log(f"[API] Workflow paused at {next_nodes} for thread={thread_id}", thread_id)
+            await publish_log(f"⏸ Workflow paused.", thread_id)
             return data_store  # Return data_store at pause point
             
     except asyncio.CancelledError:
-        await publish_log(f"[API] Workflow task cancelled for thread={thread_id}", thread_id)
+        await publish_log(f"🛑 Workflow cancelled.", thread_id)
         await _update_run_status(thread_id, "cancelled")
         # Fire-and-forget callback (don't wait for completion)
         asyncio.create_task(_invoke_callback(thread_id))
         raise
     except Exception as exc:
         # Log the error
-        await publish_log(f"[API] Workflow error for thread={thread_id}: {exc}", thread_id)
+        await publish_log(f"❌ Workflow error: {exc}", thread_id)
         
         # Update run status
         await _update_run_status(thread_id, "error", str(exc))
@@ -819,7 +846,7 @@ async def _run_workflow(initial_state: Dict[str, Any], config: Dict[str, Any], b
                 }
             })
             
-            await publish_log(f"[API] Workflow marked as failed and stopped for thread={thread_id}", thread_id)
+            await publish_log(f"❌ Workflow stopped due to a failure.", thread_id)
             
             # Get updated state to return
             final_state = await app.aget_state(config)
@@ -899,9 +926,9 @@ async def approve_step(
     # If the human edited data, update the state first
     if req.updated_data:
         await app.aupdate_state(config, {"data_store": req.updated_data})
-        await publish_log(f"[API] Human updated data for thread={thread_id} by user={current_user.username}", thread_id)
+        await publish_log(f"Review data updated by {current_user.username}.", thread_id)
     
-    await publish_log(f"[API] Human approval received; resuming thread={thread_id} by user={current_user.username}", thread_id)
+    await publish_log(f"▶ Approval received from {current_user.username}. Resuming workflow…", thread_id)
     
     # Create background task to resume workflow with broadcast
     async def _resume_workflow():
@@ -919,7 +946,6 @@ async def approve_step(
             
             # Update status based on where workflow ended up
             if not next_nodes or (len(next_nodes) == 1 and next_nodes[0] == "__end__"):
-                await publish_log(f"[API] Workflow completed after approval for thread={thread_id}", thread_id)
                 # Check if it failed or completed successfully
                 data_store = state.values.get("data_store", {})
                 if data_store.get("_status") == "failed":
@@ -929,23 +955,25 @@ async def approve_step(
                         data_store.get("_error", "Workflow failed"),
                         data_store.get("_failed_skill")
                     )
+                    await publish_log(f"❌ Workflow ended with an error.", thread_id)
                 else:
                     await _update_run_status(thread_id, "completed")
+                    await publish_log(f"✅ Workflow completed successfully.", thread_id)
             elif "human_review" in next_nodes:
-                await publish_log(f"[API] Workflow paused again at human_review for thread={thread_id}", thread_id)
                 await _update_run_status(thread_id, "paused")
+                await publish_log(f"⏸ Workflow paused — awaiting another review.", thread_id)
             elif "await_callback" in next_nodes:
-                await publish_log(f"[API] Workflow paused awaiting callback for thread={thread_id}", thread_id)
                 await _update_run_status(thread_id, "paused")
+                await publish_log(f"⏸ Workflow paused — awaiting external service response.", thread_id)
             else:
-                await publish_log(f"[API] Workflow resumed and paused at {next_nodes} for thread={thread_id}", thread_id)
                 await _update_run_status(thread_id, "paused")
+                await publish_log(f"⏸ Workflow paused.", thread_id)
             
             # Return final state for await_response
             return state.values.get("data_store", {})
         except Exception as e:
             error_msg = str(e)
-            emit_log(f"[API] Error resuming workflow for thread={thread_id}: {error_msg}")
+            await publish_log(f"❌ An error occurred while resuming the workflow: {error_msg}", thread_id)
             await _update_run_status(thread_id, "error", error_msg)
             return None
     
@@ -1130,6 +1158,44 @@ async def get_logs(thread_id: str, current_user: AuthenticatedUser, limit: int =
     return {"logs": logs, "count": len(logs)}
 
 
+# --- SSE streams (when BROADCASTER_TYPE=sse) ---
+
+@api.get("/api/runs/{thread_id}/logs/stream")
+async def stream_run_logs(thread_id: str, current_user: AuthenticatedUser, workspace_id: Optional[str] = None):
+    """SSE stream of logs for a specific run. No historical replay; only new logs after connect."""
+    workspace_service = get_workspace_service()
+    workspace = await workspace_service.resolve_workspace(current_user.id, workspace_id)
+    await _check_run_ownership(thread_id, current_user.id, current_user.is_admin, workspace.id)
+    from services.websocket import sse_broadcast
+    return StreamingResponse(
+        sse_broadcast.stream_logs_sse(thread_id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
+@api.get("/api/logs/stream")
+async def stream_logs_global(current_user: AuthenticatedUser):
+    """SSE stream of all logs (global). No historical replay; only new logs after connect."""
+    from services.websocket import sse_broadcast
+    return StreamingResponse(
+        sse_broadcast.stream_logs_sse(None),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
+@api.get("/api/admin-events/stream")
+async def stream_admin_events(current_user: AuthenticatedUser):
+    """SSE stream of admin events (global)."""
+    from services.websocket import sse_broadcast
+    return StreamingResponse(
+        sse_broadcast.stream_admin_sse(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
 @api.get("/admin/runs/{thread_id}/metadata")
 async def get_run_metadata_endpoint(thread_id: str, current_user: AuthenticatedUser, workspace_id: Optional[str] = None):
     """Get run metadata for a specific thread."""
@@ -1153,11 +1219,11 @@ class RerunRequest(BaseModel):
 async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: RerunRequest = Body(default=RerunRequest()), workspace_id: Optional[str] = None):
     """
     Rerun a workflow with ACK handshake for instant UI feedback.
-    
+
     Flow:
-    1. Send ACK via Pusher immediately (UI can redirect)
+    1. Send ACK via SSE admin stream immediately (UI can redirect)
     2. Save metadata and create checkpoint
-    3. Run workflow (sends progress updates via Pusher)
+    3. Run workflow (sends progress updates via SSE)
     4. Return response
     """
     import uuid
@@ -1200,7 +1266,7 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: R
         ack_key=req.ack_key,
     )
     
-    # STEP 2: Send ACK via Pusher (UI will receive and redirect)
+    # STEP 2: Send ACK via SSE admin stream (UI will receive and redirect)
     if req.ack_key:
         await broadcast_run_event({
             "type": "ack",
@@ -1263,11 +1329,9 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: R
     })
     
     # STEP 6: Log start
-    await publish_log(f"[API] Rerun requested from thread={thread_id} -> new thread={new_thread_id} by user={current_user.username}", new_thread_id)
-    await publish_log(f"[API] LLM model selected: {global_llm_model}", new_thread_id)
-    await publish_log(f"[API] Broadcast mode: {'enabled' if req.broadcast else 'disabled (logs only)'}", new_thread_id)
+    await publish_log(f"▶ New run initiated by {current_user.username}. Using AI model: {global_llm_model}.", new_thread_id)
     
-    # STEP 7: Run workflow (will send progress updates via Pusher only if broadcast enabled)
+    # STEP 7: Run workflow (sends progress updates via SSE)
     task = asyncio.create_task(_run_workflow(initial_state, config, broadcast=req.broadcast))
     RUN_TASKS[new_thread_id] = task
     task.add_done_callback(lambda t, thread_id=new_thread_id: RUN_TASKS.pop(thread_id, None))
@@ -1424,8 +1488,8 @@ async def health_check():
 async def broadcaster_status():
     """
     Get real-time broadcaster status and statistics.
-    
-    Returns information about Pusher/Ably broadcaster availability, message counts, etc.
+
+    Returns SSE subscriber counts and availability.
     """
     try:
         from services.websocket import get_broadcaster_status
