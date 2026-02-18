@@ -241,13 +241,18 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
         # Wait for workflow to complete before returning
         try:
             data_store = await task
+            
+            # Get final status from run_metadata
+            final_metadata = await _get_run_metadata(req.thread_id)
+            final_status = final_metadata.get("status", "unknown")
+            
             return {
-                "status": "completed", 
+                "status": final_status,
                 "thread_id": req.thread_id, 
                 "run_name": run_name, 
                 "broadcast": req.broadcast,
                 "workspace_id": workspace_id,
-                "data_store": data_store  # Return final data_store
+                "data_store": data_store
             }
         except Exception as exc:
             # If workflow failed, return error status
