@@ -112,7 +112,9 @@ async def publish_log(message: str, thread_id: Optional[str] = None, level: str 
     asyncio.create_task(_persist_log(message, tid, level))
     
     # Check if broadcasting is enabled (from context)
-    if not _broadcast_enabled.get():
+    # Note: For workflow nodes, broadcast flag should be passed explicitly via state
+    broadcast_enabled = _broadcast_enabled.get()
+    if not broadcast_enabled:
         return  # Skip broadcast, but still persist to DB
     
     # Send structured message to Socket.IO server

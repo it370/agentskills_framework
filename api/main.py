@@ -146,6 +146,7 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
         workspace_id=workspace_id,
         llm_model=req.llm_model,  # Save as-is, validate next
         callback_url=req.callback_url,  # Store callback_url in metadata
+        broadcast=req.broadcast,  # Store broadcast setting
     )
     
     # STEP 2: Send ACK via Pusher (UI will receive and redirect)
@@ -333,6 +334,7 @@ async def _save_run_metadata(
     workspace_id: Optional[str] = None,
     llm_model: Optional[str] = None,
     callback_url: Optional[str] = None,
+    broadcast: bool = False,  # Add broadcast parameter
 ):
     """Save run metadata to database using connection pool for rerun functionality."""
     try:
@@ -360,10 +362,11 @@ async def _save_run_metadata(
                     if row:
                         rerun_count = row[0] + 1
                 
-                # Build metadata JSONB with callback_url if provided
+                # Build metadata JSONB with callback_url and broadcast flag
                 metadata = {}
                 if callback_url:
                     metadata['callback_url'] = callback_url
+                metadata['broadcast'] = broadcast  # Store broadcast setting
                 
                 # Insert run metadata
                 cur.execute("""
@@ -386,7 +389,6 @@ async def _save_run_metadata(
     
     try:
         await asyncio.to_thread(_save_sync)
-        # emit_log(f"[API] Saved run metadata for thread={thread_id}, name={run_name}, user_id={user_id}")
     except Exception as e:
         emit_log(f"[API] Failed to save run metadata: {e}")
 
@@ -862,6 +864,10 @@ async def approve_step(
     # Check if user owns this run
     await _check_run_ownership(thread_id, current_user.id, current_user.is_admin, workspace.id)
     
+    # Get broadcast setting from run_metadata
+    metadata = await _get_run_metadata(thread_id)
+    broadcast = metadata.get("metadata", {}).get("broadcast", False)
+    
     # Update status to 'running' when resuming from HITL pause
     await _update_run_status(thread_id, "running")
     
@@ -872,38 +878,58 @@ async def approve_step(
     
     await publish_log(f"[API] Human approval received; resuming thread={thread_id} by user={current_user.username}", thread_id)
     
-    # Resume the graph using astream for real-time logs
-    async for _ in app.astream(None, config):
-        pass  # Logs are emitted in real-time as workflow resumes
+    # Create background task to resume workflow with broadcast
+    async def _resume_workflow():
+        # Restore log context with broadcast
+        set_log_context(thread_id, broadcast=broadcast)
+        
+        try:
+            # Resume the graph using astream for real-time logs
+            async for _ in app.astream(None, config):
+                pass  # Logs are emitted in real-time as workflow resumes
+            
+            # Check the state after resuming
+            state = await app.aget_state(config)
+            next_nodes = state.next or []
+            
+            # Update status based on where workflow ended up
+            if not next_nodes or (len(next_nodes) == 1 and next_nodes[0] == "__end__"):
+                await publish_log(f"[API] Workflow completed after approval for thread={thread_id}", thread_id)
+                # Check if it failed or completed successfully
+                data_store = state.values.get("data_store", {})
+                if data_store.get("_status") == "failed":
+                    await _update_run_status(
+                        thread_id, 
+                        "error", 
+                        data_store.get("_error", "Workflow failed"),
+                        data_store.get("_failed_skill")
+                    )
+                else:
+                    await _update_run_status(thread_id, "completed")
+            elif "human_review" in next_nodes:
+                await publish_log(f"[API] Workflow paused again at human_review for thread={thread_id}", thread_id)
+                await _update_run_status(thread_id, "paused")
+            elif "await_callback" in next_nodes:
+                await publish_log(f"[API] Workflow paused awaiting callback for thread={thread_id}", thread_id)
+                await _update_run_status(thread_id, "paused")
+            else:
+                await publish_log(f"[API] Workflow resumed and paused at {next_nodes} for thread={thread_id}", thread_id)
+                await _update_run_status(thread_id, "paused")
+        except Exception as e:
+            error_msg = str(e)
+            emit_log(f"[API] Error resuming workflow for thread={thread_id}: {error_msg}")
+            await _update_run_status(thread_id, "error", error_msg)
     
-    # Check the state after resuming
-    state = await app.aget_state(config)
-    next_nodes = state.next or []
+    # Start background task
+    task = asyncio.create_task(_resume_workflow())
+    RUN_TASKS[thread_id] = task
+    task.add_done_callback(lambda t, tid=thread_id: RUN_TASKS.pop(tid, None))
     
-    # Update status based on where workflow ended up
-    if not next_nodes or (len(next_nodes) == 1 and next_nodes[0] == "__end__"):
-        await publish_log(f"[API] Workflow completed after approval for thread={thread_id}", thread_id)
-        # Check if it failed or completed successfully
-        data_store = state.values.get("data_store", {})
-        if data_store.get("_status") == "failed":
-            await _update_run_status(
-                thread_id, 
-                "error", 
-                data_store.get("_error", "Workflow failed"),
-                data_store.get("_failed_skill")
-            )
-        else:
-            await _update_run_status(thread_id, "completed")
-    elif "human_review" in next_nodes:
-        await publish_log(f"[API] Workflow paused again at human_review for thread={thread_id}", thread_id)
-        await _update_run_status(thread_id, "paused")
-    elif "await_callback" in next_nodes:
-        await publish_log(f"[API] Workflow paused awaiting callback for thread={thread_id}", thread_id)
-        await _update_run_status(thread_id, "paused")
-    else:
-        await publish_log(f"[API] Workflow resumed and paused at {next_nodes} for thread={thread_id}", thread_id)
-    
-    return {"status": "resumed"}
+    return {
+        "status": "resumed",
+        "broadcast": broadcast,
+        "message": "Workflow resuming in background"
+    }
 
 class CallbackPayload(BaseModel):
     thread_id: str
@@ -1125,6 +1151,7 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: R
         workspace_id=workspace.id,
         llm_model=metadata.get("llm_model"),
         callback_url=req.callback_url,  # Use callback_url from rerun request if provided
+        broadcast=req.broadcast,  # Store broadcast setting
     )
     
     # STEP 2: Send ACK via Pusher (UI will receive and redirect)

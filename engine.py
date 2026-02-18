@@ -2062,6 +2062,12 @@ def get_skill_registry_for_workspace(workspace_id: Optional[str]) -> List[Skill]
 # --- 3. NODES ---
 
 async def autonomous_planner(state: AgentState):
+    # Restore broadcast context from state
+    broadcast = state.get("_broadcast", False)
+    if broadcast:
+        from log_stream import set_log_context
+        set_log_context(state.get("thread_id"), broadcast=True)
+    
     await publish_log(f"\n[PLANNER] Assessing state. Current data: {list(state['data_store'].keys())}")
     
     workspace_id = state.get("workspace_id")
@@ -2418,6 +2424,12 @@ async def _execute_skill_core(skill_meta: Skill, input_ctx: Dict[str, Any], stat
 
 
 async def skilled_executor(state: AgentState):
+    # Restore broadcast context from state
+    broadcast = state.get("_broadcast", False)
+    if broadcast:
+        from log_stream import set_log_context
+        set_log_context(state.get("thread_id"), broadcast=True)
+    
     skill_name = state["active_skill"]
     workspace_id = state.get("workspace_id")
     registry = get_skill_registry_for_workspace(workspace_id)
