@@ -4,6 +4,7 @@ import threading
 import json
 from typing import Any, Dict, Optional
 from pathlib import Path
+from datetime import datetime
 
 import httpx
 from fastapi import Body, FastAPI, HTTPException
@@ -489,10 +490,54 @@ async def _update_run_status(thread_id: str, status: str, error_message: Optiona
                     if hasattr(checkpointer, 'clear_thread_memory'):
                         checkpointer.clear_thread_memory(thread_id)
                         emit_log(f"[API] Cleared memory for {thread_id}")
+                else:
+                    # CRITICAL: Notify user about checkpoint flush failure
+                    error_msg = (
+                        "⚠️ WARNING: Failed to save execution logs to database. "
+                        "The workflow completed but logs may be incomplete. "
+                        "Please contact support if you need detailed execution history."
+                    )
+                    emit_log(f"[API] {error_msg}", thread_id=thread_id, level="ERROR")
+                    
+                    # Broadcast error notification to user's UI
+                    try:
+                        await broadcast_run_event({
+                            "thread_id": thread_id,
+                            "type": "checkpoint_flush_error",
+                            "message": error_msg,
+                            "severity": "warning",
+                            "timestamp": datetime.utcnow().isoformat()
+                        })
+                    except Exception as broadcast_err:
+                        emit_log(f"[API] Failed to broadcast checkpoint error: {broadcast_err}")
                 
                 await buffer.close()
         except Exception as e:
-            emit_log(f"[API] Error flushing checkpoints for {thread_id}: {e}")
+            # CRITICAL: Catch-all for any unexpected error during checkpoint flushing
+            error_msg = (
+                f"⚠️ CRITICAL ERROR: Checkpoint flush process failed for thread {thread_id}. "
+                f"Logs and execution history may not be saved. Error: {str(e)[:200]}"
+            )
+            emit_log(f"[API] {error_msg}", thread_id=thread_id, level="ERROR")
+            
+            # Broadcast critical error to user's UI
+            try:
+                await broadcast_run_event({
+                    "thread_id": thread_id,
+                    "type": "checkpoint_flush_critical_error",
+                    "message": (
+                        "⚠️ CRITICAL: Failed to save execution data. "
+                        "Please contact support immediately. This workflow's logs may be lost."
+                    ),
+                    "severity": "critical",
+                    "error_details": str(e)[:500],
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+            except Exception as broadcast_err:
+                emit_log(f"[API] Failed to broadcast critical error: {broadcast_err}")
+            
+            import traceback
+            traceback.print_exc()
 
 
 async def _get_run_metadata(thread_id: str, workspace_id: Optional[str] = None) -> Optional[Dict[str, Any]]:

@@ -18,11 +18,37 @@ Features:
 import os
 import json
 import asyncio
+import math
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 # Use sync Redis client
 import redis
+
+
+def sanitize_for_json(obj: Any) -> Any:
+    """
+    Recursively sanitize data structure to be JSON-compliant.
+    
+    Converts NaN, Infinity, and -Infinity to None to prevent JSON serialization errors.
+    PostgreSQL JSONB also rejects NaN/Infinity values.
+    
+    Args:
+        obj: Any Python object (dict, list, float, etc.)
+        
+    Returns:
+        Sanitized object safe for JSON serialization
+    """
+    if isinstance(obj, dict):
+        return {k: sanitize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sanitize_for_json(item) for item in obj]
+    elif isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None  # Convert NaN/Inf to null in JSON
+        return obj
+    else:
+        return obj
 
 
 class RedisCheckpointBuffer:
@@ -110,8 +136,11 @@ class RedisCheckpointBuffer:
             
             key = self._checkpoint_key(thread_id)
             
+            # Sanitize data to prevent NaN/Infinity JSON errors
+            sanitized_data = sanitize_for_json(checkpoint_data)
+            
             # Serialize checkpoint
-            checkpoint_json = json.dumps(checkpoint_data)
+            checkpoint_json = json.dumps(sanitized_data)
             
             # Add to list
             client.rpush(key, checkpoint_json)
@@ -212,6 +241,10 @@ class RedisCheckpointBuffer:
                             else:
                                 parent_checkpoint_id = None
                             
+                            # Sanitize checkpoint and metadata before JSON serialization
+                            sanitized_checkpoint = sanitize_for_json(checkpoint)
+                            sanitized_metadata = sanitize_for_json(metadata)
+                            
                             cur.execute("""
                                 INSERT INTO checkpoints 
                                 (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata)
@@ -226,8 +259,8 @@ class RedisCheckpointBuffer:
                                 checkpoint_id,
                                 parent_checkpoint_id,
                                 'checkpoint',
-                                json.dumps(checkpoint),
-                                json.dumps(metadata)
+                                json.dumps(sanitized_checkpoint),
+                                json.dumps(sanitized_metadata)
                             ))
             
             # Execute in thread pool
