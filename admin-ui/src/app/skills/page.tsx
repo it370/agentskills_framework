@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { fetchSkills, deleteSkill, reloadSkills, Skill } from "../../lib/api";
 import DashboardLayout from "../../components/DashboardLayout";
 import { useAppSelector } from "@/store/hooks";
+import Tooltip from "../../components/Tooltip";
 
 export default function SkillsPage() {
   const router = useRouter();
@@ -314,131 +315,328 @@ export default function SkillsPage() {
                 <table className="min-w-full table-auto divide-y divide-gray-200 min-w-[1000px]">
                   <thead className="bg-gray-50">
                     <tr>
+                      <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-[96px]">
+                        Actions
+                      </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-[100px] truncate">
                         Skill Name
                       </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-[320px]">
                         Description
                       </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Executor
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-[120px]">
+                        Meta
                       </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Action Type
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Source
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Visibility
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Actions
+                      <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-[140px]">
+                        Execution
                       </th>
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
                     {paginatedSkills.map((skill) => (
                       <tr key={skill.name} className="hover:bg-gray-50">
-                        <td className="px-6 py-4 w-[150px]">
-                          <div className="text-sm font-medium text-gray-900 w-[220px] truncate">
-                            {skill.name}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 w-[320px]">
-                          <div className="text-xs text-gray-600 max-w-[320px] truncate">
-                            {skill.description}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <span
-                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                              skill.executor === "llm"
-                                ? "bg-purple-100 text-purple-800"
-                                : skill.executor === "rest"
-                                ? "bg-orange-100 text-orange-800"
-                                : "bg-pink-100 text-pink-800"
-                            }`}
-                          >
-                            {skill.executor.toUpperCase()}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          {skill.executor === "action" && skill.action_config?.type ? (
-                            <span
-                              className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                                skill.action_config.type === "data_query"
-                                  ? "bg-cyan-100 text-cyan-800"
-                                  : skill.action_config.type === "data_pipeline"
-                                  ? "bg-indigo-100 text-indigo-800"
-                                  : "bg-teal-100 text-teal-800"
-                              }`}
-                            >
-                              {skill.action_config.type === "data_query"
-                                ? "Data Query"
-                                : skill.action_config.type === "data_pipeline"
-                                ? "Pipeline"
-                                : "Python"}
-                            </span>
-                          ) : (
-                            <span className="text-xs text-gray-400">—</span>
-                          )}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <span
-                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                              skill.source === "database"
-                                ? "bg-green-100 text-green-800"
-                                : "bg-blue-100 text-blue-800"
-                            }`}
-                          >
-                            {skill.source === "database" ? "Database" : "Filesystem"}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <span
-                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                              skill.is_public
-                                ? "bg-emerald-100 text-emerald-800"
-                                : "bg-gray-100 text-gray-700"
-                            }`}
-                          >
-                            {skill.is_public ? "Public" : "Workspace-only"}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm">
-                          <div className="flex items-center gap-2">
-                            <Link
-                              href={`/skills/${encodeURIComponent(skill.id || skill.name)}`}
-                              className="text-blue-600 hover:text-blue-800"
-                            >
-                              View
-                            </Link>
+                        <td className="px-3 py-4 whitespace-nowrap text-sm">
+                          <div className="flex items-center gap-1">
                             {skill.source === "database" && (
                               <>
-                                <span className="text-gray-300">|</span>
-                                <Link
-                                  href={`/skills/${encodeURIComponent(
-                                    skill.id || skill.name
-                                  )}/edit`}
-                                  className="text-blue-600 hover:text-blue-800"
-                                >
-                                  Edit
-                                </Link>
-                                <span className="text-gray-300">|</span>
-                                <button
-                                  onClick={() => handleDelete(skill.id || skill.name, skill.name)}
-                                  disabled={deletingSkill === (skill.id || skill.name)}
-                                  className="text-red-600 hover:text-red-800 disabled:opacity-50"
-                                >
-                                  {deletingSkill === skill.name
-                                    ? "Deleting..."
-                                    : "Delete"}
-                                </button>
+                                <Tooltip content="Edit">
+                                  <Link
+                                    href={`/skills/${encodeURIComponent(skill.id || skill.name)}/edit`}
+                                    className="inline-flex items-center justify-center h-8 w-8 rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                                    aria-label={`Edit ${skill.name}`}
+                                  >
+                                    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={2}
+                                        d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5"
+                                      />
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={2}
+                                        d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"
+                                      />
+                                    </svg>
+                                  </Link>
+                                </Tooltip>
+
+                                <Tooltip content={deletingSkill === (skill.id || skill.name) ? "Deleting..." : "Delete"}>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDelete(skill.id || skill.name, skill.name)}
+                                    disabled={deletingSkill === (skill.id || skill.name)}
+                                    className="inline-flex items-center justify-center h-8 w-8 rounded-md text-gray-500 hover:bg-gray-100 hover:text-red-700 disabled:opacity-50"
+                                    aria-label={`Delete ${skill.name}`}
+                                  >
+                                    {deletingSkill === (skill.id || skill.name) ? (
+                                      <svg className="h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                        <path
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                          strokeWidth={2}
+                                          d="M12 4v2m0 14v-2m8-6h-2M6 12H4m14.364 6.364-1.414-1.414M7.05 7.05 5.636 5.636m12.728 0-1.414 1.414M7.05 16.95l-1.414 1.414"
+                                        />
+                                      </svg>
+                                    ) : (
+                                      <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                        <path
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                          strokeWidth={2}
+                                          d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M9 7h6m-7 0V5a2 2 0 012-2h2a2 2 0 012 2v2"
+                                        />
+                                      </svg>
+                                    )}
+                                  </button>
+                                </Tooltip>
                               </>
                             )}
                           </div>
                         </td>
+                        <td className="px-6 py-5 w-[150px]">
+                          <div className="text-sm font-medium text-gray-900 w-[220px] truncate">
+                            <Link
+                              href={`/skills/${encodeURIComponent(skill.id || skill.name)}`}
+                              className="hover:underline underline-offset-2"
+                              title="View details"
+                            >
+                              {skill.name}
+                            </Link>
+                          </div>
+                        </td>
+                        <td className="px-6 py-5 w-[320px]">
+                          <div className="text-xs text-gray-600 max-w-[320px] truncate">
+                            {skill.description}
+                          </div>
+                        </td>
+                        <td className="px-6 py-5 whitespace-nowrap">
+                          <div className="flex items-center gap-2">
+                            {/* Source */}
+                            <Tooltip content={skill.source === "database" ? "Database" : "Filesystem"}>
+                              <span
+                                className="inline-flex items-center justify-center h-8 w-8 rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                                aria-label={skill.source === "database" ? "Database skill" : "Filesystem skill"}
+                              >
+                                {skill.source === "database" ? (
+                                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M4 7c0-2 3.582-3 8-3s8 1 8 3-3.582 3-8 3-8-1-8-3z"
+                                    />
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M4 7v10c0 2 3.582 3 8 3s8-1 8-3V7"
+                                    />
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M4 12c0 2 3.582 3 8 3s8-1 8-3"
+                                    />
+                                  </svg>
+                                ) : (
+                                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z"
+                                    />
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M14 2v6h6"
+                                    />
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M8 13h8M8 17h8"
+                                    />
+                                  </svg>
+                                )}
+                              </span>
+                            </Tooltip>
+
+                            {/* Visibility */}
+                            <Tooltip content={skill.is_public ? "Public" : "Workspace-only"}>
+                              <span
+                                className="inline-flex items-center justify-center h-8 w-8 rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                                aria-label={skill.is_public ? "Public skill" : "Workspace-only skill"}
+                              >
+                                {skill.is_public ? (
+                                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                                    />
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M3.6 9h16.8M3.6 15h16.8"
+                                    />
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M12 3c2.5 2.2 4 5.4 4 9s-1.5 6.8-4 9c-2.5-2.2-4-5.4-4-9s1.5-6.8 4-9z"
+                                    />
+                                  </svg>
+                                ) : (
+                                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M12 11V7a4 4 0 00-8 0v4"
+                                    />
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M6 11h12a2 2 0 012 2v6a2 2 0 01-2 2H6a2 2 0 01-2-2v-6a2 2 0 012-2z"
+                                    />
+                                  </svg>
+                                )}
+                              </span>
+                            </Tooltip>
+                          </div>
+                        </td>
+                        <td className="px-3 py-5 whitespace-nowrap">
+                          <div className="flex items-center gap-2">
+                            <Tooltip
+                              content={
+                                skill.executor === "llm"
+                                  ? "LLM"
+                                  : skill.executor === "rest"
+                                  ? "REST"
+                                  : "Action"
+                              }
+                            >
+                              <span
+                                className="inline-flex items-center justify-center h-8 w-8 rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                                aria-label={`Executor: ${skill.executor}`}
+                              >
+                                {skill.executor === "llm" ? (
+                                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M21 12c0 4-4 7-9 7a10 10 0 01-4-.8L3 20l1.8-4A7 7 0 013 12c0-4 4-7 9-7s9 3 9 7z"
+                                    />
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M8 12h.01M12 12h.01M16 12h.01"
+                                    />
+                                  </svg>
+                                ) : skill.executor === "rest" ? (
+                                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 0c2.21 0 4 4.477 4 10s-1.79 10-4 10-4-4.477-4-10 1.79-10 4-10zm-7.468 9h14.936M4.532 15h14.936"
+                                    />
+                                  </svg>
+                                ) : (
+                                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                                    />
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M10 8l6 4-6 4V8z"
+                                    />
+                                  </svg>
+                                )}
+                              </span>
+                            </Tooltip>
+
+                            {skill.executor === "action" && skill.action_config?.type ? (
+                              <Tooltip
+                                content={
+                                  skill.action_config.type === "data_query"
+                                    ? "Data Query"
+                                    : skill.action_config.type === "data_pipeline"
+                                    ? "Pipeline"
+                                    : skill.action_config.type === "python_function"
+                                    ? "Python"
+                                    : skill.action_config.type
+                                }
+                              >
+                                <span
+                                  className="inline-flex items-center justify-center h-8 w-8 rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                                  aria-label={`Action type: ${skill.action_config.type}`}
+                                >
+                                  {skill.action_config.type === "data_query" ? (
+                                    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={2}
+                                        d="M11 19a8 8 0 100-16 8 8 0 000 16z"
+                                      />
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={2}
+                                        d="M21 21l-4.35-4.35"
+                                      />
+                                    </svg>
+                                  ) : skill.action_config.type === "data_pipeline" ? (
+                                    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={2}
+                                        d="M6 3v6a3 3 0 003 3h9"
+                                      />
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={2}
+                                        d="M6 21a2 2 0 100-4 2 2 0 000 4zM6 5a2 2 0 100-4 2 2 0 000 4zM20 14a2 2 0 100-4 2 2 0 000 4z"
+                                      />
+                                    </svg>
+                                  ) : (
+                                    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={2}
+                                        d="M16 18l6-6-6-6"
+                                      />
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={2}
+                                        d="M8 6l-6 6 6 6"
+                                      />
+                                    </svg>
+                                  )}
+                                </span>
+                              </Tooltip>
+                            ) : null}
+                          </div>
+                        </td>                        
                       </tr>
                   ))}
                 </tbody>

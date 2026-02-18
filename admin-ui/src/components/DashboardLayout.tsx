@@ -5,10 +5,19 @@ import { usePathname } from "next/navigation";
 import { ReactNode, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import WorkspaceSwitcher from "./WorkspaceSwitcher";
+import { useAppDispatch, useAppSelector } from "@/store/hooks";
+import { toggleSidebarCollapsed } from "@/store/slices/uiSlice";
 
-export default function DashboardLayout({ children }: { children: ReactNode }) {
+export default function DashboardLayout({
+  children,
+}: {
+  children: ReactNode;
+}) {
   const pathname = usePathname();
   const { user } = useAuth();
+  const dispatch = useAppDispatch();
+  const sidebarCollapsed = useAppSelector((s) => s.ui.sidebarCollapsed);
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
 
   const navItems = [
     { name: "Runs", path: "/", icon: RocketIcon },
@@ -26,49 +35,135 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex h-screen bg-gray-50">
-      {/* Sidebar */}
-      <aside className="w-64 bg-gray-900 text-white flex flex-col">
-        <div className="p-6 border-b border-gray-800">
-          <h1 className="text-xl font-bold">AgentSkills</h1>
-          <p className="text-sm text-gray-400 mt-1">Orchestrator</p>
+      {/* Mobile drawer */}
+      {mobileDrawerOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setMobileDrawerOpen(false)}
+          />
+          <aside className="absolute left-0 top-0 h-full w-72 bg-gray-900 text-white flex flex-col shadow-xl">
+            <SidebarContent
+              pathname={pathname}
+              navItems={navItems}
+              collapsed={false}
+              onNavigate={() => setMobileDrawerOpen(false)}
+              onToggleCollapse={undefined}
+            />
+          </aside>
         </div>
-        <nav className="flex-1 p-4">
-          <ul className="space-y-2">
-            {navItems.map((item) => {
-              const isActive =
-                pathname === item.path ||
-                (item.path !== "/" && pathname.startsWith(item.path));
-              return (
-                <li key={item.path}>
-                  <Link
-                    href={item.path}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
-                      isActive
-                        ? "bg-gray-800 text-white"
-                        : "text-gray-400 hover:bg-gray-800 hover:text-white"
-                    }`}
-                  >
-                    <item.icon className="w-5 h-5" />
-                    <span className="font-medium">{item.name}</span>
-                  </Link>
-                </li>
-              );
-            })}
-          </ul>
-        </nav>
-        <div className="p-4 border-t border-gray-800">
-          <UserMenu />
-        </div>
+      )}
+
+      {/* Desktop sidebar */}
+      <aside
+        className={`hidden lg:flex bg-gray-900 text-white flex-col transition-[width] duration-200 ${
+          sidebarCollapsed ? "w-20" : "w-64"
+        }`}
+      >
+        <SidebarContent
+          pathname={pathname}
+          navItems={navItems}
+          collapsed={sidebarCollapsed}
+          onNavigate={undefined}
+          onToggleCollapse={() => dispatch(toggleSidebarCollapsed())}
+        />
       </aside>
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col overflow-hidden">
         <header className="h-14 px-4 border-b border-gray-200 bg-white flex items-center justify-between">
-          <WorkspaceSwitcher />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="lg:hidden inline-flex items-center justify-center rounded-md p-2 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+              onClick={() => setMobileDrawerOpen(true)}
+              aria-label="Open navigation menu"
+            >
+              <HamburgerIcon className="h-5 w-5" />
+            </button>
+            <WorkspaceSwitcher />
+          </div>
         </header>
         <main className="flex-1 overflow-auto">{children}</main>
       </div>
     </div>
+  );
+}
+
+function SidebarContent({
+  pathname,
+  navItems,
+  collapsed,
+  onNavigate,
+  onToggleCollapse,
+}: {
+  pathname: string;
+  navItems: Array<{ name: string; path: string; icon: (p: { className?: string }) => ReactNode }>;
+  collapsed: boolean;
+  onNavigate?: () => void;
+  onToggleCollapse?: () => void;
+}) {
+  return (
+    <>
+      <div className="p-4 border-b border-gray-800 flex items-center justify-between gap-2">
+        <div className={`min-w-0 ${collapsed ? "w-full flex justify-center" : ""}`}>
+          <div className={`flex items-center gap-2 ${collapsed ? "justify-center" : ""}`}>
+            {/* {collapsed && <div className="h-8 w-8 rounded-lg bg-blue-600 flex items-center justify-center font-bold">
+              A
+            </div>} */}
+            {!collapsed && (
+              <div className="min-w-0">
+                <h1 className="text-base font-bold leading-tight truncate">Agent Skills</h1>
+                <p className="text-xs text-gray-400 leading-tight truncate">Orchestrator v{process.env.NEXT_PUBLIC_APP_VERSION}</p>
+              </div>
+            )}
+          </div>
+        </div>
+        {onToggleCollapse && (
+          <button
+            type="button"
+            className="hidden lg:inline-flex items-center justify-center rounded-md p-2 text-gray-300 hover:bg-gray-800 hover:text-white"
+            onClick={onToggleCollapse}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={collapsed ? "Expand" : "Collapse"}
+          >
+            <CollapseIcon className={`h-5 w-5 ${collapsed ? "rotate-180" : ""}`} />
+          </button>
+        )}
+      </div>
+
+      <nav className="flex-1 p-3">
+        <ul className="space-y-2">
+          {navItems.map((item) => {
+            const isActive =
+              pathname === item.path || (item.path !== "/" && pathname.startsWith(item.path));
+            return (
+              <li key={item.path}>
+                <Link
+                  href={item.path}
+                  onClick={onNavigate}
+                  title={collapsed ? item.name : undefined}
+                  className={`flex items-center gap-3 rounded-lg transition-colors ${
+                    collapsed ? "px-3 py-3 justify-center" : "px-4 py-3"
+                  } ${
+                    isActive
+                      ? "bg-gray-800 text-white"
+                      : "text-gray-400 hover:bg-gray-800 hover:text-white"
+                  }`}
+                >
+                  <item.icon className="w-5 h-5" />
+                  {!collapsed && <span className="font-medium">{item.name}</span>}
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      </nav>
+
+      <div className="p-3 border-t border-gray-800">
+        <UserMenu collapsed={collapsed} />
+      </div>
+    </>
   );
 }
 
@@ -198,7 +293,7 @@ function AlertIcon({ className }: { className?: string }) {
   );
 }
 
-function UserMenu() {
+function UserMenu({ collapsed = false }: { collapsed?: boolean }) {
   const { user, logout } = useAuth();
   const [showMenu, setShowMenu] = useState(false);
 
@@ -215,30 +310,36 @@ function UserMenu() {
     <div className="relative">
       <button
         onClick={() => setShowMenu(!showMenu)}
-        className="flex items-center gap-3 px-4 py-3 w-full hover:bg-gray-800 rounded-lg transition"
+        className={`flex items-center gap-3 w-full hover:bg-gray-800 rounded-lg transition ${
+          collapsed ? "px-3 py-3 justify-center" : "px-4 py-3"
+        }`}
       >
         <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center">
           <span className="text-sm font-semibold">{initials}</span>
         </div>
-        <div className="flex-1 min-w-0 text-left">
-          <p className="text-sm font-medium truncate">{user.username}</p>
-          <p className="text-xs text-gray-400 truncate">{user.email}</p>
-        </div>
-        <svg
-          className={`w-4 h-4 text-gray-400 transition-transform ${
-            showMenu ? "rotate-180" : ""
-          }`}
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M19 9l-7 7-7-7"
-          />
-        </svg>
+        {!collapsed && (
+          <>
+            <div className="flex-1 min-w-0 text-left">
+              <p className="text-sm font-medium truncate">{user.username}</p>
+              <p className="text-xs text-gray-400 truncate">{user.email}</p>
+            </div>
+            <svg
+              className={`w-4 h-4 text-gray-400 transition-transform ${
+                showMenu ? "rotate-180" : ""
+              }`}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M19 9l-7 7-7-7"
+              />
+            </svg>
+          </>
+        )}
       </button>
 
       {showMenu && (
@@ -279,6 +380,22 @@ function UserMenu() {
         </>
       )}
     </div>
+  );
+}
+
+function HamburgerIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+    </svg>
+  );
+}
+
+function CollapseIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+    </svg>
   );
 }
 

@@ -284,7 +284,7 @@ export default function EditSkillPage() {
     <DashboardLayout>
       <div className="p-8">
         {/* Header */}
-        <div className="mb-6">
+        <div className="mb-6 max-w-4xl">
           <Link
             href={`/skills`}
             className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900 mb-4"
@@ -304,9 +304,28 @@ export default function EditSkillPage() {
             </svg>
             Back to Skills
           </Link>
-          <h1 className="text-3xl font-bold text-gray-900">
-            Edit Skill: {formData.name || skillId}
-          </h1>
+          <div className="flex items-center justify-between gap-4">
+            <h1 className="text-3xl font-bold text-gray-900">
+              Edit Skill: {formData.name || skillId}
+            </h1>
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={saving}
+              className="shrink-0 inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-semibold rounded-lg transition-colors"
+              title="Save changes"
+            >
+              {/* <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M5 13l4 4L19 7"
+                />
+              </svg> */}
+              {saving ? "Saving..." : "Save Changes"}
+            </button>
+          </div>
           <p className="mt-2 text-sm text-gray-600">
             Modify skill configuration and settings
           </p>
