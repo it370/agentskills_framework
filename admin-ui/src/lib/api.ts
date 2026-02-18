@@ -79,13 +79,20 @@ export async function approveStep(
   updatedData?: Record<string, any>
 ): Promise<{ status: string }> {
   const workspaceId = getActiveWorkspaceId();
+  
+  // Always enable broadcast from UI
+  const payload = {
+    updated_data: updatedData,
+    broadcast: true,
+  };
+  
   const res = await fetch(withWorkspace(`${API_BASE}/approve/${threadId}`, workspaceId), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...getAuthHeaders(),
     },
-    body: updatedData ? JSON.stringify(updatedData) : null,
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     throw new Error(`Failed to approve step for thread: ${threadId}`);

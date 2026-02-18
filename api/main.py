@@ -144,9 +144,11 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
         run_name=run_name,
         user_id=current_user.id,
         workspace_id=workspace_id,
-        llm_model=req.llm_model,  # Save as-is, validate next
-        callback_url=req.callback_url,  # Store callback_url in metadata
-        broadcast=req.broadcast,  # Store broadcast setting
+        llm_model=req.llm_model,
+        callback_url=req.callback_url,
+        broadcast=req.broadcast,
+        await_response=req.await_response,
+        ack_key=req.ack_key,
     )
     
     # STEP 2: Send ACK via Pusher (UI will receive and redirect)
@@ -194,8 +196,11 @@ async def start_process(req: StartRequest, current_user: AuthenticatedUser):
         run_name=run_name,
         user_id=current_user.id,
         workspace_id=workspace_id,
-        llm_model=global_llm_model,  # Save validated model
-        callback_url=req.callback_url,  # Store callback_url in metadata
+        llm_model=global_llm_model,
+        callback_url=req.callback_url,
+        broadcast=req.broadcast,
+        await_response=req.await_response,
+        ack_key=req.ack_key,
     )
 
     # STEP 4: Create initial checkpoint
@@ -334,7 +339,9 @@ async def _save_run_metadata(
     workspace_id: Optional[str] = None,
     llm_model: Optional[str] = None,
     callback_url: Optional[str] = None,
-    broadcast: bool = False,  # Add broadcast parameter
+    broadcast: bool = False,
+    await_response: bool = False,
+    ack_key: Optional[str] = None,
 ):
     """Save run metadata to database using connection pool for rerun functionality."""
     try:
@@ -362,11 +369,15 @@ async def _save_run_metadata(
                     if row:
                         rerun_count = row[0] + 1
                 
-                # Build metadata JSONB with callback_url and broadcast flag
-                metadata = {}
+                # Build metadata JSONB with all request payload parameters
+                metadata = {
+                    'broadcast': broadcast,
+                    'await_response': await_response,
+                }
                 if callback_url:
                     metadata['callback_url'] = callback_url
-                metadata['broadcast'] = broadcast  # Store broadcast setting
+                if ack_key:
+                    metadata['ack_key'] = ack_key
                 
                 # Insert run metadata
                 cur.execute("""
@@ -850,11 +861,16 @@ async def get_status(thread_id: str, current_user: AuthenticatedUser, workspace_
         "failed_skill": failed_skill
     }
 
+class ApproveRequest(BaseModel):
+    updated_data: Optional[Dict[str, Any]] = None  # Updated data_store values
+    broadcast: Optional[bool] = None  # Override broadcast setting (if not provided, uses saved value)
+    await_response: Optional[bool] = None  # Override await_response setting (if not provided, uses saved value)
+
 @api.post("/approve/{thread_id}")
 async def approve_step(
     thread_id: str,
     current_user: AuthenticatedUser,
-    updated_data: Optional[Dict[str, Any]] = Body(None),
+    req: ApproveRequest = Body(default=ApproveRequest()),
     workspace_id: Optional[str] = None,
 ):
     workspace_service = get_workspace_service()
@@ -864,16 +880,20 @@ async def approve_step(
     # Check if user owns this run
     await _check_run_ownership(thread_id, current_user.id, current_user.is_admin, workspace.id)
     
-    # Get broadcast setting from run_metadata
+    # Get settings from run_metadata
     metadata = await _get_run_metadata(thread_id)
-    broadcast = metadata.get("metadata", {}).get("broadcast", False)
+    saved_metadata = metadata.get("metadata", {})
+    
+    # Use provided values or fall back to saved values
+    broadcast = req.broadcast if req.broadcast is not None else saved_metadata.get("broadcast", False)
+    await_response = req.await_response if req.await_response is not None else saved_metadata.get("await_response", False)
     
     # Update status to 'running' when resuming from HITL pause
     await _update_run_status(thread_id, "running")
     
     # If the human edited data, update the state first
-    if updated_data:
-        await app.aupdate_state(config, {"data_store": updated_data})
+    if req.updated_data:
+        await app.aupdate_state(config, {"data_store": req.updated_data})
         await publish_log(f"[API] Human updated data for thread={thread_id} by user={current_user.username}", thread_id)
     
     await publish_log(f"[API] Human approval received; resuming thread={thread_id} by user={current_user.username}", thread_id)
@@ -915,12 +935,31 @@ async def approve_step(
             else:
                 await publish_log(f"[API] Workflow resumed and paused at {next_nodes} for thread={thread_id}", thread_id)
                 await _update_run_status(thread_id, "paused")
+            
+            # Return final state for await_response
+            return state.values.get("data_store", {})
         except Exception as e:
             error_msg = str(e)
             emit_log(f"[API] Error resuming workflow for thread={thread_id}: {error_msg}")
             await _update_run_status(thread_id, "error", error_msg)
+            return None
     
-    # Start background task
+    # If await_response is True, wait for completion
+    if await_response:
+        data_store = await _resume_workflow()
+        
+        # Get final status
+        final_metadata = await _get_run_metadata(thread_id)
+        final_status = final_metadata.get("status", "unknown")
+        
+        return {
+            "status": final_status,
+            "thread_id": thread_id,
+            "broadcast": broadcast,
+            "data_store": data_store
+        }
+    
+    # Otherwise, start background task (fire-and-forget)
     task = asyncio.create_task(_resume_workflow())
     RUN_TASKS[thread_id] = task
     task.add_done_callback(lambda t, tid=thread_id: RUN_TASKS.pop(tid, None))
@@ -1150,8 +1189,10 @@ async def rerun_workflow(thread_id: str, current_user: AuthenticatedUser, req: R
         user_id=current_user.id,
         workspace_id=workspace.id,
         llm_model=metadata.get("llm_model"),
-        callback_url=req.callback_url,  # Use callback_url from rerun request if provided
-        broadcast=req.broadcast,  # Store broadcast setting
+        callback_url=req.callback_url,
+        broadcast=req.broadcast,
+        await_response=False,  # Rerun doesn't support await_response
+        ack_key=req.ack_key,
     )
     
     # STEP 2: Send ACK via Pusher (UI will receive and redirect)
