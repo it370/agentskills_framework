@@ -34,6 +34,31 @@ export type RunEvent = {
   status?: string;  // For status_updated events
   run_name?: string;  // For ack and run_started events
   event?: string;  // Legacy field name (some events use 'event' instead of 'type')
+  event_id?: string;
+  parent_event_id?: string;
+  phase?: string;
+  node_kind?: string;
+  step_type?: string;
+  execution_mode?: "serial" | "parallel" | "parallel_group";
+  agent_name?: string;
+  source?: string;
+  message?: string;
+  reasoning?: string;
+  pipeline_id?: string;
+  pipeline_step_id?: string;
+  parallel_group_id?: string;
+  branch_id?: string;
+  parallel_branch_index?: number;
+  parallel_branch_count?: number;
+  inputs?: Record<string, any>;
+  outputs?: Record<string, any>;
+  consumes_from?: string[];
+  rich?: {
+    images?: string[];
+    urls?: string[];
+    json?: any;
+    wkt?: string[];
+  };
 };
 
 export type RunListResponse = { runs: (CheckpointTuple | RunSummary)[] };

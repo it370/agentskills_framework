@@ -6,6 +6,7 @@ import Link from "next/link";
 import { approveStep } from "../../../lib/api";
 import DashboardLayout from "../../../components/DashboardLayout";
 import RerunContextMenu from "../../../components/RerunContextMenu";
+import AgenticRunView from "../../../components/AgenticRunView";
 import { useRun } from "../../../contexts/RunContext";
 import { useAppSelector } from "../../../store/hooks";
 
@@ -451,6 +452,7 @@ export default function RunDetailPage() {
               { id: "overview", label: "Overview" },
               { id: "history", label: "History", badge: history.length },
               { id: "data", label: "Data Store" },
+              { id: "agentic", label: "Agentic View", badge: threadLogs.length },
               { id: "logs", label: "Live Logs", badge: threadLogs.length },
               { id: "metadata", label: "Metadata" },
             ].map((tab) => (
@@ -737,6 +739,10 @@ export default function RunDetailPage() {
                   )}
                 </div>
               </div>
+            )}
+
+            {activeTab === "agentic" && (
+              <AgenticRunView threadId={threadId} />
             )}
 
             {activeTab === "metadata" && (

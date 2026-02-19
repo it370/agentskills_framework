@@ -15,8 +15,7 @@ import {
   setHistoricalLogs,
   markHistoricalLogsLoaded,
 } from '../store/slices/logsSlice';
-import { adminEvents } from '../lib/adminEvents';
-import { connectLogs, getRunMetadata, fetchRunDetail, fetchThreadLogs } from '../lib/api';
+import { connectLogs, connectThreadAdminEvents, getRunMetadata, fetchRunDetail, fetchThreadLogs } from '../lib/api';
 import { store } from '../store';
 
 interface RunContextValue {
@@ -37,8 +36,8 @@ export const useRun = () => {
 
 export function RunProvider({ children }: { children: React.ReactNode }) {
   const dispatch = useAppDispatch();
+  const currentThreadId = useAppSelector((state) => state.run.currentThreadId);
   const logsConnectionRef = useRef<{ disconnect: () => void } | null>(null);
-  const adminEventsUnsubscribeRef = useRef<(() => void) | null>(null);
 
   // Initialize a run (called when starting new run or navigating to thread page)
   const initializeRun = async (
@@ -101,28 +100,25 @@ export function RunProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  // Set up global event listeners (runs once on mount)
+  // Subscribe to thread-scoped admin events for the current run only
   useEffect(() => {
-    console.log('[RunProvider] Setting up global event listeners');
-    
-    // Subscribe to all admin events
-    const unsubscribe = adminEvents.on('*', (event: any) => {
+    if (!currentThreadId) return;
+    console.log('[RunProvider] Subscribing to thread admin events:', currentThreadId);
+      
+    const connection = connectThreadAdminEvents(currentThreadId, (event: any) => {
       const eventType = event.type || event.event || 'unknown';
-      const threadId = event.thread_id;
-      
+      const threadId = event.thread_id || currentThreadId;
+
       console.log('[RunProvider] Event received:', eventType, 'for thread:', threadId);
-      
-      // Track event
+
       dispatch(addEvent({
         type: eventType,
         thread_id: threadId,
         data: event,
       }));
-      
-      // Handle specific events
+
       switch (eventType) {
         case 'ack':
-          // ACK received - run has been accepted by server
           dispatch(setRunMetadata({
             threadId,
             metadata: {
@@ -134,23 +130,17 @@ export function RunProvider({ children }: { children: React.ReactNode }) {
             },
           }));
           break;
-          
+
         case 'run_started':
-          // Run has started
           dispatch(setRunStatus({ threadId, status: 'running' }));
           break;
-          
+
         case 'status_updated':
-          // Status changed
           if (event.status) {
             dispatch(setRunStatus({ threadId, status: event.status }));
           }
-          
+
           if (event.status === 'completed' || event.status === 'error') {
-            // Only replace logs with DB copy when there are NO live SSE logs in the
-            // store for this thread. If logs are already present they came from the
-            // active SSE stream and are already complete (and more up-to-date than
-            // the DB, which may still be catching up from the Redis flush).
             const existingLogs = (store.getState() as any).logs?.logsByThread?.[threadId];
             const hasLiveLogs = existingLogs && existingLogs.length > 0;
             if (!hasLiveLogs) {
@@ -164,14 +154,12 @@ export function RunProvider({ children }: { children: React.ReactNode }) {
                 });
             } else {
               console.log(`[RunProvider] Run completed, keeping ${existingLogs.length} live SSE logs`);
-              // Mark as loaded so the "loading" spinner doesn't persist
               dispatch(markHistoricalLogsLoaded(threadId));
             }
           }
           break;
-          
+
         case 'checkpoint_saved':
-          // Checkpoint saved - reload checkpoint data
           fetchRunDetail(threadId)
             .then((checkpoint) => {
               dispatch(setRunCheckpoint({ threadId, checkpoint }));
@@ -182,14 +170,12 @@ export function RunProvider({ children }: { children: React.ReactNode }) {
           break;
       }
     });
-    
-    adminEventsUnsubscribeRef.current = unsubscribe;
-    
+
     return () => {
-      console.log('[RunProvider] Cleaning up admin events listener');
-      unsubscribe();
+      console.log('[RunProvider] Cleaning up thread admin events listener');
+      connection.disconnect();
     };
-  }, [dispatch]);
+  }, [dispatch, currentThreadId]);
 
   // Global SSE logs connection (/api/logs/stream)
   useEffect(() => {

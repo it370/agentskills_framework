@@ -102,6 +102,45 @@ api.include_router(mock_router)
 async def startup_event():
     """Flush any Redis-buffered logs from a previous run to the DB on restart."""
     try:
+        pool = get_postgres_pool()
+        def _ensure_workflow_ui_table():
+            conn = pool.getconn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS thread_workflow_ui_events (
+                            id BIGSERIAL PRIMARY KEY,
+                            thread_id TEXT NOT NULL,
+                            event_id TEXT NOT NULL,
+                            parent_event_id TEXT,
+                            phase TEXT,
+                            node_kind TEXT,
+                            event_type TEXT NOT NULL DEFAULT 'workflow_ui_update',
+                            payload JSONB NOT NULL,
+                            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                        )
+                        """
+                    )
+                    cur.execute(
+                        """
+                        CREATE UNIQUE INDEX IF NOT EXISTS ux_workflow_ui_events_thread_event
+                        ON thread_workflow_ui_events(thread_id, event_id)
+                        """
+                    )
+                    cur.execute(
+                        """
+                        CREATE INDEX IF NOT EXISTS idx_workflow_ui_events_thread_time
+                        ON thread_workflow_ui_events(thread_id, created_at DESC)
+                        """
+                    )
+                conn.commit()
+            finally:
+                pool.putconn(conn)
+        await asyncio.to_thread(_ensure_workflow_ui_table)
+    except Exception as e:
+        print(f"[API] Failed to ensure workflow UI events table exists: {e}")
+    try:
         from services.websocket.log_queue import get_log_queue
         queue = get_log_queue()
         # Always attempt flush: the log queue may be using the in-process fallback buffer
@@ -111,6 +150,14 @@ async def startup_event():
             print(f"[API] Restart recovery: flushed {n} log(s) to DB")
     except Exception as e:
         print(f"[API] Restart recovery flush failed: {e}")
+    try:
+        from services.websocket.admin_event_queue import get_admin_event_queue
+        queue = get_admin_event_queue()
+        n = await asyncio.to_thread(queue.flush_all_to_db_sync)
+        if n:
+            print(f"[API] Restart recovery: flushed {n} workflow UI event(s) to DB")
+    except Exception as e:
+        print(f"[API] Restart recovery workflow UI flush failed: {e}")
 
 
 @api.on_event("shutdown")
@@ -510,6 +557,14 @@ async def _update_run_status(thread_id: str, status: str, error_message: Optiona
                 print(f"[API] Flushed {n} log(s) to DB for thread={thread_id}")
         except Exception as e:
             print(f"[API] Failed to flush Redis logs to DB: {e}")
+        try:
+            from services.websocket.admin_event_queue import get_admin_event_queue
+            queue = get_admin_event_queue()
+            n = await asyncio.to_thread(queue.flush_thread_to_db_sync, thread_id)
+            if n:
+                print(f"[API] Flushed {n} workflow UI event(s) to DB for thread={thread_id}")
+        except Exception as e:
+            print(f"[API] Failed to flush workflow UI events to DB: {e}")
 
     # Broadcast status update after logs are persisted
     try:
@@ -1161,6 +1216,22 @@ async def get_logs(thread_id: str, current_user: AuthenticatedUser, limit: int =
     return {"logs": logs, "count": len(logs)}
 
 
+@api.get("/admin/runs/{thread_id}/workflow-ui-events")
+async def get_workflow_ui_events(
+    thread_id: str,
+    current_user: AuthenticatedUser,
+    limit: int = 2000,
+    workspace_id: Optional[str] = None,
+):
+    """Retrieve persisted workflow_ui_update events for a specific thread."""
+    workspace_service = get_workspace_service()
+    workspace = await workspace_service.resolve_workspace(current_user.id, workspace_id)
+    await _check_run_ownership(thread_id, current_user.id, current_user.is_admin, workspace.id)
+    from services.websocket.admin_event_queue import get_thread_workflow_ui_events
+    events = await get_thread_workflow_ui_events(thread_id, limit)
+    return {"events": events, "count": len(events)}
+
+
 # --- SSE streams (when BROADCASTER_TYPE=sse) ---
 
 @api.get("/api/runs/{thread_id}/logs/stream")
@@ -1194,6 +1265,25 @@ async def stream_admin_events(current_user: AuthenticatedUser):
     from services.websocket import sse_broadcast
     return StreamingResponse(
         sse_broadcast.stream_admin_sse(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
+@api.get("/api/admin-events/{thread_id}/stream")
+async def stream_admin_events_for_thread(
+    thread_id: str,
+    current_user: AuthenticatedUser,
+    workspace_id: Optional[str] = None
+):
+    """SSE stream of admin events scoped to a specific thread."""
+    workspace_service = get_workspace_service()
+    workspace = await workspace_service.resolve_workspace(current_user.id, workspace_id)
+    await _check_run_ownership(thread_id, current_user.id, current_user.is_admin, workspace.id)
+
+    from services.websocket import sse_broadcast
+    return StreamingResponse(
+        sse_broadcast.stream_admin_sse(thread_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )

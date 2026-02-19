@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import subprocess
 from pathlib import Path
+from datetime import datetime
 from typing import Annotated, TypedDict, Union, List, Dict, Any, Set, Optional, Type, Callable
 from pydantic import BaseModel, Field, ValidationError, create_model, ConfigDict
 from enum import Enum
@@ -30,6 +31,7 @@ from services.connection_pool import get_postgres_pool, initialize_pools as init
 
 # Import ACTION_REGISTRY for inline Python functions
 from actions import ACTION_REGISTRY
+from services.workflow_ui import PipelineUiContext, WorkflowUiEmitter, WorkflowUiSession
 
 class RestConfig(BaseModel):
     url: str
@@ -380,6 +382,7 @@ class AgentState(TypedDict):
     workspace_id: Optional[str]
     llm_model: Optional[str]
     execution_sequence: Optional[List[str]]  # Track skill execution order for loop detection
+    ui_key_sources: Optional[Dict[str, str]]  # Tracks output key -> event_id producer mapping for UI dependency edges
 
 
 # --- Utilities ---
@@ -1628,11 +1631,13 @@ def _check_step_condition(step: Dict[str, Any], context: Dict[str, Any]) -> bool
 async def _execute_pipeline_step(
     step: Dict[str, Any],
     context: Dict[str, Any],
-    step_idx: int,
+    step_idx: Any,
     default_credential_ref: Optional[str] = None,
     default_db_config_file: Optional[str] = None,
     workspace_id: Optional[str] = None,
     default_llm_model: Optional[str] = None,
+    ui_ctx: Optional[PipelineUiContext] = None,
+    parent_event_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Execute a single pipeline step and return the outputs to be merged into context.
@@ -1640,223 +1645,324 @@ async def _execute_pipeline_step(
     
     Supports conditional execution via run_if/skip_if conditions.
     """
-    step_type = step.get("type")
+    step_type = str(step.get("type") or "")
     step_name = step.get("name", f"step_{step_idx}")
-    error_prefix = f"Pipeline step {step_idx} ({step_name})"
-    
+    step_idx_str = str(step_idx)
+    error_prefix = f"Pipeline step {step_idx_str} ({step_name})"
+
+    input_keys = [str(k) for k in (step.get("inputs") or []) if isinstance(k, (str, int, float))]
+    step_event_info = None
+    if ui_ctx is not None:
+        step_event_info = await ui_ctx.emit_step_start(
+            step_idx_str=step_idx_str,
+            step_type=step_type,
+            step_name=step_name,
+            input_keys=input_keys,
+            context=context,
+            parent_event_id=parent_event_id or ui_ctx.last_event_id,
+        )
+    else:
+        step_event_prefix = f"pipeline_step:{step_idx_str}:{datetime.utcnow().timestamp()}"
+        start_event_id = f"{step_event_prefix}:start"
+        step_event_info = {
+            "step_event_prefix": step_event_prefix,
+            "start_event_id": start_event_id,
+            "step_inputs": {k: context.get(k) for k in input_keys} if input_keys else {},
+            "consumes_from": [],
+            "step_node_kind": "pipeline",
+            "execution_mode": "serial",
+        }
+
+    step_event_prefix = step_event_info["step_event_prefix"]
+    start_event_id = step_event_info["start_event_id"]
+    step_inputs = step_event_info["step_inputs"]
+    consumes_from = step_event_info["consumes_from"]
+    step_node_kind = step_event_info["step_node_kind"]
+    execution_mode = step_event_info["execution_mode"]
+
     # Check if step should run based on conditions
     if not _check_step_condition(step, context):
-        await publish_log(f"[ACTIONS] Pipeline step {step_idx} ({step_name}): skipped due to condition")
-        return {}  # Return empty dict, don't modify context
-
-    if step_type == "conditional":
-        # Execute conditional branching
-        condition = step.get("condition", {})
-        field_path = condition.get("field")
-        operator = condition.get("operator")
-        expected = condition.get("value")
-        
-        if not field_path or not operator:
-            raise ValueError(f"{error_prefix}: 'conditional' type requires 'condition' with 'field' and 'operator'")
-        
-        # Evaluate condition
-        actual = _get_nested_value(context, field_path)
-        condition_met = _evaluate_condition(actual, operator, expected)
-        
-        await publish_log(
-            f"[ACTIONS] Pipeline step {step_idx} ({step_name}): "
-            f"condition {field_path} {operator} {expected} = {condition_met} (actual: {actual})"
-        )
-        
-        # Execute appropriate branch
-        if condition_met:
-            then_step = step.get("then_step")
-            if then_step:
-                await publish_log(f"[ACTIONS] Pipeline step {step_idx} ({step_name}): executing 'then' branch")
-                return await _execute_pipeline_step(
-                    then_step,
-                    context,
-                    f"{step_idx}.then",
-                    default_credential_ref=default_credential_ref,
-                    default_db_config_file=default_db_config_file,
-                    workspace_id=workspace_id,
-                    default_llm_model=default_llm_model,
-                )
-        else:
-            else_step = step.get("else_step")
-            if else_step:
-                await publish_log(f"[ACTIONS] Pipeline step {step_idx} ({step_name}): executing 'else' branch")
-                return await _execute_pipeline_step(
-                    else_step,
-                    context,
-                    f"{step_idx}.else",
-                    default_credential_ref=default_credential_ref,
-                    default_db_config_file=default_db_config_file,
-                    workspace_id=workspace_id,
-                    default_llm_model=default_llm_model,
-                )
-        
-        # No branch to execute or branch was None
+        await publish_log(f"[ACTIONS] Pipeline step {step_idx_str} ({step_name}): skipped due to condition")
+        skip_event_id = f"{step_event_prefix}:skipped"
+        if ui_ctx is not None:
+            await ui_ctx.emit_step_skipped(
+                skip_event_id=skip_event_id,
+                start_event_id=start_event_id,
+                step_idx_str=step_idx_str,
+                step_type=step_type,
+                step_name=step_name,
+                step_node_kind=step_node_kind,
+                execution_mode=execution_mode,
+                consumes_from=consumes_from,
+            )
         return {}
 
-    elif step_type == "query":
-        # Execute a data query step
-        source = step.get("source")
-        if not source:
-            raise ValueError(f"Pipeline step {step_idx} ({step_name}): 'query' type requires 'source'")
-        credential_ref = step.get("credential_ref") or default_credential_ref
-        if not credential_ref:
-            raise ValueError(
-                f"Pipeline step {step_idx} ({step_name}): 'query' type requires 'credential_ref' "
-                f"to enforce secure connections"
-            )
-        db_config_file = step.get("db_config_file") or default_db_config_file
-        
-        # Create temporary ActionConfig for the query
-        query_cfg = ActionConfig(
-            type=ActionType.DATA_QUERY,
-            source=source,
-            query=step.get("query"),
-            collection=step.get("collection"),
-            filter=step.get("filter"),
-            credential_ref=credential_ref,
-            db_config_file=db_config_file,
-        )
-        result = await _execute_data_query(query_cfg, context)
-        
-        # Store result in context
-        output_key = step.get("output", "result")
-        await publish_log(f"[ACTIONS] Pipeline step {step_idx} ({step_name}): query completed")
-        # return {output_key: result.get("query_result", result)}
-        return _apply_output_spec(output_key, result.get("query_result", result), error_prefix=error_prefix)
-        
-    elif step_type == "transform":
-        # Apply transformation function
-        func_name = step.get("function")
-        if not func_name:
-            raise ValueError(f"Pipeline step {step_idx} ({step_name}): 'transform' type requires 'function'")
-        
-        # Load transformation function
-        if func_name in _ACTION_FUNCTION_REGISTRY:
-            transform_func = _ACTION_FUNCTION_REGISTRY[func_name]
-        else:
-            raise ValueError(f"Transform function '{func_name}' not found in registry")
-        
-        # Get inputs for transform
-        input_keys = step.get("inputs", [])
-        transform_inputs = {key: context.get(key) for key in input_keys}
-        
-        # Execute transform
-        if asyncio.iscoroutinefunction(transform_func):
-            transform_result = await transform_func(**transform_inputs)
-        else:
-            transform_result = await asyncio.to_thread(transform_func, **transform_inputs)
-        
-        # Store result
-        output_key = step.get("output", "result")
-        await publish_log(f"[ACTIONS] Pipeline step {step_idx} ({step_name}): transform completed")
-        # return {output_key: transform_result}
-        return _apply_output_spec(output_key, transform_result, error_prefix=error_prefix)
-        
-    elif step_type == "merge":
-        # Merge multiple inputs
-        input_keys = step.get("inputs", [])
-        if len(input_keys) < 2:
-            raise ValueError(f"Pipeline step {step_idx} ({step_name}): 'merge' requires at least 2 inputs")
-        
-        merged = {}
-        for key in input_keys:
-            if key in context:
-                merged[key] = context[key]
-        
-        output_key = step.get("output", "merged")
-        await publish_log(f"[ACTIONS] Pipeline step {step_idx} ({step_name}): merge completed")
-        # return {output_key: merged}
-        return _apply_output_spec(output_key, merged, error_prefix=error_prefix)
+    try:
+        outputs: Dict[str, Any]
+        if step_type == "conditional":
+            condition = step.get("condition", {})
+            field_path = condition.get("field")
+            operator = condition.get("operator")
+            expected = condition.get("value")
+            if not field_path or not operator:
+                raise ValueError(f"{error_prefix}: 'conditional' type requires 'condition' with 'field' and 'operator'")
 
-        
-    elif step_type == "skill":
-        # Invoke another skill (typically LLM) with current context
-        skill_name = step.get("skill")
-        if not skill_name:
-            raise ValueError(f"Pipeline step {step_idx} ({step_name}): 'skill' type requires 'skill' field")
-        
-        # Find the skill in registry
-        registry = get_skill_registry_for_workspace(workspace_id)
-        skill = next((s for s in registry if s.name == skill_name), None)
-        if not skill:
-            raise ValueError(f"Skill '{skill_name}' not found in registry")
-        
-        # Get inputs for the skill
-        input_keys = step.get("inputs", [])
-        skill_inputs = {}
-        for key in input_keys:
-            if key in context:
-                skill_inputs[key] = context[key]
-            else:
-                await publish_log(f"[ACTIONS] Warning: Input '{key}' not found in context for skill '{skill_name}'")
-        
-        await publish_log(f"[ACTIONS] Pipeline step {step_idx} ({step_name}): invoking skill '{skill_name}'")
-        
-        # Execute the skill using the core executor (reuses all existing execution logic!)
-        # Create a minimal state for the skill execution
-        minimal_state = {
-            "data_store": context,
-            "history": [],
-            "active_skill": skill_name,
-            "layman_sop": "Pipeline execution",
-            "llm_model": default_llm_model,
-        }
-        skill_result = await _execute_skill_core(skill, skill_inputs, minimal_state)
-        
-        await publish_log(f"[ACTIONS] Pipeline step {step_idx} ({step_name}): skill '{skill_name}' completed, produced: {list(skill_result.keys())}")
-        # Skill results are already properly keyed, return as-is
-        return skill_result
-    
-    elif step_type == "parallel":
-        # Execute multiple steps in parallel
-        parallel_steps = step.get("steps", [])
-        if not parallel_steps:
-            raise ValueError(f"Pipeline step {step_idx} ({step_name}): 'parallel' requires 'steps' list")
-        
-        await publish_log(f"[ACTIONS] Pipeline step {step_idx} ({step_name}): executing {len(parallel_steps)} steps in parallel")
-        
-        # Track start time for performance logging
-        import time
-        start_time = time.time()
-        
-        # Execute all parallel steps concurrently
-        parallel_tasks = [
-            _execute_pipeline_step(
-                substep,
-                context,
-                f"{step_idx}.{sub_idx}",
-                default_credential_ref=default_credential_ref,
-                default_db_config_file=default_db_config_file,
-                workspace_id=workspace_id,
-                default_llm_model=default_llm_model,
+            actual = _get_nested_value(context, field_path)
+            condition_met = _evaluate_condition(actual, operator, expected)
+            await publish_log(
+                f"[ACTIONS] Pipeline step {step_idx_str} ({step_name}): "
+                f"condition {field_path} {operator} {expected} = {condition_met} (actual: {actual})"
             )
-            for sub_idx, substep in enumerate(parallel_steps)
-        ]
-        
-        # Wait for all to complete
-        parallel_results = await asyncio.gather(*parallel_tasks)
-        
-        # Merge all outputs into a single dict (auto-merge at top level)
-        merged_outputs = {}
-        for result_dict in parallel_results:
-            merged_outputs.update(result_dict)
-        
-        elapsed = time.time() - start_time
-        await publish_log(
-            f"[ACTIONS] Pipeline step {step_idx} ({step_name}): parallel execution completed in {elapsed:.2f}s, "
-            f"produced: {list(merged_outputs.keys())}"
-        )
-        
-        return merged_outputs
-        
-    else:
-        raise ValueError(f"Pipeline step {step_idx} ({step_name}): unknown type '{step_type}'")
+
+            if condition_met:
+                then_step = step.get("then_step")
+                if then_step:
+                    outputs = await _execute_pipeline_step(
+                        then_step,
+                        context,
+                        f"{step_idx_str}.then",
+                        default_credential_ref=default_credential_ref,
+                        default_db_config_file=default_db_config_file,
+                        workspace_id=workspace_id,
+                        default_llm_model=default_llm_model,
+                        ui_ctx=ui_ctx,
+                        parent_event_id=start_event_id,
+                    )
+                else:
+                    outputs = {}
+            else:
+                else_step = step.get("else_step")
+                if else_step:
+                    outputs = await _execute_pipeline_step(
+                        else_step,
+                        context,
+                        f"{step_idx_str}.else",
+                        default_credential_ref=default_credential_ref,
+                        default_db_config_file=default_db_config_file,
+                        workspace_id=workspace_id,
+                        default_llm_model=default_llm_model,
+                        ui_ctx=ui_ctx,
+                        parent_event_id=start_event_id,
+                    )
+                else:
+                    outputs = {}
+
+        elif step_type == "query":
+            source = step.get("source")
+            if not source:
+                raise ValueError(f"{error_prefix}: 'query' type requires 'source'")
+            credential_ref = step.get("credential_ref") or default_credential_ref
+            if not credential_ref:
+                raise ValueError(
+                    f"{error_prefix}: 'query' type requires 'credential_ref' to enforce secure connections"
+                )
+            db_config_file = step.get("db_config_file") or default_db_config_file
+            query_cfg = ActionConfig(
+                type=ActionType.DATA_QUERY,
+                source=source,
+                query=step.get("query"),
+                collection=step.get("collection"),
+                filter=step.get("filter"),
+                credential_ref=credential_ref,
+                db_config_file=db_config_file,
+            )
+            result = await _execute_data_query(query_cfg, context)
+            output_key = step.get("output", "result")
+            await publish_log(f"[ACTIONS] Pipeline step {step_idx_str} ({step_name}): query completed")
+            outputs = _apply_output_spec(output_key, result.get("query_result", result), error_prefix=error_prefix)
+
+        elif step_type == "transform":
+            func_name = step.get("function")
+            if not func_name:
+                raise ValueError(f"{error_prefix}: 'transform' type requires 'function'")
+            if func_name in _ACTION_FUNCTION_REGISTRY:
+                transform_func = _ACTION_FUNCTION_REGISTRY[func_name]
+            else:
+                raise ValueError(f"Transform function '{func_name}' not found in registry")
+            transform_inputs = {key: context.get(key) for key in input_keys}
+            if asyncio.iscoroutinefunction(transform_func):
+                transform_result = await transform_func(**transform_inputs)
+            else:
+                transform_result = await asyncio.to_thread(transform_func, **transform_inputs)
+            output_key = step.get("output", "result")
+            await publish_log(f"[ACTIONS] Pipeline step {step_idx_str} ({step_name}): transform completed")
+            outputs = _apply_output_spec(output_key, transform_result, error_prefix=error_prefix)
+
+        elif step_type == "merge":
+            if len(input_keys) < 2:
+                raise ValueError(f"{error_prefix}: 'merge' requires at least 2 inputs")
+            merged = {key: context[key] for key in input_keys if key in context}
+            output_key = step.get("output", "merged")
+            await publish_log(f"[ACTIONS] Pipeline step {step_idx_str} ({step_name}): merge completed")
+            outputs = _apply_output_spec(output_key, merged, error_prefix=error_prefix)
+
+        elif step_type == "skill":
+            skill_name = step.get("skill")
+            if not skill_name:
+                raise ValueError(f"{error_prefix}: 'skill' type requires 'skill' field")
+            registry = get_skill_registry_for_workspace(workspace_id)
+            skill = next((s for s in registry if s.name == skill_name), None)
+            if not skill:
+                raise ValueError(f"Skill '{skill_name}' not found in registry")
+            skill_inputs = {key: context.get(key) for key in input_keys if key in context}
+            await publish_log(f"[ACTIONS] Pipeline step {step_idx_str} ({step_name}): invoking skill '{skill_name}'")
+            minimal_state: AgentState = {
+                "data_store": context,
+                "history": [],
+                "active_skill": skill_name,
+                "layman_sop": "Pipeline execution",
+                "llm_model": default_llm_model,
+                "thread_id": ((ui_ctx.session.state if ui_ctx else {}) or {}).get("thread_id", "pipeline"),
+                "workspace_id": workspace_id,
+                "execution_sequence": [],
+            }
+            skill_result = await _execute_skill_core(skill, skill_inputs, minimal_state)
+            await publish_log(
+                f"[ACTIONS] Pipeline step {step_idx_str} ({step_name}): skill '{skill_name}' completed, produced: {list(skill_result.keys())}"
+            )
+            outputs = skill_result
+
+        elif step_type == "parallel":
+            parallel_steps = step.get("steps", [])
+            if not parallel_steps:
+                raise ValueError(f"{error_prefix}: 'parallel' requires 'steps' list")
+
+            if ui_ctx is not None:
+                parallel_info = await ui_ctx.emit_parallel_group_start(
+                    step_idx_str=step_idx_str,
+                    step_name=step_name,
+                    input_keys=input_keys,
+                    context=context,
+                    parent_event_id=start_event_id,
+                    branch_count=len(parallel_steps),
+                )
+                parallel_group_id = parallel_info["parallel_group_id"]
+                group_start_event_id = parallel_info["group_start_event_id"]
+            else:
+                parallel_group_id = f"pipeline:parallel:{step_idx_str}"
+                group_start_event_id = f"{parallel_group_id}:start"
+
+            import time
+            start_time = time.time()
+
+            branch_ctx_and_tasks = []
+            for sub_idx, substep in enumerate(parallel_steps):
+                branch_id = f"{parallel_group_id}:branch:{sub_idx}"
+                branch_start_event_id = f"{branch_id}:start"
+                branch_ui_ctx = (
+                    ui_ctx.fork_branch(
+                        branch_id=branch_id,
+                        branch_index=sub_idx,
+                        branch_count=len(parallel_steps),
+                        last_event_id=branch_start_event_id,
+                    )
+                    if ui_ctx is not None
+                    else None
+                )
+                if ui_ctx is not None:
+                    branch_info = await ui_ctx.emit_parallel_branch_start(
+                        step_idx_str=step_idx_str,
+                        sub_idx=sub_idx,
+                        parallel_group_id=parallel_group_id,
+                        group_start_event_id=group_start_event_id,
+                        branch_count=len(parallel_steps),
+                    )
+                    branch_id = branch_info["branch_id"]
+                    branch_start_event_id = branch_info["branch_start_event_id"]
+                    if branch_ui_ctx is not None:
+                        branch_ui_ctx.branch_id = branch_id
+                        branch_ui_ctx.last_event_id = branch_start_event_id
+                task = _execute_pipeline_step(
+                    substep,
+                    context,
+                    f"{step_idx_str}.{sub_idx}",
+                    default_credential_ref=default_credential_ref,
+                    default_db_config_file=default_db_config_file,
+                    workspace_id=workspace_id,
+                    default_llm_model=default_llm_model,
+                    ui_ctx=branch_ui_ctx,
+                    parent_event_id=branch_start_event_id,
+                )
+                branch_ctx_and_tasks.append((branch_ui_ctx, task))
+
+            parallel_results = await asyncio.gather(*(task for _, task in branch_ctx_and_tasks))
+
+            merged_outputs: Dict[str, Any] = {}
+            branch_result_event_ids: List[str] = []
+            for idx, ((branch_ui_ctx, _), result_dict) in enumerate(zip(branch_ctx_and_tasks, parallel_results)):
+                merged_outputs.update(result_dict)
+                branch_result_event_id = f"{parallel_group_id}:branch:{idx}:result"
+                branch_result_event_ids.append(branch_result_event_id)
+
+                branch_last = branch_ui_ctx.last_event_id if branch_ui_ctx else f"{parallel_group_id}:branch:{idx}:start"
+                if ui_ctx is not None:
+                    branch_result_event_id = await ui_ctx.emit_parallel_branch_result(
+                        step_idx_str=step_idx_str,
+                        idx=idx,
+                        parallel_group_id=parallel_group_id,
+                        branch_id=(branch_ui_ctx.branch_id if branch_ui_ctx else f"{parallel_group_id}:branch:{idx}"),
+                        branch_last_event_id=branch_last,
+                        branch_count=len(parallel_steps),
+                        outputs=result_dict,
+                    )
+                    branch_result_event_ids[-1] = branch_result_event_id
+
+                if ui_ctx and branch_ui_ctx:
+                    for key in result_dict.keys():
+                        source_ref = branch_ui_ctx.key_sources.get(key, branch_result_event_id)
+                        ui_ctx.key_sources[key] = source_ref
+
+            merge_event_id = f"{parallel_group_id}:merge"
+            elapsed = time.time() - start_time
+            await publish_log(
+                f"[ACTIONS] Pipeline step {step_idx_str} ({step_name}): parallel execution completed in {elapsed:.2f}s, "
+                f"produced: {list(merged_outputs.keys())}"
+            )
+            if ui_ctx is not None:
+                merge_event_id = await ui_ctx.emit_parallel_merge(
+                    step_idx_str=step_idx_str,
+                    step_name=step_name,
+                    parallel_group_id=parallel_group_id,
+                    group_start_event_id=group_start_event_id,
+                    merged_outputs=merged_outputs,
+                    branch_result_event_ids=branch_result_event_ids,
+                )
+            return merged_outputs
+
+        else:
+            raise ValueError(f"{error_prefix}: unknown type '{step_type}'")
+
+        result_event_id = f"{step_event_prefix}:result"
+        if ui_ctx is not None:
+            await ui_ctx.emit_step_result(
+                result_event_id=result_event_id,
+                start_event_id=start_event_id,
+                step_idx_str=step_idx_str,
+                step_type=step_type,
+                step_name=step_name,
+                step_node_kind=step_node_kind,
+                execution_mode=execution_mode,
+                step_inputs=step_inputs,
+                outputs=outputs,
+                consumes_from=consumes_from,
+            )
+        return outputs
+
+    except Exception as exc:
+        if ui_ctx is not None:
+            await ui_ctx.emit_step_error(
+                error_event_id=f"{step_event_prefix}:error",
+                start_event_id=start_event_id,
+                step_idx_str=step_idx_str,
+                step_type=step_type,
+                step_name=step_name,
+                step_node_kind=step_node_kind,
+                execution_mode=execution_mode,
+                step_inputs=step_inputs,
+                error=str(exc),
+                consumes_from=consumes_from,
+            )
+        raise
 
 
 def _apply_output_spec(output_spec: Any, value: Any, *, error_prefix: str) -> Dict[str, Any]:
@@ -1896,12 +2002,17 @@ async def _execute_data_pipeline(
     inputs: Dict[str, Any],
     workspace_id: Optional[str] = None,
     llm_model: Optional[str] = None,
+    workflow_state: Optional[AgentState] = None,
 ) -> Dict[str, Any]:
     """Execute multi-step data pipeline with support for parallel execution"""
     if not cfg.steps:
         raise ValueError("data_pipeline action requires 'steps' field")
     
     context = dict(inputs)
+    ui_session = WorkflowUiSession.from_state(workflow_state, emitter=WORKFLOW_UI_EMITTER)
+    pipeline_ui_ctx: Optional[PipelineUiContext] = None
+    if ui_session is not None:
+        pipeline_ui_ctx = await ui_session.begin_pipeline(step_count=len(cfg.steps), inputs=inputs)
     await publish_log(f"[ACTIONS] Starting data pipeline with {len(cfg.steps)} steps")
     
     for step_idx, step in enumerate(cfg.steps):
@@ -1914,6 +2025,8 @@ async def _execute_data_pipeline(
             default_db_config_file=cfg.db_config_file,
             workspace_id=workspace_id,
             default_llm_model=llm_model,
+            ui_ctx=pipeline_ui_ctx,
+            parent_event_id=(pipeline_ui_ctx.last_event_id if pipeline_ui_ctx else None),
         )
         
         # Merge outputs into context (auto-merge at top level)
@@ -1922,7 +2035,12 @@ async def _execute_data_pipeline(
     # Return only the outputs, not the entire context
     # Filter to only new keys added during pipeline
     output_keys = set(context.keys()) - set(inputs.keys())
-    return {key: context[key] for key in output_keys}
+    pipeline_outputs = {key: context[key] for key in output_keys}
+
+    if ui_session is not None and pipeline_ui_ctx is not None:
+        await ui_session.complete_pipeline(pipeline_ui_ctx, inputs=inputs, outputs=pipeline_outputs)
+
+    return pipeline_outputs
 
 
 async def _execute_script(cfg: ActionConfig, inputs: Dict[str, Any]) -> Dict[str, Any]:
@@ -2059,6 +2177,9 @@ def get_skill_registry_for_workspace(workspace_id: Optional[str]) -> List[Skill]
         if s.workspace_id is None or s.workspace_id == workspace_id or s.is_public
     ]
 
+
+WORKFLOW_UI_EMITTER = WorkflowUiEmitter()
+
 # --- 3. NODES ---
 
 async def autonomous_planner(state: AgentState):
@@ -2159,6 +2280,15 @@ async def autonomous_planner(state: AgentState):
         reason = decision.reasoning
     
     await publish_log(f"[PLANNER] Decision: {chosen} | Reasoning: {reason}")
+    ui_session = WorkflowUiSession.from_state(state, emitter=WORKFLOW_UI_EMITTER)
+    if ui_session is not None:
+        await ui_session.emit_planner_decision(
+        chosen=chosen,
+        reason=reason,
+        available_data_keys=list(current_keys),
+        ready_to_run=[s.name for s in runnable],
+        unblockers=unblockers,
+        )
     return {"active_skill": chosen, "history": [f"Planner chose {chosen}"]}
 
 async def _execute_skill_core(skill_meta: Skill, input_ctx: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
@@ -2207,6 +2337,7 @@ async def _execute_skill_core(skill_meta: Skill, input_ctx: Dict[str, Any], stat
                 input_ctx,
                 workspace_id,
                 llm_model=state.get("llm_model") if state else None,
+                workflow_state=state,
             )
         elif action_cfg.type == ActionType.SCRIPT:
             result = await _execute_script(action_cfg, input_ctx)
@@ -2467,18 +2598,49 @@ async def skilled_executor(state: AgentState):
         raise RuntimeError(f"{skill_name} cannot run. Missing required inputs: {missing_list}")
 
     input_ctx = {k: _get_path_value(state["data_store"], k) for k in skill_meta.requires}
+    ui_session = WorkflowUiSession.from_state(state, emitter=WORKFLOW_UI_EMITTER)
+    consumes_from: List[str] = []
+    node_kind = "llm" if skill_meta.executor == "llm" else (
+        "rest" if skill_meta.executor == "rest" else "function"
+    )
+    action_event_id = ""
 
     try:
+        if ui_session is not None:
+            action_meta = await ui_session.emit_agent_action(
+                skill_name=skill_meta.name,
+                node_kind=node_kind,
+                input_ctx=input_ctx,
+                executor=skill_meta.executor,
+                required_inputs=list(skill_meta.requires),
+            )
+            action_event_id = action_meta["action_event_id"]
+            consumes_from = action_meta["consumes_from"]
         # Use core execution logic
         outputs = await _execute_skill_core(skill_meta, input_ctx, state)
+        result_event_id = ""
+        if ui_session is not None:
+            result_event_id = await ui_session.emit_agent_result(
+                action_event_id=action_event_id,
+                skill_name=skill_meta.name,
+                node_kind=node_kind,
+                input_ctx=input_ctx,
+                outputs=outputs,
+                consumes_from=consumes_from,
+            )
         
         # Merge outputs into data_store
         updated_store = state["data_store"]
         for path, val in outputs.items():
             updated_store = _set_path_value(updated_store, path, val)
+            if ui_session is not None and result_event_id:
+                ui_session.key_sources[path] = result_event_id
+        if ui_session is not None:
+            ui_session.persist()
         
         return {
             "data_store": updated_store,
+            "ui_key_sources": (ui_session.key_sources if ui_session is not None else state.get("ui_key_sources")),
             "execution_sequence": execution_sequence,
             "history": [f"Executed {skill_meta.name} ({skill_meta.executor})"],
             # Keep active_skill so route_post_exec can check HITL
@@ -2488,6 +2650,15 @@ async def skilled_executor(state: AgentState):
     except Exception as exc:
         error_msg = str(exc)
         await publish_log(f"[EXECUTOR] Skill {skill_meta.name} failed: {error_msg}")
+        if ui_session is not None:
+            await ui_session.emit_agent_error(
+                action_event_id=action_event_id,
+                skill_name=skill_meta.name,
+                node_kind=node_kind,
+                input_ctx=input_ctx,
+                error_msg=error_msg,
+                consumes_from=consumes_from,
+            )
         
         # Return error state and force workflow to END
         updated_store = state["data_store"]
@@ -2497,6 +2668,7 @@ async def skilled_executor(state: AgentState):
         
         return {
             "data_store": updated_store,
+            "ui_key_sources": (ui_session.key_sources if ui_session is not None else state.get("ui_key_sources")),
             "execution_sequence": execution_sequence,
             "history": [f"Skill {skill_meta.name} failed: {error_msg}"],
             "active_skill": "END"  # Force workflow to end

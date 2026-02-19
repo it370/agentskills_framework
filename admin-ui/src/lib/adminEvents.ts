@@ -26,11 +26,17 @@ class AdminEventsManager {
 
   private async startStream() {
     const url = `${API_BASE}/api/admin-events/stream`;
+    console.info("[AdminEvents][global] connect", { url });
     while (!this.abortController?.signal.aborted) {
       try {
         const res = await fetch(url, {
           headers: getAuthHeaders(),
           signal: this.abortController!.signal,
+        });
+        console.info("[AdminEvents][global] response", {
+          ok: res.ok,
+          status: res.status,
+          statusText: res.statusText,
         });
         if (!res.ok || !res.body) {
           await this.delay(3000);
@@ -49,7 +55,11 @@ class AdminEventsManager {
             if (line.startsWith("data: ")) {
               try {
                 const data = JSON.parse(line.slice(6));
-                this.dispatch(data?.data ?? data);
+                const event = data?.data ?? data;
+                const eventType = event?.type || event?.event || "unknown";
+                const eventThreadId = event?.thread_id || "n/a";
+                console.info(`[AdminEvents][global] ${eventType}`, { thread_id: eventThreadId, event });
+                this.dispatch(event);
               } catch (_) {}
             }
           }

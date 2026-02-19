@@ -55,6 +55,25 @@ export async function fetchThreadLogs(
   return data.logs || [];
 }
 
+export async function fetchThreadWorkflowUiEvents(
+  threadId: string,
+  limit = 2000
+): Promise<RunEvent[]> {
+  const workspaceId = getActiveWorkspaceId();
+  const res = await fetch(
+    withWorkspace(`${API_BASE}/admin/runs/${threadId}/workflow-ui-events?limit=${limit}`, workspaceId),
+    {
+      cache: "no-store",
+      headers: getAuthHeaders(),
+    }
+  );
+  if (!res.ok) {
+    throw new Error(`Failed to fetch workflow UI events for thread: ${threadId}`);
+  }
+  const data = await res.json();
+  return (data.events || []) as RunEvent[];
+}
+
 export async function approveStep(
   threadId: string,
   updatedData?: Record<string, any>
@@ -153,12 +172,77 @@ export async function getRunMetadata(
 export function connectAdminEvents(onEvent: (event: RunEvent) => void): { disconnect: () => void } {
   const unsubscribe = adminEvents.on("*", (event: any) => {
     try {
+      const eventType = event?.type || event?.event || "unknown";
+      const eventThreadId = event?.thread_id || "n/a";
+      console.info(`[AdminEvents][global] ${eventType}`, { thread_id: eventThreadId, event });
       onEvent(event as RunEvent);
     } catch (e) {
       console.warn("[SSE] Failed to handle admin event", e);
     }
   });
   return { disconnect: unsubscribe };
+}
+
+/** Subscribe to admin events for a single thread via scoped SSE stream. */
+export function connectThreadAdminEvents(
+  threadId: string,
+  onEvent: (event: RunEvent) => void
+): { disconnect: () => void } {
+  const url = `${API_BASE}/api/admin-events/${encodeURIComponent(threadId)}/stream`;
+  const abort = new AbortController();
+  console.info(`[AdminEvents][thread:${threadId}] connect`, { url });
+
+  (async () => {
+    while (!abort.signal.aborted) {
+      try {
+        const res = await fetch(url, {
+          headers: getAuthHeaders(),
+          signal: abort.signal,
+        });
+        console.info(`[AdminEvents][thread:${threadId}] response`, {
+          ok: res.ok,
+          status: res.status,
+          statusText: res.statusText,
+        });
+        if (!res.ok || !res.body) {
+          await new Promise((r) => setTimeout(r, 3000));
+          continue;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() ?? "";
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                const event = (data?.data ?? data) as RunEvent;
+                const eventType = event?.type || event?.event || "unknown";
+                console.info(`[AdminEvents][thread:${threadId}] ${eventType}`, event);
+                onEvent(event);
+              } catch (_) {}
+            }
+          }
+        }
+      } catch (e) {
+        if ((e as Error).name === "AbortError") return;
+        console.warn("[AdminEvents] Thread SSE error, reconnecting in 3s:", e);
+      }
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  })();
+
+  return {
+    disconnect: () => {
+      console.info(`[AdminEvents][thread:${threadId}] disconnect`);
+      abort.abort();
+    },
+  };
 }
 
 /**
@@ -175,7 +259,6 @@ export function connectLogs(
     ? `${API_BASE}/api/runs/${encodeURIComponent(threadId)}/logs/stream`
     : `${API_BASE}/api/logs/stream`;
   const abort = new AbortController();
-
   (async () => {
     while (!abort.signal.aborted) {
       try {
@@ -197,11 +280,16 @@ export function connectLogs(
           const lines = buf.split("\n");
           buf = lines.pop() ?? "";
           for (const line of lines) {
-            if (line.startsWith("data: ")) {
+            const normalized = line.replace(/\r$/, "");
+            if (!normalized.trim()) continue;
+            if (/^data:\s*/i.test(normalized)) {
+              const rawData = normalized.replace(/^data:\s*/i, "");
               try {
-                const data = JSON.parse(line.slice(6));
+                const data = JSON.parse(rawData);
                 if (data?.text !== undefined) onLog(data.text, data.thread_id);
-              } catch (_) {}
+              } catch (error) {
+                console.warn("[LiveLog SSE] Failed to parse payload", error);
+              }
             }
           }
         }
@@ -213,7 +301,9 @@ export function connectLogs(
     }
   })();
 
-  return { disconnect: () => abort.abort() };
+  return {
+    disconnect: () => abort.abort(),
+  };
 }
 
 // --- SKILL MANAGEMENT API ---
