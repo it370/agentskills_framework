@@ -115,7 +115,7 @@ function SidebarContent({
             {!collapsed && (
               <div className="min-w-0">
                 <h1 className="text-base font-bold leading-tight truncate">Agent Skills</h1>
-                <p className="text-xs text-gray-400 leading-tight truncate">Orchestrator v{process.env.NEXT_PUBLIC_APP_VERSION}</p>
+                <p className="text-xs text-gray-400 leading-tight truncate">Orchestrator v3.3.3</p>
               </div>
             )}
           </div>

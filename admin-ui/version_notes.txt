@@ -1,0 +1,4 @@
+3.0.0 - versioning started RC3
+3.1.0 - agent view ui added initial
+3.2.0 - configuration added
+3.3.3 - template initial added, moved version to hardcoded instead of env variable
