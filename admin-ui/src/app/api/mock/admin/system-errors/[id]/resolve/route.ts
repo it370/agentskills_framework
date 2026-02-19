@@ -5,12 +5,13 @@ import { NextResponse } from 'next/server';
 
 export async function POST(
   request: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
+  const { id } = await params;
   return NextResponse.json({
     status: "success",
-    message: `Error ${params.id} marked as resolved (mock)`,
-    error_id: parseInt(params.id),
+    message: `Error ${id} marked as resolved (mock)`,
+    error_id: parseInt(id),
     resolved_by: "mock_admin@example.com"
   });
 }
