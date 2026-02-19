@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect, Suspense, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import DashboardLayout from "../../../components/DashboardLayout";
@@ -35,11 +35,24 @@ function NewRunForm() {
   const [selectedTemplateId, setSelectedTemplateId] = useState("raw-json-default");
   const [templateValues, setTemplateValues] = useState<Record<string, string>>({});
   const [templateErrors, setTemplateErrors] = useState<string[]>([]);
+  const [templateTouched, setTemplateTouched] = useState(false);
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ackUnsubscribe, setAckUnsubscribe] = useState<(() => void) | null>(null);
   const templates = getRunTemplates();
   const selectedTemplate = getRunTemplateById(selectedTemplateId) || templates[0];
+  const currentTemplateValidationErrors = useMemo(() => {
+    if (!selectedTemplate || selectedTemplate.mode !== "form") return [];
+    return validateTemplateValues(selectedTemplate, templateValues);
+  }, [selectedTemplate, templateValues]);
+  const templateDisplayErrors = templateTouched
+    ? (templateErrors.length > 0 ? templateErrors : currentTemplateValidationErrors)
+    : [];
+  const isStartDisabled =
+    loading ||
+    !sop.trim() ||
+    (selectedTemplate?.mode === "form" && currentTemplateValidationErrors.length > 0);
 
   // Pre-populate from sessionStorage (for Edit and Rerun) or query params (legacy)
   useEffect(() => {
@@ -97,10 +110,14 @@ function NewRunForm() {
     if (!selectedTemplate || selectedTemplate.mode !== "form") {
       setTemplateValues({});
       setTemplateErrors([]);
+      setTemplateTouched(false);
+      setShowTemplateModal(false);
       return;
     }
     setTemplateValues(createTemplateInitialValues(selectedTemplate));
     setTemplateErrors([]);
+    setTemplateTouched(false);
+    setShowTemplateModal(true);
   }, [selectedTemplateId, selectedTemplate]);
 
   useEffect(() => {
@@ -146,8 +163,12 @@ function NewRunForm() {
   };
 
   const handleTemplateFieldChange = (fieldKey: string, value: string) => {
-    setTemplateValues((prev) => ({ ...prev, [fieldKey]: value }));
-    if (templateErrors.length > 0) {
+    const nextValues = { ...templateValues, [fieldKey]: value };
+    setTemplateTouched(true);
+    setTemplateValues(nextValues);
+    if (selectedTemplate?.mode === "form") {
+      setTemplateErrors(validateTemplateValues(selectedTemplate, nextValues));
+    } else if (templateErrors.length > 0) {
       setTemplateErrors([]);
     }
   };
@@ -160,8 +181,10 @@ function NewRunForm() {
     if (selectedTemplate?.mode === "form") {
       const validationErrors = validateTemplateValues(selectedTemplate, templateValues);
       if (validationErrors.length > 0) {
+        setTemplateTouched(true);
         setTemplateErrors(validationErrors);
         setError("Please complete all required template fields before starting.");
+        setShowTemplateModal(true);
         setLoading(false);
         return;
       }
@@ -251,7 +274,7 @@ function NewRunForm() {
     <DashboardLayout>
       <div className="p-8">
         {/* Header */}
-        <div className="mb-6">
+        <div className="mb-6 max-w-4xl">
           <Link
             href="/"
             className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900 mb-4"
@@ -271,9 +294,52 @@ function NewRunForm() {
             </svg>
             Back to Runs
           </Link>
-          <h1 className="text-3xl font-bold text-gray-900">
-            {searchParams.get('from') === 'rerun' ? 'Edit and Rerun' : 'Start New Run'}
-          </h1>
+          <div className="flex items-center justify-between gap-3">
+            <h1 className="text-3xl font-bold text-gray-900">
+              {searchParams.get('from') === 'rerun' ? 'Edit and Rerun' : 'Start New Run'}
+            </h1>
+            <button
+              onClick={handleStart}
+              disabled={isStartDisabled}
+              className="shrink-0 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-semibold py-2.5 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
+            >
+              {loading ? (
+                <>
+                  <svg
+                    className="animate-spin h-4 w-4"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                    />
+                  </svg>
+                  Starting...
+                </>
+              ) : (
+                <>
+                  <svg
+                    className="w-4 h-4"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M13 10V3L4 14h7v7l9-11h-7z"
+                    />
+                  </svg>
+                  Start Run
+                </>
+              )}
+            </button>
+          </div>
           <p className="mt-2 text-sm text-gray-600">
             {searchParams.get('from') === 'rerun'
               ? 'Modify the configuration below and start a new run'
@@ -335,6 +401,20 @@ function NewRunForm() {
               <p className="mt-1 text-xs text-emerald-700">
                 Template auto-apply is enabled: run name, SOP, and model are prefilled.
               </p>
+            )}
+            {selectedTemplate?.mode === "form" && (
+              <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2">
+                <p className="text-xs text-blue-800">
+                  Fill variable inputs in a popup form.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowTemplateModal(true)}
+                  className="text-xs font-medium text-blue-700 hover:text-blue-800"
+                >
+                  Open Input Form
+                </button>
+              </div>
             )}
           </div>
 
@@ -415,27 +495,7 @@ function NewRunForm() {
             )}
           </div>
 
-          {selectedTemplate?.mode === "form" ? (
-            <>
-              <RunTemplateForm
-                template={selectedTemplate}
-                values={templateValues}
-                errors={templateErrors}
-                onChange={handleTemplateFieldChange}
-              />
-              <div className="bg-white rounded-lg border border-gray-200 p-6">
-                <label className="block mb-2">
-                  <span className="text-sm font-medium text-gray-900">Generated Initial Data (Preview)</span>
-                  <p className="mt-1 text-xs text-gray-600">
-                    This JSON is generated at runtime from the selected template.
-                  </p>
-                </label>
-                <pre className="w-full h-64 px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg overflow-auto font-mono text-sm">
-                  {JSON.stringify(buildInitialDataFromTemplate(selectedTemplate, templateValues), null, 2)}
-                </pre>
-              </div>
-            </>
-          ) : (
+          {selectedTemplate?.mode !== "form" && (
             <div className="bg-white rounded-lg border border-gray-200 p-6">
               <label className="block mb-2">
                 <span className="text-sm font-medium text-gray-900">
@@ -455,10 +515,24 @@ function NewRunForm() {
             </div>
           )}
 
+          {selectedTemplate?.mode === "form" && (
+            <div className="bg-white rounded-lg border border-gray-200 p-6">
+              <label className="block mb-2">
+                <span className="text-sm font-medium text-gray-900">Generated Initial Data (Preview)</span>
+                <p className="mt-1 text-xs text-gray-600">
+                  Populated from template input popup.
+                </p>
+              </label>
+              <pre className="w-full h-64 px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg overflow-auto font-mono text-sm">
+                {JSON.stringify(buildInitialDataFromTemplate(selectedTemplate, templateValues), null, 2)}
+              </pre>
+            </div>
+          )}
+
           <div className="flex gap-4">
             <button
               onClick={handleStart}
-              disabled={loading || !sop.trim()}
+              disabled={isStartDisabled}
               className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-semibold py-3 px-6 rounded-lg transition-colors flex items-center justify-center gap-2"
             >
               {loading ? (
@@ -506,6 +580,43 @@ function NewRunForm() {
           </div>
         </div>
       </div>
+      {selectedTemplate?.mode === "form" && showTemplateModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-3xl max-h-[90vh] overflow-hidden rounded-xl bg-white shadow-2xl border border-gray-200">
+            <div className="flex items-center justify-between border-b border-gray-200 px-5 py-3">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-900">Template Inputs</h3>
+                <p className="text-xs text-gray-600 mt-0.5">{selectedTemplate.name}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowTemplateModal(false)}
+                className="text-sm text-gray-500 hover:text-gray-700"
+              >
+                Close
+              </button>
+            </div>
+            <div className="overflow-y-auto max-h-[calc(90vh-120px)] p-5">
+              <RunTemplateForm
+                template={selectedTemplate}
+                values={templateValues}
+                errors={templateDisplayErrors}
+                onChange={handleTemplateFieldChange}
+              />
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-gray-200 px-5 py-3">
+              <button
+                type="button"
+                onClick={() => setShowTemplateModal(false)}
+                disabled={currentTemplateValidationErrors.length > 0}
+                className="px-3 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </DashboardLayout>
   );
 }
