@@ -4,8 +4,18 @@ import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import DashboardLayout from "../../../components/DashboardLayout";
+import RunTemplateForm from "../../../components/RunTemplateForm";
 import { getAuthHeaders } from "../../../lib/auth";
 import { fetchLlmModels, LlmModelOption } from "../../../lib/api";
+import { getActiveWorkspaceId } from "../../../lib/workspaceStorage";
+import {
+  buildInitialDataFromTemplate,
+  createTemplateInitialValues,
+  getRunTemplateById,
+  getRunTemplates,
+  resolveAssignedTemplateId,
+  validateTemplateValues,
+} from "../../../lib/runTemplates";
 import { useRun } from "../../../contexts/RunContext";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
@@ -22,9 +32,14 @@ function NewRunForm() {
   const [initialData, setInitialData] = useState("");  // Empty by default, use placeholder
   const [llmModel, setLlmModel] = useState("");
   const [llmOptions, setLlmOptions] = useState<LlmModelOption[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState("raw-json-default");
+  const [templateValues, setTemplateValues] = useState<Record<string, string>>({});
+  const [templateErrors, setTemplateErrors] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ackUnsubscribe, setAckUnsubscribe] = useState<(() => void) | null>(null);
+  const templates = getRunTemplates();
+  const selectedTemplate = getRunTemplateById(selectedTemplateId) || templates[0];
 
   // Pre-populate from sessionStorage (for Edit and Rerun) or query params (legacy)
   useEffect(() => {
@@ -68,6 +83,33 @@ function NewRunForm() {
     }
   }, [searchParams]);
 
+  useEffect(() => {
+    const workspaceId = getActiveWorkspaceId();
+    const assignedTemplateId = resolveAssignedTemplateId({
+      workspaceId,
+      userId: null,
+      userGroups: [],
+    });
+    setSelectedTemplateId(assignedTemplateId);
+  }, []);
+
+  useEffect(() => {
+    if (!selectedTemplate || selectedTemplate.mode !== "form") {
+      setTemplateValues({});
+      setTemplateErrors([]);
+      return;
+    }
+    setTemplateValues(createTemplateInitialValues(selectedTemplate));
+    setTemplateErrors([]);
+  }, [selectedTemplateId, selectedTemplate]);
+
+  useEffect(() => {
+    if (!selectedTemplate || !selectedTemplate.autoApplyAll || !selectedTemplate.prefill) return;
+    if (selectedTemplate.prefill.runName !== undefined) setRunName(selectedTemplate.prefill.runName);
+    if (selectedTemplate.prefill.sop !== undefined) setSop(selectedTemplate.prefill.sop);
+    if (selectedTemplate.prefill.llmModel !== undefined) setLlmModel(selectedTemplate.prefill.llmModel);
+  }, [selectedTemplate]);
+
   // Cleanup ACK listener on unmount
   useEffect(() => {
     return () => {
@@ -103,22 +145,41 @@ function NewRunForm() {
     return `thread_${Date.now()}`;
   };
 
+  const handleTemplateFieldChange = (fieldKey: string, value: string) => {
+    setTemplateValues((prev) => ({ ...prev, [fieldKey]: value }));
+    if (templateErrors.length > 0) {
+      setTemplateErrors([]);
+    }
+  };
+
   const handleStart = async () => {
     setError(null);
     setLoading(true);
 
-    let parsedData;
-    try {
-      // Allow empty string - treat as empty object
-      if (!initialData.trim()) {
-        parsedData = {};
-      } else {
-        parsedData = JSON.parse(initialData);
+    let parsedData: Record<string, unknown> = {};
+    if (selectedTemplate?.mode === "form") {
+      const validationErrors = validateTemplateValues(selectedTemplate, templateValues);
+      if (validationErrors.length > 0) {
+        setTemplateErrors(validationErrors);
+        setError("Please complete all required template fields before starting.");
+        setLoading(false);
+        return;
       }
-    } catch (e) {
-      setError("Initial Data must be valid JSON");
-      setLoading(false);
-      return;
+      parsedData = buildInitialDataFromTemplate(selectedTemplate, templateValues);
+      setInitialData(JSON.stringify(parsedData, null, 2));
+    } else {
+      try {
+        // Allow empty string - treat as empty object
+        if (!initialData.trim()) {
+          parsedData = {};
+        } else {
+          parsedData = JSON.parse(initialData);
+        }
+      } catch (e) {
+        setError("Initial Data must be valid JSON");
+        setLoading(false);
+        return;
+      }
     }
 
     const threadId = generateThreadId();
@@ -250,6 +311,36 @@ function NewRunForm() {
           <div className="bg-white rounded-lg border border-gray-200 p-6">
             <label className="block mb-2">
               <span className="text-sm font-medium text-gray-900">
+                Run Input Template
+              </span>
+              <p className="mt-1 text-xs text-gray-600">
+                Default stays as raw JSON. Templates can be assigned dynamically by workspace/user/group later.
+              </p>
+            </label>
+            <select
+              value={selectedTemplateId}
+              onChange={(e) => setSelectedTemplateId(e.target.value)}
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+            >
+              {templates.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.name}
+                </option>
+              ))}
+            </select>
+            {selectedTemplate?.description && (
+              <p className="mt-2 text-xs text-gray-600">{selectedTemplate.description}</p>
+            )}
+            {selectedTemplate?.autoApplyAll && (
+              <p className="mt-1 text-xs text-emerald-700">
+                Template auto-apply is enabled: run name, SOP, and model are prefilled.
+              </p>
+            )}
+          </div>
+
+          <div className="bg-white rounded-lg border border-gray-200 p-6">
+            <label className="block mb-2">
+              <span className="text-sm font-medium text-gray-900">
                 Run Name (Optional)
               </span>
               <p className="mt-1 text-xs text-gray-600">
@@ -280,6 +371,15 @@ function NewRunForm() {
               className="w-full h-32 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
               placeholder="Enter workflow instructions..."
             />
+            {selectedTemplate?.recommendedSop && (
+              <button
+                type="button"
+                onClick={() => setSop(selectedTemplate.recommendedSop || "")}
+                className="mt-2 text-xs text-blue-600 hover:text-blue-700"
+              >
+                Use template-recommended SOP
+              </button>
+            )}
           </div>
 
           <div className="bg-white rounded-lg border border-gray-200 p-6">
@@ -315,23 +415,45 @@ function NewRunForm() {
             )}
           </div>
 
-          <div className="bg-white rounded-lg border border-gray-200 p-6">
-            <label className="block mb-2">
-              <span className="text-sm font-medium text-gray-900">
-                Initial Data (JSON) <span className="text-gray-500 font-normal">(Optional)</span>
-              </span>
-              <p className="mt-1 text-xs text-gray-600">
-                Provide the starting data for the workflow. Leave empty if not needed.
-              </p>
-            </label>
-            <textarea
-              value={initialData}
-              onChange={(e) => setInitialData(e.target.value)}
-              className="w-full h-64 px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
-              spellCheck={false}
-              placeholder='{ "order_number": "00000003" }'
-            />
-          </div>
+          {selectedTemplate?.mode === "form" ? (
+            <>
+              <RunTemplateForm
+                template={selectedTemplate}
+                values={templateValues}
+                errors={templateErrors}
+                onChange={handleTemplateFieldChange}
+              />
+              <div className="bg-white rounded-lg border border-gray-200 p-6">
+                <label className="block mb-2">
+                  <span className="text-sm font-medium text-gray-900">Generated Initial Data (Preview)</span>
+                  <p className="mt-1 text-xs text-gray-600">
+                    This JSON is generated at runtime from the selected template.
+                  </p>
+                </label>
+                <pre className="w-full h-64 px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg overflow-auto font-mono text-sm">
+                  {JSON.stringify(buildInitialDataFromTemplate(selectedTemplate, templateValues), null, 2)}
+                </pre>
+              </div>
+            </>
+          ) : (
+            <div className="bg-white rounded-lg border border-gray-200 p-6">
+              <label className="block mb-2">
+                <span className="text-sm font-medium text-gray-900">
+                  Initial Data (JSON) <span className="text-gray-500 font-normal">(Optional)</span>
+                </span>
+                <p className="mt-1 text-xs text-gray-600">
+                  Provide the starting data for the workflow. Leave empty if not needed.
+                </p>
+              </label>
+              <textarea
+                value={initialData}
+                onChange={(e) => setInitialData(e.target.value)}
+                className="w-full h-64 px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                spellCheck={false}
+                placeholder='{ "order_number": "00000003" }'
+              />
+            </div>
+          )}
 
           <div className="flex gap-4">
             <button
