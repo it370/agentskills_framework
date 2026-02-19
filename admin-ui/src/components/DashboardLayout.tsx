@@ -27,6 +27,7 @@ export default function DashboardLayout({
   ];
   if (user?.is_admin) {
     navItems.push({ name: "Run Manager", path: "/run-manager", icon: DatabaseIcon });
+    navItems.push({ name: "Configuration", path: "/admin/config", icon: SettingsIcon });
     navItems.push({ name: "System Errors", path: "/admin/system-errors", icon: AlertIcon });
   }
   if (user?.username === "system") {

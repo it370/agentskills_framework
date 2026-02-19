@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { approveStep } from "../../../lib/api";
+import { approveStep, isAgenticViewEnabled } from "../../../lib/api";
 import DashboardLayout from "../../../components/DashboardLayout";
 import RerunContextMenu from "../../../components/RerunContextMenu";
 import AgenticRunView from "../../../components/AgenticRunView";
@@ -23,6 +23,8 @@ export default function RunDetailPage() {
   const [showHitlModal, setShowHitlModal] = useState(false);
   const [hitlData, setHitlData] = useState<string>("");
   const [approving, setApproving] = useState(false);
+  const [agenticViewEnabled, setAgenticViewEnabled] = useState(false);
+  const [agenticConfigLoaded, setAgenticConfigLoaded] = useState(false);
   const logContainerRef = useRef<HTMLDivElement>(null);
   const postCompleteRefreshDoneRef = useRef(false);
   const [refreshingAfterComplete, setRefreshingAfterComplete] = useState(false);
@@ -110,6 +112,26 @@ export default function RunDetailPage() {
       cancelled = true;
     };
   }, [threadId, initializeRun, loadHistoricalData, initialConfig, activeWorkspaceId, hasRunData]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const enabled = await isAgenticViewEnabled();
+      if (!cancelled) {
+        setAgenticViewEnabled(enabled);
+        setAgenticConfigLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (agenticConfigLoaded && !agenticViewEnabled && activeTab === "agentic") {
+      setActiveTab("overview");
+    }
+  }, [agenticConfigLoaded, agenticViewEnabled, activeTab]);
 
   // If store data arrives via global listeners while loading, stop the spinner
   useEffect(() => {
@@ -452,7 +474,9 @@ export default function RunDetailPage() {
               { id: "overview", label: "Overview" },
               { id: "history", label: "History", badge: history.length },
               { id: "data", label: "Data Store" },
-              { id: "agentic", label: "Agentic View", badge: threadLogs.length },
+              ...(agenticConfigLoaded && agenticViewEnabled
+                ? [{ id: "agentic", label: "Agentic View", badge: threadLogs.length }]
+                : []),
               { id: "logs", label: "Live Logs", badge: threadLogs.length },
               { id: "metadata", label: "Metadata" },
             ].map((tab) => (
@@ -741,7 +765,7 @@ export default function RunDetailPage() {
               </div>
             )}
 
-            {activeTab === "agentic" && (
+            {activeTab === "agentic" && agenticViewEnabled && (
               <AgenticRunView threadId={threadId} />
             )}
 

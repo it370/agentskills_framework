@@ -74,6 +74,57 @@ export async function fetchThreadWorkflowUiEvents(
   return (data.events || []) as RunEvent[];
 }
 
+export async function fetchAdminConfig(configKey: string): Promise<{
+  key: string;
+  value: any;
+  description?: string;
+  updated_by?: string;
+  updated_at?: string;
+}> {
+  const res = await fetch(`${API_BASE}/admin/config/${encodeURIComponent(configKey)}`, {
+    cache: "no-store",
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch config: ${configKey}`);
+  }
+  return await res.json();
+}
+
+export async function updateAdminConfig(
+  configKey: string,
+  value: any,
+  description?: string
+): Promise<{ status: string; config: { key: string; value: any } }> {
+  const res = await fetch(`${API_BASE}/admin/config/${encodeURIComponent(configKey)}`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      ...getAuthHeaders(),
+    },
+    body: JSON.stringify({ value, description }),
+  });
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Failed to update config: ${errorText}`);
+  }
+  return await res.json();
+}
+
+export async function isAgenticViewEnabled(): Promise<boolean> {
+  try {
+    const config = await fetchAdminConfig("feature.agentic_view_enabled");
+    const raw = config?.value;
+    if (typeof raw === "boolean") return raw;
+    if (raw && typeof raw === "object" && "enabled" in raw) {
+      return Boolean((raw as Record<string, unknown>).enabled);
+    }
+    return true;
+  } catch {
+    return true;
+  }
+}
+
 export async function approveStep(
   threadId: string,
   updatedData?: Record<string, any>

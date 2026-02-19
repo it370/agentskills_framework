@@ -134,6 +134,35 @@ async def startup_event():
                         ON thread_workflow_ui_events(thread_id, created_at DESC)
                         """
                     )
+                    cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS app_config (
+                            config_key TEXT PRIMARY KEY,
+                            config_value JSONB NOT NULL,
+                            description TEXT,
+                            updated_by TEXT,
+                            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                        )
+                        """
+                    )
+                    cur.execute(
+                        """
+                        CREATE INDEX IF NOT EXISTS idx_app_config_updated_at
+                        ON app_config(updated_at DESC)
+                        """
+                    )
+                    cur.execute(
+                        """
+                        INSERT INTO app_config (config_key, config_value, description)
+                        VALUES (
+                            'feature.agentic_view_enabled',
+                            '{"enabled": true}'::jsonb,
+                            'Enable/disable Agentic View tab and rendering'
+                        )
+                        ON CONFLICT (config_key) DO NOTHING
+                        """
+                    )
                 conn.commit()
             finally:
                 pool.putconn(conn)
@@ -179,6 +208,11 @@ class StartRequest(BaseModel):
     callback_url: Optional[str] = None  # Webhook URL to call when run completes
     broadcast: bool = False  # Enable real-time broadcasts (default: False, opt-in)
     await_response: bool = False  # Wait for workflow completion before returning (default: False, fire-and-forget)
+
+
+class ConfigUpdateRequest(BaseModel):
+    value: Any
+    description: Optional[str] = None
 
 @api.post("/start")
 async def start_process(req: StartRequest, current_user: AuthenticatedUser):
@@ -507,6 +541,95 @@ async def _check_run_ownership(thread_id: str, user_id: str, is_admin: bool = Fa
         raise
     except Exception as e:
         emit_log(f"[API] Failed to check run ownership: {e}")
+
+
+async def _get_app_config(config_key: str) -> Optional[Dict[str, Any]]:
+    """Read one config row from app_config."""
+    try:
+        pool = get_postgres_pool()
+    except RuntimeError:
+        return None
+
+    def _read_sync() -> Optional[Dict[str, Any]]:
+        conn = pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT config_key, config_value, description, updated_by, updated_at
+                    FROM app_config
+                    WHERE config_key = %s
+                    """,
+                    (config_key,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "key": row[0],
+                    "value": row[1],
+                    "description": row[2],
+                    "updated_by": row[3],
+                    "updated_at": row[4].isoformat() if row[4] else None,
+                }
+        finally:
+            pool.putconn(conn)
+
+    try:
+        return await asyncio.to_thread(_read_sync)
+    except Exception as exc:
+        emit_log(f"[API] Failed to read app config '{config_key}': {exc}")
+        return None
+
+
+async def _upsert_app_config(
+    config_key: str,
+    value: Any,
+    updated_by: Optional[str],
+    description: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Upsert one config row and return stored payload."""
+    try:
+        pool = get_postgres_pool()
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Database is not available")
+
+    def _write_sync() -> Dict[str, Any]:
+        conn = pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO app_config (config_key, config_value, description, updated_by, updated_at)
+                    VALUES (%s, %s::jsonb, %s, %s, NOW())
+                    ON CONFLICT (config_key) DO UPDATE
+                    SET config_value = EXCLUDED.config_value,
+                        description = COALESCE(EXCLUDED.description, app_config.description),
+                        updated_by = EXCLUDED.updated_by,
+                        updated_at = NOW()
+                    RETURNING config_key, config_value, description, updated_by, updated_at
+                    """,
+                    (config_key, json.dumps(value), description, updated_by),
+                )
+                row = cur.fetchone()
+            conn.commit()
+            return {
+                "key": row[0],
+                "value": row[1],
+                "description": row[2],
+                "updated_by": row[3],
+                "updated_at": row[4].isoformat() if row[4] else None,
+            }
+        finally:
+            pool.putconn(conn)
+
+    try:
+        return await asyncio.to_thread(_write_sync)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        emit_log(f"[API] Failed to upsert app config '{config_key}': {exc}")
+        raise HTTPException(status_code=500, detail="Failed to persist configuration")
 
 
 async def _update_run_status(thread_id: str, status: str, error_message: Optional[str] = None, failed_skill: Optional[str] = None):
@@ -1589,6 +1712,76 @@ async def broadcaster_status():
         return get_broadcaster_status()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get broadcaster status: {str(e)}")
+
+
+@api.get("/admin/config/{config_key}")
+async def get_admin_config(
+    config_key: str,
+    current_user: AuthenticatedUser,
+):
+    """Read one app configuration value."""
+    config = await _get_app_config(config_key)
+    if config is None:
+        raise HTTPException(status_code=404, detail=f"Config key not found: {config_key}")
+    return config
+
+
+@api.get("/admin/config")
+async def list_admin_config(
+    current_user: AdminUser = AdminUser,
+):
+    """List all app configuration values (admin only)."""
+    try:
+        pool = get_postgres_pool()
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Database is not available")
+
+    def _list_sync():
+        conn = pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT config_key, config_value, description, updated_by, updated_at
+                    FROM app_config
+                    ORDER BY config_key
+                    """
+                )
+                rows = cur.fetchall()
+                return [
+                    {
+                        "key": row[0],
+                        "value": row[1],
+                        "description": row[2],
+                        "updated_by": row[3],
+                        "updated_at": row[4].isoformat() if row[4] else None,
+                    }
+                    for row in rows
+                ]
+        finally:
+            pool.putconn(conn)
+
+    try:
+        items = await asyncio.to_thread(_list_sync)
+        return {"count": len(items), "items": items}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to list config: {exc}")
+
+
+@api.put("/admin/config/{config_key}")
+async def update_admin_config(
+    config_key: str,
+    req: ConfigUpdateRequest,
+    current_user: AdminUser = AdminUser,
+):
+    """Upsert one app configuration value (admin only)."""
+    updated = await _upsert_app_config(
+        config_key=config_key,
+        value=req.value,
+        description=req.description,
+        updated_by=str(current_user.id),
+    )
+    return {"status": "updated", "config": updated}
 
 
 @api.get("/admin/system-errors")

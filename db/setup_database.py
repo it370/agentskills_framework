@@ -94,6 +94,7 @@ def main():
     schemas = [
         (db_dir / "checkpoints_schema.sql", "Checkpoints schema (LangGraph)", True),  # Special handling
         (db_dir / "logs_schema.sql", "Thread logs schema", False),
+        (db_dir / "app_config_schema.sql", "App configuration schema", False),
         (db_dir / "run_metadata_schema.sql", "Run metadata schema (for reruns)", False),
         (db_dir / "llm_models_schema.sql", "LLM models schema (supported models + keys)", False),
         (db_dir / "add_status_columns_migration.sql", "Status tracking columns (migration)", False),
